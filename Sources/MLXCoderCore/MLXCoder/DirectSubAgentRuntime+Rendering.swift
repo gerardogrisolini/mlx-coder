@@ -5,7 +5,7 @@
 
 import Foundation
 
-public extension DirectSubAgentRuntime {
+extension DirectSubAgentRuntime {
     public static func systemPrompt(
         name: String,
         role: String,

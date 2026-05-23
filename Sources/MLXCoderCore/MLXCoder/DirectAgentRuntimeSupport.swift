@@ -13,7 +13,7 @@ func jsonCompatible(_ value: Any) -> Any {
     AgentJSONSupport.jsonCompatible(value)
 }
 
-public extension Dictionary where Key == String, Value == Any {
+extension Dictionary where Key == String, Value == Any {
     public func string(_ keys: String...) -> String? {
         for key in keys {
             if let value = self[key] as? String {

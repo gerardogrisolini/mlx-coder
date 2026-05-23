@@ -5,7 +5,7 @@
 
 import Foundation
 
-public extension RemoteGenerationClient {
+extension RemoteGenerationClient {
     public static func integerValue(_ value: Any?) -> Int? {
         if let int = value as? Int {
             return int

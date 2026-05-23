@@ -8,7 +8,7 @@ import Foundation
 import FoundationNetworking
 #endif
 
-public extension RemoteGenerationClient {
+extension RemoteGenerationClient {
     public func validateConfiguration() throws {
         guard URL(string: provider.baseURL) != nil else {
             throw RemoteGenerationClientError.invalidBaseURL(provider.baseURL)

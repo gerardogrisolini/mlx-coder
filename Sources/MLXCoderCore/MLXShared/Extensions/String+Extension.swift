@@ -5,7 +5,7 @@
 
 import Foundation
 
-public extension String {
+extension String {
     public func numberOfLines() -> Int {
         numberOfOccurrencesOf(string: "\n") + 1
     }
@@ -15,7 +15,7 @@ public extension String {
     }
 }
 
-public extension StringProtocol {
+extension StringProtocol {
     public func index<S: StringProtocol>(
         of string: S,
         options: String.CompareOptions = []

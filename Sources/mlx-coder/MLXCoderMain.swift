@@ -2,7 +2,7 @@ import Foundation
 import MLXCoderCore
 
 @main
-struct MLXCoderSPMMain {
+struct MLXCoderMain {
     static func main() async {
         var arguments = MLXCoderCommandLineArgumentSanitizer.sanitized(CommandLine.arguments)
         if arguments.dropFirst().contains(where: { $0 == "--help" || $0 == "-h" }) {

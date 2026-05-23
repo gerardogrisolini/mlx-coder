@@ -15,7 +15,7 @@ import Foundation
 #if os(macOS)
 import AppKit
 
-public extension MCPHTTPTransportClient {
+extension MCPHTTPTransportClient {
     public var shouldUseBrowserOAuth: Bool {
         guard !hasStaticAuthorizationHeader else {
             return false

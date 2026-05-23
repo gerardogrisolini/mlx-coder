@@ -10,7 +10,7 @@ import Darwin
 import Glibc
 #endif
 
-public extension DirectToolExecutor {
+extension DirectToolExecutor {
     public func deniedLocalExecOutputIfNeeded(
         sessionID: String?,
         toolCall: DirectAgentToolCall,

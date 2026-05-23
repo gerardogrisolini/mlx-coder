@@ -9,7 +9,7 @@ import Foundation
 
 #if os(macOS)
 
-public extension MCPHTTPTransportClient {
+extension MCPHTTPTransportClient {
     public func connect() async throws {
         guard !isInitialized else {
             return

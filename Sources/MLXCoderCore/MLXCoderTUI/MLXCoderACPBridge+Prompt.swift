@@ -11,7 +11,7 @@ import Glibc
 import Dispatch
 import Foundation
 
-public extension MLXCoderACPBridge {
+extension MLXCoderACPBridge {
     public func prompt(id: JSONValue?, params: [String: Any]) async throws {
         guard let sessionID = params["sessionId"] as? String,
               var session = sessions[sessionID] else {

@@ -97,8 +97,8 @@ enum MLXCoderSetupRunner {
         let selectedThinkingSelection = models
             .first { $0.matches(selectedModelID) }?
             .resolvedDefaultThinkingSelection
-        let apiKeysByProviderID = Dictionary(
-            uniqueKeysWithValues: providerInputs.compactMap { input in
+        let apiKeysByProviderID: [String: String] = Dictionary(
+            uniqueKeysWithValues: providerInputs.compactMap { input -> (String, String)? in
                 guard let apiKey = input.apiKey else {
                     return nil
                 }

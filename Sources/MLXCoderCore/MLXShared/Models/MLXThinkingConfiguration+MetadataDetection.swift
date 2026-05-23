@@ -7,7 +7,7 @@
 
 import Foundation
 
-public extension MLXModelThinkingSupport {
+extension MLXModelThinkingSupport {
     public static func effortLevels(
         from selections: [MLXThinkingSelection]
     ) -> [MLXThinkingSelection] {

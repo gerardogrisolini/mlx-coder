@@ -10,7 +10,7 @@ import Glibc
 #endif
 import Foundation
 
-public extension TerminalChat {
+extension TerminalChat {
     public func handleToolsCommand(_ command: String) async {
         let rawArguments = String(command.dropFirst("/tools".count))
             .trimmingCharacters(in: .whitespacesAndNewlines)

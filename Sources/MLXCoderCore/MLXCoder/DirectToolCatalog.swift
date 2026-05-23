@@ -184,7 +184,7 @@ public enum DirectToolCatalog {
 
 }
 
-public extension DirectToolDescriptor {
+extension DirectToolDescriptor {
     public var toolDescriptor: ToolDescriptor {
         ToolDescriptor(
             name: name,

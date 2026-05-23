@@ -11,7 +11,7 @@ import Glibc
 import Dispatch
 import Foundation
 
-public extension MLXCoderACPBridge {
+extension MLXCoderACPBridge {
     public func initialize(id: JSONValue?, params: [String: Any]) async throws {
         let requestedVersion = (params["protocolVersion"] as? NSNumber)?.intValue ?? 1
         let protocolVersion = requestedVersion >= 1 ? 1 : requestedVersion

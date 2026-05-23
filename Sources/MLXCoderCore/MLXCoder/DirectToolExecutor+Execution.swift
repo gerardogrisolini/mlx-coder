@@ -5,7 +5,7 @@
 
 import Foundation
 
-public extension DirectToolExecutor {
+extension DirectToolExecutor {
     public func executeThrowing(
         sessionID: String?,
         toolCall: DirectAgentToolCall,

@@ -5,7 +5,7 @@
 
 import Foundation
 
-public extension DirectSubAgentRuntime {
+extension DirectSubAgentRuntime {
     public func resolveInspectableAgents(arguments: [String: JSONValue]) -> [AgentSnapshot] {
         let identifiers = Self.requestedAgentIdentifiers(from: arguments)
         guard !identifiers.isEmpty else {

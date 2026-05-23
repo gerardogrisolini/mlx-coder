@@ -346,7 +346,7 @@ public enum AgentProfileStoreError: LocalizedError {
     }
 }
 
-public extension String {
+extension String {
     fileprivate var selectionKey: String {
         trimmingCharacters(in: .whitespacesAndNewlines)
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)

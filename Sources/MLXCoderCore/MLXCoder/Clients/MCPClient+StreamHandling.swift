@@ -12,7 +12,7 @@ import Foundation
 
 #if os(macOS)
 
-public extension MCPClient {
+extension MCPClient {
     public nonisolated static func readLoop(from handle: FileHandle, client: MCPClient) async {
         let fileDescriptor = handle.fileDescriptor
         var rawBuffer = [UInt8](repeating: 0, count: 4096)

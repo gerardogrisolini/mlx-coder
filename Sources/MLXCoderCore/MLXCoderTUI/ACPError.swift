@@ -28,7 +28,7 @@ public struct ACPError: LocalizedError {
     }
 }
 
-public extension AsyncSequence where Element == UInt8 {
+extension AsyncSequence where Element == UInt8 {
     public func collectString() async throws -> String {
         var data = Data()
         for try await byte in self {
@@ -38,7 +38,7 @@ public extension AsyncSequence where Element == UInt8 {
     }
 }
 
-public extension FileHandle {
+extension FileHandle {
     public func writeString(_ string: String) {
         guard let data = string.data(using: .utf8) else {
             return

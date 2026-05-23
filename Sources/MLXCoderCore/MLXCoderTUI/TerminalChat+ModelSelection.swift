@@ -10,7 +10,7 @@ import Glibc
 #endif
 import Foundation
 
-public extension TerminalChat {
+extension TerminalChat {
     public func handleMissingInitialModelSelectionIfNeeded() throws {
         guard currentEffectiveModelID() == nil,
               AgentSettingsStore.selectedModelID() == nil else {

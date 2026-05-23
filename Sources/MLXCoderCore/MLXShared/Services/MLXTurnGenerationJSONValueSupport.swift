@@ -7,7 +7,7 @@
 
 import Foundation
 
-public extension JSONValue {
+extension JSONValue {
     public var mlxObjectValue: [String: JSONValue]? {
         guard case let .object(value) = self else {
             return nil

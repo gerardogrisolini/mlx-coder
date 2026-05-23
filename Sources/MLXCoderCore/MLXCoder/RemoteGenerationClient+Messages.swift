@@ -5,7 +5,7 @@
 
 import Foundation
 
-public extension RemoteGenerationClient {
+extension RemoteGenerationClient {
     public static func systemPrompt(
         cwd: String,
         allowedToolNames: Set<String>?

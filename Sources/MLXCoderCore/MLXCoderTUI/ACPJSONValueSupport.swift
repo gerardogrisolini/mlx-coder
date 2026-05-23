@@ -5,7 +5,7 @@
 
 import Foundation
 
-public extension JSONValue {
+extension JSONValue {
     public static func acpValue(from value: Any?) -> JSONValue {
         guard let value else {
             return .null

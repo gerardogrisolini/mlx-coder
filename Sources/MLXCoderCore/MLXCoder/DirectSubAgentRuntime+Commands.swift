@@ -5,7 +5,7 @@
 
 import Foundation
 
-public extension DirectSubAgentRuntime {
+extension DirectSubAgentRuntime {
     public func createAgents(
         arguments: [String: JSONValue],
         workingDirectory: URL,

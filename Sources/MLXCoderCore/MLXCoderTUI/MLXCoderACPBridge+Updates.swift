@@ -11,7 +11,7 @@ import Glibc
 import Dispatch
 import Foundation
 
-public extension MLXCoderACPBridge {
+extension MLXCoderACPBridge {
     public func sendUserMessageChunk(sessionID: String, text: String) async {
         await writer.sendSessionUpdate(
             sessionID: sessionID,

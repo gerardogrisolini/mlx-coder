@@ -48,7 +48,7 @@ public nonisolated struct ToolRequestPayload: Decodable, Sendable {
     }
 }
 
-private extension ToolRequestPayload {
+extension ToolRequestPayload {
     public struct DynamicCodingKey: CodingKey {
         public let stringValue: String
         public let intValue: Int?

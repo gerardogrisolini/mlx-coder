@@ -12,7 +12,7 @@ import Foundation
 
 #if os(macOS)
 
-public extension MCPClient {
+extension MCPClient {
     public func connect() async throws {
         if let httpTransport {
             try await httpTransport.connect()

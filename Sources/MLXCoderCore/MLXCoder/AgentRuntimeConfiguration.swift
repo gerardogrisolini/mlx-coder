@@ -277,7 +277,7 @@ public protocol AgentRuntimeBackend: Actor {
     ) async throws -> DirectAgentResponse
 }
 
-public extension AgentRuntimeBackend {
+extension AgentRuntimeBackend {
     public func updateBorrowedOrchestrationToolExecutor(
         _ executor: AgentBorrowedToolExecutor?
     ) async {}
@@ -285,7 +285,7 @@ public extension AgentRuntimeBackend {
     public func updateToolProviders(_ providers: [AgentToolProvider]) async {}
 }
 
-public extension String {
+extension String {
     public var nilIfBlank: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed

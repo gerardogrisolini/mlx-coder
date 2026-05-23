@@ -10,7 +10,7 @@ import Glibc
 #endif
 import Foundation
 
-public extension TerminalChat {
+extension TerminalChat {
     public func printActiveToolsIfNeeded() async {
         guard !didPrintActiveTools else {
             return

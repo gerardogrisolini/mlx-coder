@@ -11,7 +11,7 @@ import Glibc
 import Dispatch
 import Foundation
 
-public extension MLXCoderACPBridge {
+extension MLXCoderACPBridge {
     public func runtimeHistory(from value: Any?) -> [AgentRuntimeMessage] {
         guard let messages = value as? [[String: Any]] else {
             return []

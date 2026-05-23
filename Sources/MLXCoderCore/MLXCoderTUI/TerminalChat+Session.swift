@@ -10,7 +10,7 @@ import Glibc
 #endif
 import Foundation
 
-public extension TerminalChat {
+extension TerminalChat {
     public func createCurrentSession() async throws {
         try await sessionRunner.createSession(
             configuration: await currentSessionConfiguration()

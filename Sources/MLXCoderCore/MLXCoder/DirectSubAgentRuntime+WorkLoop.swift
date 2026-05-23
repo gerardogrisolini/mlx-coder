@@ -5,7 +5,7 @@
 
 import Foundation
 
-public extension DirectSubAgentRuntime {
+extension DirectSubAgentRuntime {
     public func queuePrompt(_ prompt: String, for agentID: String) throws {
         guard var agent = agents[agentID] else {
             throw DirectSubAgentRuntimeError.agentNotFound(agentID)

@@ -12,7 +12,7 @@ import Glibc
 #endif
 import Foundation
 
-public extension TerminalChat {
+extension TerminalChat {
     public func handleAgentsCommand(_ command: String) async throws {
         let rawArguments = String(command.dropFirst("/agents".count))
             .trimmingCharacters(in: .whitespacesAndNewlines)
