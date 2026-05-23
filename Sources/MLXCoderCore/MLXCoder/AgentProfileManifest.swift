@@ -7,14 +7,22 @@
 
 import Foundation
 
-public struct AgentProfileManifest: Decodable, Sendable {
+public struct AgentProfileManifest: Codable, Sendable {
     public static let currentVersion = 1
 
     public let version: Int
     public let agents: [AgentProfile]
+
+    public init(
+        version: Int = Self.currentVersion,
+        agents: [AgentProfile]
+    ) {
+        self.version = version
+        self.agents = agents
+    }
 }
 
-public struct AgentProfile: Decodable, Hashable, Sendable {
+public struct AgentProfile: Codable, Hashable, Sendable {
     public let id: String
     public let name: String
     public let instructions: String?
@@ -23,6 +31,26 @@ public struct AgentProfile: Decodable, Hashable, Sendable {
     public let skills: [AgentProfileSkill]
     public let modelID: String?
     public let modelProvider: String?
+
+    public init(
+        id: String,
+        name: String,
+        instructions: String? = nil,
+        symbolName: String? = nil,
+        tools: [String] = [],
+        skills: [AgentProfileSkill] = [],
+        modelID: String? = nil,
+        modelProvider: String? = nil
+    ) {
+        self.id = id.nilIfBlank ?? UUID().uuidString
+        self.name = name.nilIfBlank ?? AgentProfileStore.defaultAgentName
+        self.instructions = instructions?.nilIfBlank
+        self.symbolName = symbolName?.nilIfBlank
+        self.tools = tools
+        self.skills = skills
+        self.modelID = modelID?.nilIfBlank
+        self.modelProvider = modelProvider?.nilIfBlank
+    }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -109,12 +137,26 @@ public struct AgentProfile: Decodable, Hashable, Sendable {
     }
 }
 
-public struct AgentProfileSkill: Decodable, Hashable, Sendable {
+public struct AgentProfileSkill: Codable, Hashable, Sendable {
     public let id: String
     public let canonicalName: String?
     public let title: String?
     public let summary: String?
     public let symbolName: String?
+
+    public init(
+        id: String,
+        canonicalName: String? = nil,
+        title: String? = nil,
+        summary: String? = nil,
+        symbolName: String? = nil
+    ) {
+        self.id = id.nilIfBlank ?? ""
+        self.canonicalName = canonicalName?.nilIfBlank
+        self.title = title?.nilIfBlank
+        self.summary = summary?.nilIfBlank
+        self.symbolName = symbolName?.nilIfBlank
+    }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -170,7 +212,17 @@ public struct AgentProfileSkill: Decodable, Hashable, Sendable {
 
 public enum AgentProfileStore {
     public static let defaultAgentName = "Default"
-    private static let manifestFilename = "agents.json"
+    public static let defaultAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+    public static let manifestFilename = "agents.json"
+    public static let defaultToolNames: [String] = [
+        "xcode",
+        "bash",
+        "git",
+        "memory",
+        "web",
+        "orchestration",
+        "figma"
+    ]
 
     public static func loadRequired(fileManager: FileManager = .default) throws -> [AgentProfile] {
         let url = agentsManifestURL(fileManager: fileManager)
@@ -204,6 +256,53 @@ public enum AgentProfileStore {
             throw AgentProfileStoreError.noAgents(url)
         }
         return manifest.agents
+    }
+
+    public static func save(
+        _ agents: [AgentProfile],
+        fileManager: FileManager = .default
+    ) throws {
+        let url = agentsManifestURL(fileManager: fileManager)
+        try fileManager.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+
+        let manifest = AgentProfileManifest(
+            agents: agents.sorted {
+                $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+            }
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(manifest)
+        try data.write(to: url, options: [.atomic])
+    }
+
+    @discardableResult
+    public static func ensureDefaultManifestExists(
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        let url = agentsManifestURL(fileManager: fileManager)
+        guard !fileManager.fileExists(atPath: url.path) else {
+            _ = try loadRequired(fileManager: fileManager)
+            return url
+        }
+
+        try save(defaultProfiles(), fileManager: fileManager)
+        return url
+    }
+
+    public static func defaultProfiles() -> [AgentProfile] {
+        [
+            AgentProfile(
+                id: defaultAgentID.uuidString,
+                name: defaultAgentName,
+                instructions: MLXSystemPromptBuilder.defaultAgentInstructions(),
+                symbolName: "person.crop.circle",
+                tools: defaultToolNames
+            )
+        ]
     }
 
     public static func defaultProfile(in agents: [AgentProfile]) throws -> AgentProfile {

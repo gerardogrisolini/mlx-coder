@@ -10,6 +10,13 @@ import Foundation
 public final class MLXMemoryService: @unchecked Sendable {
     public static let filename = "MEMORY.md"
     public static let entriesDidChangeNotification = Notification.Name("MLXMemoryEntriesDidChange")
+    public static let defaultGlobalMemoryContent: String = """
+    # MEMORY.md
+
+    ## Active
+
+    ## Archived
+    """
 
     private let fileManager: FileManager
     private let globalMemoryDirectoryURL: URL?
@@ -321,6 +328,26 @@ public final class MLXMemoryService: @unchecked Sendable {
 
     public func globalMemoryFileURL() -> URL {
         globalMemoryDirectoryURLResolved().appendingPathComponent(Self.filename)
+    }
+
+    @discardableResult
+    public func ensureGlobalMemoryFileExists() throws -> URL {
+        let fileURL = globalMemoryFileURL().standardizedFileURL
+        if fileManager.fileExists(atPath: fileURL.path),
+           let content = try? String(contentsOf: fileURL, encoding: .utf8),
+           !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return fileURL
+        }
+
+        try fileManager.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Self.defaultGlobalMemoryContent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .appending("\n")
+            .write(to: fileURL, atomically: true, encoding: .utf8)
+        return fileURL
     }
 
     private func memoryDocuments(workspaceRootURL: URL?) -> [MemoryDocument] {
