@@ -179,11 +179,18 @@ public actor TerminalWorkspaceToolAccessStore {
         for workspaceURL: URL,
         userDefaults: UserDefaults = .standard
     ) async -> Bool {
+        #if SWIFTPM_NON_SANDBOX_TUI
+        return await authorizeWithTerminalConsentIfNeeded(
+            for: workspaceURL,
+            userDefaults: userDefaults
+        )
+        #else
         let normalizedWorkspaceURL = normalizedDirectoryURL(workspaceURL)
         return activatePersistedAccess(
             for: normalizedWorkspaceURL,
             userDefaults: userDefaults
         ) != nil
+        #endif
     }
 
     public func authorizeWithPickerIfNeeded(
@@ -213,6 +220,51 @@ public actor TerminalWorkspaceToolAccessStore {
             return false
         }
     }
+
+    #if SWIFTPM_NON_SANDBOX_TUI
+    private func authorizeWithTerminalConsentIfNeeded(
+        for workspaceURL: URL,
+        userDefaults: UserDefaults
+    ) async -> Bool {
+        let normalizedWorkspaceURL = normalizedDirectoryURL(workspaceURL)
+        let key = terminalConsentKey(for: normalizedWorkspaceURL)
+        if userDefaults.bool(forKey: key) {
+            return true
+        }
+
+        guard Self.requestTerminalConsent(for: normalizedWorkspaceURL) else {
+            return false
+        }
+        userDefaults.set(true, forKey: key)
+        return true
+    }
+
+    private func terminalConsentKey(for workspaceURL: URL) -> String {
+        "workspaceToolAccessConsent:" + normalizedDirectoryURL(workspaceURL).path
+    }
+
+    private static func requestTerminalConsent(for workspaceURL: URL) -> Bool {
+        AgentOutput.standardError.writeString(
+            """
+            mlx-coder requires permission to read, edit, and execute files here.
+
+            Directory:
+            \(workspaceURL.path)
+
+            Trust this folder? [Y/n]:
+            """
+        )
+        guard let answer = readLine() else {
+            return false
+        }
+        switch answer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "", "y", "yes", "s", "si":
+            return true
+        default:
+            return false
+        }
+    }
+    #endif
 
     public func saveAccess(
         for selectedURL: URL,

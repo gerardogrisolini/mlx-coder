@@ -103,16 +103,22 @@ extension MCPClient {
                 "Request \(initializeRequestID) -> initialize: " +
                 (String(data: initializePayload, encoding: .utf8) ?? "<non-utf8>")
             )
-            _ = try await withCheckedThrowingContinuation(isolation: self) { continuation in
-                pendingResponses[initializeRequestID] = continuation
+            _ = try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation(isolation: self) { continuation in
+                    pendingResponses[initializeRequestID] = continuation
 
-                do {
-                    try write(initializePayload)
-                    log("Sending initialized notification early for mcpbridge")
-                    try write(initializedPayload)
-                } catch {
-                    pendingResponses.removeValue(forKey: initializeRequestID)
-                    continuation.resume(throwing: error)
+                    do {
+                        try write(initializePayload)
+                        log("Sending initialized notification early for mcpbridge")
+                        try write(initializedPayload)
+                    } catch {
+                        pendingResponses.removeValue(forKey: initializeRequestID)
+                        continuation.resume(throwing: error)
+                    }
+                }
+            } onCancel: {
+                Task {
+                    await self.cancelPendingResponse(id: initializeRequestID)
                 }
             }
             importantLog("Initialize completed successfully for request \(initializeRequestID).")
@@ -210,15 +216,21 @@ extension MCPClient {
         let payload = try JSONEncoder().encode(request)
         log("Request \(requestID) -> \(method): \(String(data: payload, encoding: .utf8) ?? "<non-utf8>")")
 
-        return try await withCheckedThrowingContinuation(isolation: self) { continuation in
-            pendingResponses[requestID] = continuation
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation(isolation: self) { continuation in
+                pendingResponses[requestID] = continuation
 
-            do {
-                try write(payload)
-                onRequestWritten?()
-            } catch {
-                pendingResponses.removeValue(forKey: requestID)
-                continuation.resume(throwing: error)
+                do {
+                    try write(payload)
+                    onRequestWritten?()
+                } catch {
+                    pendingResponses.removeValue(forKey: requestID)
+                    continuation.resume(throwing: error)
+                }
+            }
+        } onCancel: {
+            Task {
+                await self.cancelPendingResponse(id: requestID)
             }
         }
     }

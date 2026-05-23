@@ -12,21 +12,81 @@ import Darwin
 
 public enum MLXAppStorageDirectory {
     public static let appBundleIdentifier = "com.grisolini.mlx-coder"
+    public static let supportDirectoryEnvironmentKey = "MLX_CODER_SUPPORT_DIRECTORY"
     private static let supportDirectoryName = "mlx-coder"
+    private static let supportDirectoryOverride = SupportDirectoryOverride()
+
+    public static func configureSupportDirectoryURL(_ url: URL?) {
+        supportDirectoryOverride.set(url?.standardizedFileURL)
+    }
 
     public static func appSupportDirectoryURL(
         fileManager: FileManager = .default
     ) -> URL {
+        if let configuredDirectoryURL = configuredSupportDirectoryURL() {
+            return configuredDirectoryURL
+        }
+        if let executableDirectoryURL = executableDirectoryURL(fileManager: fileManager) {
+            return executableDirectoryURL
+        }
+
         #if os(Linux)
         return URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
             .appendingPathComponent(".mlx-coder", isDirectory: true)
             .standardizedFileURL
         #else
-        appContainerSupportDirectoryURL(
+        return appContainerSupportDirectoryURL(
             bundleIdentifier: appBundleIdentifier,
             homeDirectoryURL: hostHomeDirectoryURL(fileManager: fileManager)
         )
         #endif
+    }
+
+    private static func configuredSupportDirectoryURL() -> URL? {
+        if let url = supportDirectoryOverride.url() {
+            return url
+        }
+        guard let rawValue = normalizedPath(ProcessInfo.processInfo.environment[supportDirectoryEnvironmentKey]) else {
+            return nil
+        }
+        return URL(fileURLWithPath: rawValue, isDirectory: true)
+            .standardizedFileURL
+    }
+
+    public static func executableDirectoryURL(
+        fileManager: FileManager = .default
+    ) -> URL? {
+        let rawExecutablePath = normalizedPath(CommandLine.arguments.first)
+        let candidateURLs = [
+            Bundle.main.executableURL,
+            rawExecutablePath.map {
+                URL(fileURLWithPath: $0)
+            }
+        ].compactMap { $0 }
+
+        for candidateURL in candidateURLs {
+            let executableURL = candidateURL
+                .standardizedFileURL
+                .resolvingSymlinksInPath()
+            let directoryURL = executableURL
+                .deletingLastPathComponent()
+                .standardizedFileURL
+                .resolvingSymlinksInPath()
+
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: directoryURL.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                continue
+            }
+            return directoryURL
+        }
+
+        return nil
+    }
+
+    private static func normalizedPath(_ value: String?) -> String? {
+        let trimmedValue = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmedValue.isEmpty ? nil : trimmedValue
     }
 
     public static func appContainerSupportDirectoryURL(
@@ -118,4 +178,21 @@ public enum MLXAppStorageDirectory {
         return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
     }
 #endif
+}
+
+private final class SupportDirectoryOverride: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: URL?
+
+    func set(_ url: URL?) {
+        lock.lock()
+        value = url
+        lock.unlock()
+    }
+
+    func url() -> URL? {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
 }

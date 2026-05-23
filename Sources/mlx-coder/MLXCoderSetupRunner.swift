@@ -19,7 +19,7 @@ enum MLXCoderSetupRunner {
         arguments.filter { $0 != option }
     }
 
-    static func run(arguments: [String]) throws {
+    static func run(arguments: [String]) async throws {
         _ = arguments
         guard TerminalRawInput.supportsInteractiveInput() else {
             throw MLXCoderSetupError.nonInteractiveTerminal
@@ -59,7 +59,7 @@ enum MLXCoderSetupRunner {
             }
         }
 
-        let manifest = try buildSettingsManifest()
+        let manifest = try await buildSettingsManifest()
         let result = try MLXCoderSupportFileService.ensureRequiredFiles(
             settingsManifest: manifest,
             overwriteSettings: true
@@ -68,10 +68,10 @@ enum MLXCoderSetupRunner {
         AgentOutput.standardError.writeString("\nSetup completato. Avvio mlx-coder.\n\n")
     }
 
-    private static func buildSettingsManifest() throws -> AgentSettingsManifest {
+    private static func buildSettingsManifest() async throws -> AgentSettingsManifest {
         var providerInputs: [SetupProviderInput] = []
         repeat {
-            providerInputs.append(try readProvider())
+            providerInputs.append(try await readProvider())
         } while try promptYesNo("Aggiungere un altro provider?", defaultValue: false)
 
         let providers = providerInputs.map { input in
@@ -115,8 +115,17 @@ enum MLXCoderSetupRunner {
         )
     }
 
-    private static func readProvider() throws -> SetupProviderInput {
-        AgentOutput.standardError.writeString("\nProvider remoto\n")
+    private static func readProvider() async throws -> SetupProviderInput {
+        switch try promptProviderKind() {
+        case .remoteAPI:
+            return try await readRemoteAPIProvider()
+        case .chatGPTSubscription:
+            return try await readChatGPTSubscriptionProvider()
+        }
+    }
+
+    private static func readRemoteAPIProvider() async throws -> SetupProviderInput {
+        AgentOutput.standardError.writeString("\nProvider OpenAI-compatible\n")
         let id = UUID()
         let name = try promptString(
             "Nome provider",
@@ -135,18 +144,13 @@ enum MLXCoderSetupRunner {
             allowEmpty: true
         )
 
-        var models: [AgentSettingsModelManifest] = []
-        repeat {
-            models.append(
-                try readModel(
-                    providerID: id,
-                    providerName: name,
-                    baseURL: baseURL,
-                    chatEndpoint: chatEndpoint,
-                    modelIndex: models.count
-                )
-            )
-        } while try promptYesNo("Aggiungere un altro modello per \(name)?", defaultValue: false)
+        let models = try await readModels(
+            providerID: id,
+            providerName: name,
+            baseURL: baseURL,
+            chatEndpoint: chatEndpoint,
+            apiKey: apiKey.nilIfBlank
+        )
 
         guard !models.isEmpty else {
             throw MLXCoderSetupError.noModelsConfigured
@@ -160,6 +164,365 @@ enum MLXCoderSetupRunner {
             apiKey: apiKey.nilIfBlank,
             models: models
         )
+    }
+
+    private static func readChatGPTSubscriptionProvider() async throws -> SetupProviderInput {
+        AgentOutput.standardError.writeString("\nChatGPT Subscription\n")
+        try await ensureChatGPTSubscriptionCredentials()
+
+        let id = AgentRemoteProvider.chatGPTSubscriptionProviderID
+        let name = CodexAgentModel.displayTitle
+        let baseURL = AgentRemoteProvider.chatGPTSubscriptionBaseURL
+        let chatEndpoint = AgentRemoteChatEndpoint.responses
+        let models = try selectChatGPTSubscriptionModels().map { option in
+            chatGPTSubscriptionModelManifest(
+                option: option,
+                providerID: id,
+                providerName: name,
+                baseURL: baseURL,
+                chatEndpoint: chatEndpoint
+            )
+        }
+
+        guard !models.isEmpty else {
+            throw MLXCoderSetupError.noModelsConfigured
+        }
+
+        return SetupProviderInput(
+            id: id,
+            name: name,
+            baseURL: baseURL,
+            chatEndpoint: chatEndpoint,
+            apiKey: nil,
+            models: models
+        )
+    }
+
+    private static func ensureChatGPTSubscriptionCredentials() async throws {
+#if os(macOS)
+        do {
+            _ = try await CodexAgentModel.loadValidCredentials()
+            return
+        } catch {
+            AgentOutput.standardError.writeString(
+                "ChatGPT Subscription non e collegato. Apro il login Codex nel browser.\n"
+            )
+        }
+
+        let session = try await ChatGPTSubscriptionAuthService.startSignIn()
+        let didOpen = await ChatGPTSubscriptionAuthService.openAuthorizationURL(
+            session.authorizationURL
+        )
+        guard didOpen else {
+            throw ChatGPTSubscriptionAuthError.browserOpenFailed
+        }
+
+        AgentOutput.standardError.writeString(
+            """
+            Completa il login nel browser.
+            Se il callback locale non rientra automaticamente, incolla qui la callback URL o il codice.
+            Altrimenti premi invio quando il browser mostra il completamento.
+
+            """
+        )
+        let callbackInput = try promptString(
+            "Callback URL/codice (opzionale)",
+            defaultValue: nil,
+            allowEmpty: true
+        )
+        if let callbackInput = callbackInput.nilIfBlank {
+            try session.submitAuthorizationInput(callbackInput)
+        }
+
+        _ = try await session.waitForCredentials()
+        AgentOutput.standardError.writeString("ChatGPT Subscription collegato.\n")
+#else
+        throw MLXCoderSetupError.chatGPTSubscriptionUnsupported
+#endif
+    }
+
+    private static func readModels(
+        providerID: UUID,
+        providerName: String,
+        baseURL: String,
+        chatEndpoint: AgentRemoteChatEndpoint,
+        apiKey: String?
+    ) async throws -> [AgentSettingsModelManifest] {
+        if try promptYesNo("Caricare la lista modelli da /models del server?", defaultValue: true) {
+            do {
+                let catalogModels = try await RemoteModelCatalogClient()
+                    .fetchModels(baseURL: baseURL, apiKey: apiKey)
+                    .sorted(by: remoteModelSort)
+                guard !catalogModels.isEmpty else {
+                    throw MLXCoderSetupError.noRemoteModelsReturned
+                }
+
+                let selectedModels = try selectRemoteModels(from: catalogModels)
+                return selectedModels.map {
+                    remoteModelManifest(
+                        from: $0,
+                        providerID: providerID,
+                        providerName: providerName,
+                        baseURL: baseURL,
+                        chatEndpoint: chatEndpoint
+                    )
+                }
+            } catch {
+                AgentOutput.standardError.writeString(
+                    "Impossibile caricare /models: \(error.localizedDescription)\n"
+                )
+                guard try promptYesNo("Inserire i modelli manualmente?", defaultValue: true) else {
+                    throw error
+                }
+            }
+        }
+
+        var models: [AgentSettingsModelManifest] = []
+        repeat {
+            models.append(
+                try readModel(
+                    providerID: providerID,
+                    providerName: providerName,
+                    baseURL: baseURL,
+                    chatEndpoint: chatEndpoint,
+                    modelIndex: models.count
+                )
+            )
+        } while try promptYesNo("Aggiungere un altro modello per \(providerName)?", defaultValue: false)
+
+        return models
+    }
+
+    private static func selectRemoteModels(
+        from models: [OpenRouterModelInfo]
+    ) throws -> [OpenRouterModelInfo] {
+        AgentOutput.standardError.writeString("\nModelli disponibili da /models:\n")
+        for (index, model) in models.enumerated() {
+            AgentOutput.standardError.writeString(
+                "  \(index + 1). \(remoteModelListTitle(model))\n"
+            )
+        }
+
+        let value = try promptString(
+            "Scelta modelli (numero, lista 1,3 oppure all)",
+            defaultValue: "1",
+            allowEmpty: false
+        )
+        let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalizedValue == "all" || normalizedValue == "tutti" {
+            return models
+        }
+
+        let tokens = normalizedValue
+            .split { $0 == "," || $0 == " " || $0 == ";" }
+            .map(String.init)
+        guard !tokens.isEmpty else {
+            throw MLXCoderSetupError.invalidChoice(value)
+        }
+
+        var selected: [OpenRouterModelInfo] = []
+        var seenIndexes = Set<Int>()
+        for token in tokens {
+            guard let index = Int(token),
+                  models.indices.contains(index - 1),
+                  seenIndexes.insert(index - 1).inserted else {
+                throw MLXCoderSetupError.invalidChoice(value)
+            }
+            selected.append(models[index - 1])
+        }
+        return selected
+    }
+
+    private static func selectChatGPTSubscriptionModels() throws -> [CodexAgentModel.ModelOption] {
+        let models = CodexAgentModel.availableModels
+        AgentOutput.standardError.writeString("\nModelli ChatGPT Subscription:\n")
+        for (index, model) in models.enumerated() {
+            let context = model.contextWindowTokenLimit.map { "ctx \($0)" } ?? "ctx default"
+            AgentOutput.standardError.writeString(
+                "  \(index + 1). \(model.title) (\(model.modelID)) [\(context), thinking]\n"
+            )
+        }
+
+        let value = try promptString(
+            "Scelta modelli (numero, lista 1,3 oppure all)",
+            defaultValue: "1",
+            allowEmpty: false
+        )
+        let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalizedValue == "all" || normalizedValue == "tutti" {
+            return models
+        }
+
+        let tokens = normalizedValue
+            .split { $0 == "," || $0 == " " || $0 == ";" }
+            .map(String.init)
+        guard !tokens.isEmpty else {
+            throw MLXCoderSetupError.invalidChoice(value)
+        }
+
+        var selected: [CodexAgentModel.ModelOption] = []
+        var seenIndexes = Set<Int>()
+        for token in tokens {
+            guard let index = Int(token),
+                  models.indices.contains(index - 1),
+                  seenIndexes.insert(index - 1).inserted else {
+                throw MLXCoderSetupError.invalidChoice(value)
+            }
+            selected.append(models[index - 1])
+        }
+        return selected
+    }
+
+    private static func remoteModelManifest(
+        from model: OpenRouterModelInfo,
+        providerID: UUID,
+        providerName: String,
+        baseURL: String,
+        chatEndpoint: AgentRemoteChatEndpoint
+    ) -> AgentSettingsModelManifest {
+        let provider = AgentRemoteProvider(
+            id: providerID,
+            name: providerName,
+            baseURL: baseURL,
+            modelID: model.id,
+            chatEndpoint: chatEndpoint
+        )
+        let manifestID = "remoteapi:\(providerID.uuidString.lowercased()):\(model.id)"
+        return AgentSettingsModelManifest(
+            id: manifestID,
+            kind: .remoteAPI,
+            title: model.name == model.id ? nil : model.name,
+            llmID: manifestID,
+            modelID: model.id,
+            providerID: providerID,
+            provider: provider,
+            configuredContextWindowLimit: model.contextLength,
+            generationParameterOverrides: model.generationParameterOverrides,
+            thinkingOptions: agentThinkingOptions(from: model.thinkingSupport),
+            defaultThinkingSelection: agentThinkingSelection(
+                from: model.thinkingSupport?.defaultSelection
+            )
+        )
+    }
+
+    private static func chatGPTSubscriptionModelManifest(
+        option: CodexAgentModel.ModelOption,
+        providerID: UUID,
+        providerName: String,
+        baseURL: String,
+        chatEndpoint: AgentRemoteChatEndpoint
+    ) -> AgentSettingsModelManifest {
+        let provider = AgentRemoteProvider(
+            id: providerID,
+            name: providerName,
+            baseURL: baseURL,
+            modelID: option.modelID,
+            chatEndpoint: chatEndpoint
+        )
+        let manifestID = CodexAgentModel.selectionID(forModelID: option.modelID)
+        return AgentSettingsModelManifest(
+            id: manifestID,
+            kind: .remoteAPI,
+            title: option.title,
+            llmID: manifestID,
+            modelID: option.modelID,
+            providerID: providerID,
+            provider: provider,
+            configuredContextWindowLimit: option.contextWindowTokenLimit,
+            generationParameterOverrides: nil,
+            thinkingOptions: agentThinkingOptions(from: CodexAgentModel.thinkingSupport),
+            defaultThinkingSelection: agentThinkingSelection(
+                from: CodexAgentModel.thinkingSupport.defaultSelection
+            )
+        )
+    }
+
+    private static func remoteModelListTitle(
+        _ model: OpenRouterModelInfo
+    ) -> String {
+        var details: [String] = []
+        if let contextLength = model.contextLength {
+            details.append("ctx \(contextLength)")
+        }
+        if model.thinkingSupport?.supportsThinking == true {
+            details.append("thinking")
+        }
+        if model.generationParameterOverrides != nil {
+            details.append("params")
+        }
+        if let status = remoteModelStatus(model) {
+            details.append(status)
+        }
+
+        let suffix = details.isEmpty ? "" : " [\(details.joined(separator: ", "))]"
+        return "\(model.name) (\(model.id))\(suffix)"
+    }
+
+    private static func remoteModelStatus(
+        _ model: OpenRouterModelInfo
+    ) -> String? {
+        if model.serverLoaded == true || model.loaded == true {
+            return "loaded"
+        }
+        if model.installed == true {
+            return "installed"
+        }
+        if model.installed == false {
+            return "non installato"
+        }
+        return nil
+    }
+
+    private static func remoteModelSort(
+        lhs: OpenRouterModelInfo,
+        rhs: OpenRouterModelInfo
+    ) -> Bool {
+        let lhsRank = remoteModelRank(lhs)
+        let rhsRank = remoteModelRank(rhs)
+        if lhsRank != rhsRank {
+            return lhsRank < rhsRank
+        }
+
+        let nameComparison = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+        if nameComparison != .orderedSame {
+            return nameComparison == .orderedAscending
+        }
+        return lhs.id.localizedCaseInsensitiveCompare(rhs.id) == .orderedAscending
+    }
+
+    private static func remoteModelRank(
+        _ model: OpenRouterModelInfo
+    ) -> Int {
+        if model.serverLoaded == true || model.loaded == true {
+            return 0
+        }
+        if model.installed == true {
+            return 1
+        }
+        if model.installed == false {
+            return 3
+        }
+        return 2
+    }
+
+    private static func agentThinkingOptions(
+        from support: MLXModelThinkingSupport?
+    ) -> [AgentThinkingSelection]? {
+        guard let support,
+              support.supportsThinking else {
+            return nil
+        }
+        let options = support.availableSelections.compactMap(agentThinkingSelection)
+        return options.isEmpty ? nil : options
+    }
+
+    private static func agentThinkingSelection(
+        from selection: MLXThinkingSelection?
+    ) -> AgentThinkingSelection? {
+        guard let selection else {
+            return nil
+        }
+        return AgentThinkingSelection(rawValue: selection.rawValue)
     }
 
     private static func readModel(
@@ -221,7 +584,7 @@ enum MLXCoderSetupRunner {
             Endpoint:
               1. chat/completions
               2. responses
-            """
+            """ + "\n"
         )
         let value = try promptString("Scelta", defaultValue: "1", allowEmpty: false)
         switch value.trimmingCharacters(in: .whitespacesAndNewlines) {
@@ -229,6 +592,25 @@ enum MLXCoderSetupRunner {
             return .chatCompletions
         case "2", "responses":
             return .responses
+        default:
+            throw MLXCoderSetupError.invalidChoice(value)
+        }
+    }
+
+    private static func promptProviderKind() throws -> SetupProviderKind {
+        AgentOutput.standardError.writeString(
+            """
+            Provider:
+              1. OpenAI-compatible / MLX server
+              2. ChatGPT Subscription
+            """ + "\n"
+        )
+        let value = try promptString("Scelta", defaultValue: "1", allowEmpty: false)
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "1", "remote", "remoteapi", "openai", "mlx", "server":
+            return .remoteAPI
+        case "2", "chatgpt", "subscription", "chatgpt subscription", "codex":
+            return .chatGPTSubscription
         default:
             throw MLXCoderSetupError.invalidChoice(value)
         }
@@ -367,12 +749,19 @@ private struct SetupThinkingInput {
     let defaultSelection: AgentThinkingSelection?
 }
 
+private enum SetupProviderKind {
+    case remoteAPI
+    case chatGPTSubscription
+}
+
 private enum MLXCoderSetupError: LocalizedError {
     case nonInteractiveTerminal
     case cancelled
     case emptyRequiredValue(String)
     case invalidChoice(String)
     case noModelsConfigured
+    case noRemoteModelsReturned
+    case chatGPTSubscriptionUnsupported
 
     var errorDescription: String? {
         switch self {
@@ -386,6 +775,10 @@ private enum MLXCoderSetupError: LocalizedError {
             return "Invalid setup choice: \(value)"
         case .noModelsConfigured:
             return "At least one provider model is required."
+        case .noRemoteModelsReturned:
+            return "The server did not return any models from /models."
+        case .chatGPTSubscriptionUnsupported:
+            return "ChatGPT Subscription setup is available on macOS."
         }
     }
 }

@@ -195,6 +195,13 @@ extension MCPClient {
         }
     }
 
+    public func cancelPendingResponse(id requestID: Int) {
+        guard let continuation = pendingResponses.removeValue(forKey: requestID) else {
+            return
+        }
+        continuation.resume(throwing: CancellationError())
+    }
+
     public func exitError(for process: Process) -> MCPClientError {
         let stderrMessage = currentStderrMessage()
         if let detectedPermissionError = permissionErrorIfPresent(in: stderrMessage) {

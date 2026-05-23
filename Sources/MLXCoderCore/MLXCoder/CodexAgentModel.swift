@@ -40,8 +40,6 @@ private enum CodexAgentCredentialError: LocalizedError {
     case missingRefreshToken
     case missingAccountID
     case invalidJWT
-    case tokenExchangeFailed(status: Int, body: String)
-    case invalidTokenResponse
     case keychain(status: OSStatus)
 
     var errorDescription: String? {
@@ -58,14 +56,6 @@ private enum CodexAgentCredentialError: LocalizedError {
             return "ChatGPT Subscription credentials do not contain a ChatGPT account id."
         case .invalidJWT:
             return "ChatGPT Subscription access token could not be decoded."
-        case let .tokenExchangeFailed(status, body):
-            let detail = body.trimmingCharacters(in: .whitespacesAndNewlines)
-            if detail.isEmpty {
-                return "ChatGPT Subscription token refresh failed with HTTP \(status)."
-            }
-            return "ChatGPT Subscription token refresh failed with HTTP \(status): \(detail)"
-        case .invalidTokenResponse:
-            return "ChatGPT Subscription token refresh returned an invalid response."
         case let .keychain(status):
             return "ChatGPT Subscription credentials could not be stored in Keychain (\(status))."
         }
@@ -267,9 +257,7 @@ public nonisolated enum CodexAgentModel {
         guard credentials.isExpiredOrNearlyExpired else {
             return credentials
         }
-        let refreshedCredentials = try await refresh(credentials: credentials)
-        try saveCredentials(refreshedCredentials)
-        return refreshedCredentials
+        return try await ChatGPTSubscriptionAuthService.refresh(credentials: credentials)
     }
 
     public static func saveCredentials(_ credentials: CodexAgentCredentials) throws {
@@ -307,88 +295,10 @@ public nonisolated enum CodexAgentModel {
         return Data(base64Encoded: base64)
     }
 
-    private static func refresh(
-        credentials: CodexAgentCredentials
-    ) async throws -> CodexAgentCredentials {
-        try await tokenRequest(parameters: [
-            "grant_type": "refresh_token",
-            "refresh_token": credentials.refreshToken,
-            "client_id": "app_EMoamEEZ73f0CkXaXp7hrann"
-        ])
-    }
-
-    private static func tokenRequest(
-        parameters: [String: String]
-    ) async throws -> CodexAgentCredentials {
-        var request = URLRequest(url: URL(string: "https://auth.openai.com/oauth/token")!)
-        request.httpMethod = "POST"
-        request.httpBody = formURLEncodedBody(parameters)
-        request.setValue(
-            "application/x-www-form-urlencoded",
-            forHTTPHeaderField: "Content-Type"
-        )
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw CodexAgentCredentialError.invalidTokenResponse
-        }
-        guard (200..<300).contains(httpResponse.statusCode) else {
-            throw CodexAgentCredentialError.tokenExchangeFailed(
-                status: httpResponse.statusCode,
-                body: String(decoding: data, as: UTF8.self)
-            )
-        }
-
-        let tokenResponse = try JSONDecoder().decode(CodexCredentialTokenResponse.self, from: data)
-        let accessToken = tokenResponse.accessToken
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let refreshToken = tokenResponse.refreshToken
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !accessToken.isEmpty,
-              !refreshToken.isEmpty,
-              tokenResponse.expiresIn > 0 else {
-            throw CodexAgentCredentialError.invalidTokenResponse
-        }
-
-        return CodexAgentCredentials(
-            accessToken: accessToken,
-            refreshToken: refreshToken,
-            expiresAt: Date().addingTimeInterval(TimeInterval(tokenResponse.expiresIn)),
-            accountID: try chatGPTAccountID(from: accessToken)
-        )
-    }
-
-    private static func formURLEncodedBody(_ values: [String: String]) -> Data {
-        let encoded = values
-            .sorted { $0.key < $1.key }
-            .map { key, value in
-                "\(urlEncoded(key))=\(urlEncoded(value))"
-            }
-            .joined(separator: "&")
-        return Data(encoded.utf8)
-    }
-
-    private static func urlEncoded(_ value: String) -> String {
-        var allowed = CharacterSet.urlQueryAllowed
-        allowed.remove(charactersIn: ":#[]@!$&'()*+,;=")
-        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
-    }
 #endif
 }
 
 #if os(macOS)
-private struct CodexCredentialTokenResponse: Decodable {
-    let accessToken: String
-    let refreshToken: String
-    let expiresIn: Int
-
-    private enum CodingKeys: String, CodingKey {
-        case accessToken = "access_token"
-        case refreshToken = "refresh_token"
-        case expiresIn = "expires_in"
-    }
-}
-
 private enum ChatGPTSubscriptionCredentialStore {
     private static let service = "MLXCoder.ChatGPTSubscription"
     private static let account = "default"

@@ -12,7 +12,7 @@ struct MLXCoderMain {
 
         if MLXCoderSetupRunner.shouldRunSetup(arguments: arguments) {
             do {
-                try MLXCoderSetupRunner.run(arguments: arguments)
+                try await MLXCoderSetupRunner.run(arguments: arguments)
                 arguments = MLXCoderSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
             } catch {
                 AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")

@@ -258,7 +258,7 @@ public actor DirectMCPToolRuntime {
         do {
             let tools = ToolDescriptor.canonicalized(
                 try await Self.withDiscoveryTimeout(
-                    seconds: 20,
+                    seconds: 3,
                     label: "Xcode tools/list"
                 ) {
                     try await executor.loadTools()
@@ -300,7 +300,7 @@ public actor DirectMCPToolRuntime {
         do {
             let tools = ToolDescriptor.canonicalized(
                 try await Self.withDiscoveryTimeout(
-                    seconds: 8,
+                    seconds: 2,
                     label: "Figma tools/list"
                 ) {
                     try await executor.loadTools()
@@ -404,11 +404,16 @@ public actor DirectMCPToolRuntime {
                 throw DirectMCPToolRuntimeError.discoveryTimedOut(label)
             }
 
-            guard let value = try await group.next() else {
-                throw DirectMCPToolRuntimeError.discoveryTimedOut(label)
+            do {
+                guard let value = try await group.next() else {
+                    throw DirectMCPToolRuntimeError.discoveryTimedOut(label)
+                }
+                group.cancelAll()
+                return value
+            } catch {
+                group.cancelAll()
+                throw error
             }
-            group.cancelAll()
-            return value
         }
     }
 }
