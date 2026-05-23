@@ -1,0 +1,256 @@
+//
+//  AgentProfileManifest.swift
+//  MLXCoder
+//
+//  Created by Codex on 09/05/26.
+//
+
+import Foundation
+
+public struct AgentProfileManifest: Decodable, Sendable {
+    public static let currentVersion = 1
+
+    public let version: Int
+    public let agents: [AgentProfile]
+}
+
+public struct AgentProfile: Decodable, Hashable, Sendable {
+    public let id: String
+    public let name: String
+    public let instructions: String?
+    public let symbolName: String?
+    public let tools: [String]
+    public let skills: [AgentProfileSkill]
+    public let modelID: String?
+    public let modelProvider: String?
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(String.self, forKey: .id)
+        self.name = try container.decode(String.self, forKey: .name)
+        self.instructions = try container.decodeIfPresent(String.self, forKey: .instructions)?.nilIfBlank
+        self.symbolName = try container.decodeIfPresent(String.self, forKey: .symbolName)?.nilIfBlank
+        self.tools = try container.decodeIfPresent([String].self, forKey: .tools) ?? []
+        self.skills = try container.decodeIfPresent([AgentProfileSkill].self, forKey: .skills) ?? []
+        self.modelID = try container.decodeIfPresent(String.self, forKey: .modelID)?.nilIfBlank
+        self.modelProvider = try container.decodeIfPresent(String.self, forKey: .modelProvider)?.nilIfBlank
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case instructions
+        case symbolName
+        case tools
+        case skills
+        case modelID
+        case modelProvider
+    }
+
+    public var displayName: String {
+        name.nilIfBlank ?? "Unnamed Agent"
+    }
+
+    public var promptSection: String? {
+        var lines = ["Selected agent: \(displayName)"]
+        if let instructions {
+            lines.append("Agent instructions:")
+            lines.append(instructions)
+        }
+        return lines.joined(separator: "\n").nilIfBlank
+    }
+
+    public func allowedToolNames() -> Set<String> {
+        var allowedToolNames = Set<String>()
+        for tool in tools {
+            switch tool.selectionKey {
+            case "bash", "shell", "local", "files", "file", "search":
+                allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("local.") || $0.hasPrefix("search.") })
+            case "git":
+                allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("git.") })
+            case "memory", "mem", "remember":
+                allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("memory.") })
+            case "web", "browser":
+                allowedToolNames.insert("web.")
+            case "orchestration", "agents", "agent", "subagents", "sub-agents", "tasks", "task", "todo":
+                allowedToolNames.formUnion(
+                    baseToolNames {
+                        $0.hasPrefix("agent.")
+                            || $0.hasPrefix("task.")
+                            || $0.hasPrefix("todo.")
+                    }
+                )
+            case "xcode":
+                allowedToolNames.insert("xcode.")
+            case "figma":
+                allowedToolNames.insert("figma.")
+            default:
+                let normalizedName = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !normalizedName.isEmpty {
+                    allowedToolNames.insert(normalizedName)
+                }
+            }
+        }
+        return allowedToolNames
+    }
+
+    public func selectedSkillIDs(availableSkills: [MLXPromptSkill]) -> Set<String> {
+        return Set(
+            skills.compactMap { skill in
+                skill.matchingSkillID(in: availableSkills)
+            }
+        )
+    }
+
+    private func baseToolNames(
+        matching predicate: (String) -> Bool
+    ) -> Set<String> {
+        Set(DirectToolCatalog.baseDescriptors.map(\.name).filter(predicate))
+    }
+}
+
+public struct AgentProfileSkill: Decodable, Hashable, Sendable {
+    public let id: String
+    public let canonicalName: String?
+    public let title: String?
+    public let summary: String?
+    public let symbolName: String?
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decodeIfPresent(String.self, forKey: .id)?.nilIfBlank ?? ""
+        self.canonicalName = try container.decodeIfPresent(String.self, forKey: .canonicalName)?.nilIfBlank
+        self.title = try container.decodeIfPresent(String.self, forKey: .title)?.nilIfBlank
+        self.summary = try container.decodeIfPresent(String.self, forKey: .summary)?.nilIfBlank
+        self.symbolName = try container.decodeIfPresent(String.self, forKey: .symbolName)?.nilIfBlank
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case canonicalName
+        case title
+        case summary
+        case symbolName
+    }
+
+    public func matchingSkillID(in availableSkills: [MLXPromptSkill]) -> String? {
+        let idKey = id.selectionKey.nilIfBlank
+        let canonicalNameKey = canonicalName?.selectionKey.nilIfBlank
+        let titleKey = title?.selectionKey.nilIfBlank
+        let summaryKey = summary?.selectionKey.nilIfBlank
+
+        if let idKey,
+           let skill = availableSkills.first(where: { $0.id.selectionKey == idKey }) {
+            return skill.id
+        }
+
+        if let canonicalNameKey,
+           let skill = availableSkills.first(where: { $0.canonicalName.selectionKey == canonicalNameKey }) {
+            return skill.id
+        }
+
+        if let titleKey,
+           let summaryKey,
+           let skill = availableSkills.first(where: {
+               $0.title.selectionKey == titleKey && $0.summary.selectionKey == summaryKey
+           }) {
+            return skill.id
+        }
+
+        if let titleKey {
+            let matches = availableSkills.filter { $0.title.selectionKey == titleKey }
+            if matches.count == 1 {
+                return matches[0].id
+            }
+        }
+
+        return nil
+    }
+}
+
+public enum AgentProfileStore {
+    public static let defaultAgentName = "Default"
+    private static let manifestFilename = "agents.json"
+
+    public static func loadRequired(fileManager: FileManager = .default) throws -> [AgentProfile] {
+        let url = agentsManifestURL(fileManager: fileManager)
+        guard fileManager.fileExists(atPath: url.path) else {
+            throw AgentProfileStoreError.missingFile(url)
+        }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            throw AgentProfileStoreError.unreadableFile(url, error)
+        }
+
+        let manifest: AgentProfileManifest
+        do {
+            manifest = try JSONDecoder().decode(AgentProfileManifest.self, from: data)
+        } catch {
+            throw AgentProfileStoreError.invalidFile(url, error)
+        }
+
+        guard manifest.version == AgentProfileManifest.currentVersion else {
+            throw AgentProfileStoreError.unsupportedVersion(
+                url,
+                manifest.version,
+                AgentProfileManifest.currentVersion
+            )
+        }
+
+        guard !manifest.agents.isEmpty else {
+            throw AgentProfileStoreError.noAgents(url)
+        }
+        return manifest.agents
+    }
+
+    public static func defaultProfile(in agents: [AgentProfile]) throws -> AgentProfile {
+        guard let agent = agents.first(where: { $0.name.selectionKey == defaultAgentName.selectionKey }) else {
+            throw AgentProfileStoreError.defaultAgentMissing(agentsManifestURL())
+        }
+        return agent
+    }
+
+    public static func agentsManifestURL(fileManager: FileManager = .default) -> URL {
+        return AgentSettingsManifestStore.settingsURL(fileManager: fileManager)
+            .deletingLastPathComponent()
+            .appendingPathComponent(manifestFilename)
+            .standardizedFileURL
+    }
+}
+
+public enum AgentProfileStoreError: LocalizedError {
+    case missingFile(URL)
+    case unreadableFile(URL, Error)
+    case invalidFile(URL, Error)
+    case unsupportedVersion(URL, Int, Int)
+    case noAgents(URL)
+    case defaultAgentMissing(URL)
+
+    public var errorDescription: String? {
+        switch self {
+        case let .missingFile(url):
+            return "Missing mlx-coder agents file: \(url.path)"
+        case let .unreadableFile(url, error):
+            return "Unable to read mlx-coder agents file \(url.path): \(error.localizedDescription)"
+        case let .invalidFile(url, error):
+            return "Invalid mlx-coder agents file \(url.path): \(error.localizedDescription)"
+        case let .unsupportedVersion(url, found, expected):
+            return "Unsupported mlx-coder agents file \(url.path): version \(found), expected \(expected)"
+        case let .noAgents(url):
+            return "The mlx-coder agents file \(url.path) does not contain any agents."
+        case let .defaultAgentMissing(url):
+            return "The mlx-coder agents file \(url.path) does not contain the Default agent."
+        }
+    }
+}
+
+public extension String {
+    fileprivate var selectionKey: String {
+        trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+    }
+}

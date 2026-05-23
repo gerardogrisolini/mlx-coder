@@ -1,0 +1,149 @@
+//
+//  Generated split from MLXCoder.swift
+//  mlx-coder
+//
+
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+import Dispatch
+import Foundation
+
+public actor MLXCoderACPBridge {
+    public struct SessionState {
+        public let id: String
+        public let cwd: String
+        public let allowedToolNames: Set<String>?
+        public let configuration: AgentCoreSessionConfiguration
+        public var activePromptTask: Task<PromptCompletion, Error>?
+    }
+
+    public struct PromptCompletion: Sendable {
+        public let text: String
+        public let stopReason: String
+    }
+
+    public let configuration: AgentConfiguration
+    public let writer: ACPWriter
+    public let permissionBroker: ACPPermissionBroker
+    public let sessionRunner: AgentCoreSessionRunner
+    public var sessions: [String: SessionState] = [:]
+
+    public init(
+        configuration: AgentConfiguration,
+        writer: ACPWriter
+    ) {
+        self.configuration = configuration
+        self.writer = writer
+        let permissionBroker = ACPPermissionBroker(writer: writer)
+        self.permissionBroker = permissionBroker
+        self.sessionRunner = AgentCoreSessionRunner(
+            defaultToolAuthorizationHandler: { request in
+                await permissionBroker.authorize(request)
+            }
+        )
+    }
+
+    public func shutdown() async {
+        for sessionID in sessions.keys {
+            sessions[sessionID]?.activePromptTask?.cancel()
+        }
+        sessions.removeAll()
+        await sessionRunner.shutdown()
+    }
+
+    public func handleLine(_ line: String) async {
+        guard let data = line.data(using: .utf8) else {
+            await writer.sendError(id: .null, code: -32700, message: "Input is not valid UTF-8.")
+            return
+        }
+
+        do {
+            guard let message = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                await writer.sendError(id: .null, code: -32600, message: "JSON-RPC message must be an object.")
+                return
+            }
+            await handleMessage(message)
+        } catch {
+            await writer.sendError(id: .null, code: -32700, message: "Invalid JSON.")
+        }
+    }
+
+    public func handleMessage(_ message: [String: Any]) async {
+        let id = JSONValue.acpRequestID(
+            from: message.keys.contains("id") ? (message["id"] ?? NSNull()) : nil
+        )
+        if message["jsonrpc"] as? String == "2.0",
+           message["method"] == nil,
+           id != nil {
+            await permissionBroker.handleResponse(JSONValue.acpValue(from: message))
+            return
+        }
+        guard message["jsonrpc"] as? String == "2.0",
+              let method = message["method"] as? String else {
+            await writer.sendErrorIfRequest(
+                id: id,
+                code: -32600,
+                message: "Invalid JSON-RPC request."
+            )
+            return
+        }
+
+        do {
+            switch method {
+            case "initialize":
+                try await initialize(id: id, params: objectParams(from: message))
+            case "authenticate":
+                await writer.sendResultIfRequest(id: id, result: .object([:]))
+            case "model/preload":
+                try await preloadModel(id: id, params: objectParams(from: message))
+            case "session/new":
+                try await newSession(id: id, params: objectParams(from: message))
+            case "session/prompt":
+                try await prompt(id: id, params: objectParams(from: message))
+            case "session/cancel":
+                try await cancel(id: id, params: objectParams(from: message))
+            case "session/close":
+                try await close(id: id, params: objectParams(from: message))
+            case "session/load", "session/resume":
+                await writer.sendErrorIfRequest(
+                    id: id,
+                    code: -32601,
+                    message: "\(method) is not supported by mlx-coder yet."
+                )
+            default:
+                await writer.sendErrorIfRequest(
+                    id: id,
+                    code: -32601,
+                    message: "Method not found: \(method)"
+                )
+            }
+        } catch let error as ACPError {
+            await writer.sendErrorIfRequest(
+                id: id,
+                code: error.code,
+                message: error.message
+            )
+        } catch is CancellationError {
+            await writer.sendResultIfRequest(
+                id: id,
+                result: JSONValue.acpValue(from: ["stopReason": "cancelled"])
+            )
+        } catch {
+            await writer.sendErrorIfRequest(
+                id: id,
+                code: -32603,
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    public func objectParams(from message: [String: Any]) throws -> [String: Any] {
+        guard let params = message["params"] as? [String: Any] else {
+            return [:]
+        }
+        return params
+    }
+}
