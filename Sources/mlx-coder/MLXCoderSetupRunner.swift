@@ -6,19 +6,20 @@
 //
 
 import Foundation
+import MLXCoderCore
 
-public enum MLXCoderSetupRunner {
-    public static let option = "--setup"
+enum MLXCoderSetupRunner {
+    static let option = "--setup"
 
-    public static func shouldRunSetup(arguments: [String]) -> Bool {
+    static func shouldRunSetup(arguments: [String]) -> Bool {
         arguments.dropFirst().contains(option)
     }
 
-    public static func argumentsAfterRemovingSetup(arguments: [String]) -> [String] {
+    static func argumentsAfterRemovingSetup(arguments: [String]) -> [String] {
         arguments.filter { $0 != option }
     }
 
-    public static func run(arguments: [String]) throws {
+    static func run(arguments: [String]) throws {
         _ = arguments
         guard TerminalRawInput.supportsInteractiveInput() else {
             throw MLXCoderSetupError.nonInteractiveTerminal

@@ -29,13 +29,12 @@ public struct AgentConfiguration {
     Autonomous mlx-coder CLI and ACP agent.
 
     Usage:
-      mlx-coder [--setup] [--acp] [--app] [--agent NAME] [--model MODEL_ID] [--cwd PATH] [--skills LIST]
+      mlx-coder [--acp] [--app] [--agent NAME] [--model MODEL_ID] [--cwd PATH] [--skills LIST]
 
     Modes:
       default                Human terminal chat.
       --acp                  ACP JSON-RPC over stdio for clients such as AionUi.
       --app                  App-hosted mode. Suppresses runtime chatter and requires explicit tool enablement.
-      --setup                Create the standalone support files, configure providers/models, then start mlx-coder.
 
     Agent runtime:
       --agent NAME           Agent profile from the mlx-coder Application Support agents.json. Default is used when omitted.

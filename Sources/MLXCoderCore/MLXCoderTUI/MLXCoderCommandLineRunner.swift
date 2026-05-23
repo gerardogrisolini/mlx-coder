@@ -13,16 +13,16 @@ import Foundation
 
 public enum MLXCoderCommandLineRunner {
     public static func main() async {
+        await main(arguments: CommandLine.arguments)
+    }
+
+    public static func main(arguments rawArguments: [String]) async {
         do {
             SwiftPMResourceBundleDirectory.configure()
 
-            var arguments = MLXCoderCommandLineArgumentSanitizer.sanitized(CommandLine.arguments)
-            if MLXCoderSetupRunner.shouldRunSetup(arguments: arguments) {
-                try MLXCoderSetupRunner.run(arguments: arguments)
-                arguments = MLXCoderSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
-            }
-
-            let configuration = try AgentConfiguration(arguments: arguments)
+            let configuration = try AgentConfiguration(
+                arguments: MLXCoderCommandLineArgumentSanitizer.sanitized(rawArguments)
+            )
             if configuration.printHelp {
                 AgentOutput.standardOutput.writeString(AgentConfiguration.helpText)
                 return
@@ -126,7 +126,6 @@ public enum MLXCoderCommandLineRunner {
         argument == "-h"
             || argument == "--help"
             || argument == "--version"
-            || argument == MLXCoderSetupRunner.option
             || argument == "--model"
             || argument == "--agent"
             || argument == "--bearer-token"
