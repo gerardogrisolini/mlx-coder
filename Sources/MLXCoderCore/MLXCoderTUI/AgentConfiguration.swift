@@ -49,6 +49,7 @@ public struct AgentConfiguration {
       In chat mode, use /agents to switch agent profiles without restarting the TUI.
       In chat mode, use /tools to enable local, shell, search, git, memory, sub-agent, Xcode, or Figma tools.
       In chat mode, use /skills to select prompt skills installed by the app.
+      In chat mode, use /attach to add image or video files to the next prompt.
       In ACP/app mode, clients pass the enabled tools to the agent runtime.
       Xcode MCP tools are added when Xcode is running and mcpbridge can expose tools.
       Figma MCP tools are added when the local Figma desktop MCP server exposes tools.

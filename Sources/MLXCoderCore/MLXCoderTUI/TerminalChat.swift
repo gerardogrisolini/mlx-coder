@@ -31,6 +31,7 @@ public final class TerminalChat: @unchecked Sendable {
     public var manualModelIDOverride: String?
     public var selectedToolGroups = Set<TerminalToolGroup>()
     public var selectedSkillIDs = Set<String>()
+    public var pendingAttachments: [AgentRuntimeAttachment] = []
     public var availableSkillsCache: [MLXPromptSkill]?
     public var isStreamingThoughtOutput = false
     public let statusBar: TerminalStatusBar
@@ -274,6 +275,9 @@ public final class TerminalChat: @unchecked Sendable {
     private func submittedLineAction(_ promptInput: String) async -> TerminalSubmittedLineAction {
         let prompt = promptInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else {
+            if !pendingAttachments.isEmpty {
+                return .runPrompt("")
+            }
             return .continueChat
         }
 
@@ -288,6 +292,9 @@ public final class TerminalChat: @unchecked Sendable {
                 /agents selects an agent profile and resets the session.
                 /tools selects which tool groups are available to the model.
                 /skills selects installed prompt skills for the model.
+                /attach <file> [file ...] attaches image or video files to the next prompt.
+                /attachments shows pending attachments.
+                /detach [all|number] removes pending attachments.
                 /clear resets the conversation.
                 /exit closes the session.
 
@@ -314,12 +321,30 @@ public final class TerminalChat: @unchecked Sendable {
         case let command where command == "/skills" || command.hasPrefix("/skills "):
             await handleSkillsCommand(command)
             return .continueChat
+        case let command where command == "/attach" || command.hasPrefix("/attach "):
+            do {
+                try handleAttachCommand(command)
+            } catch {
+                AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
+            }
+            return .continueChat
+        case "/attachments":
+            writePendingAttachments()
+            return .continueChat
+        case let command where command == "/detach" || command.hasPrefix("/detach "):
+            do {
+                try handleDetachCommand(command)
+            } catch {
+                AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
+            }
+            return .continueChat
         case "/clear":
             do {
                 await sessionRunner.resetSession(id: sessionID)
                 try await createCurrentSession()
                 statusBar.reset()
                 refreshInitialStatusBarContextWindow()
+                pendingAttachments.removeAll()
                 AgentOutput.standardError.writeString("Session cleared.\n")
             } catch {
                 AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
@@ -370,10 +395,11 @@ public final class TerminalChat: @unchecked Sendable {
     }
 
     private func generateResponse(prompt: String) async throws -> DirectAgentResponse {
+        let attachments = consumePendingAttachmentsForPrompt()
         try await sessionRunner.sendPrompt(
             configuration: await currentSessionConfiguration(),
             prompt: prompt,
-            attachments: [],
+            attachments: attachments,
             onEvent: { event in
                 switch event {
                 case let .status(message):
