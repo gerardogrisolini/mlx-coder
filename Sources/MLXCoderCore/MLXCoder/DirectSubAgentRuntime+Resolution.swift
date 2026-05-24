@@ -116,7 +116,9 @@ extension DirectSubAgentRuntime {
             status: agent.status,
             pending: agent.status.isPending || !agent.pendingPrompts.isEmpty,
             latestOutput: agent.latestOutput,
-            latestError: agent.latestError
+            latestError: agent.latestError,
+            createdAt: agent.createdAt,
+            updatedAt: agent.updatedAt
         )
     }
 }

@@ -269,6 +269,8 @@ public protocol AgentRuntimeBackend: Actor {
 
     func activeToolDescriptors() async -> [DirectToolDescriptor]
 
+    func subAgentSnapshots() async -> [DirectSubAgentRuntime.AgentSnapshot]
+
     func sendPrompt(
         sessionID: String,
         prompt: String,
@@ -283,6 +285,10 @@ extension AgentRuntimeBackend {
     ) async {}
 
     public func updateToolProviders(_ providers: [AgentToolProvider]) async {}
+
+    public func subAgentSnapshots() async -> [DirectSubAgentRuntime.AgentSnapshot] {
+        []
+    }
 }
 
 extension String {

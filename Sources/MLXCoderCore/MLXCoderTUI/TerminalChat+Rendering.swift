@@ -45,7 +45,7 @@ extension TerminalChat {
         lines.append(contentsOf: [
             "Working directory: \(configuration.workingDirectory.path)",
             "",
-            "Commands: /help, /models, /agents, /tools, /skills, /attach, /clear, /exit"
+            "Commands: /help, /models, /agents, /tools, /skills, /attach, /changes, /undo, /subagents, /clear, /exit"
         ])
 
         let startupBox = Self.renderStartupBox(lines: lines)

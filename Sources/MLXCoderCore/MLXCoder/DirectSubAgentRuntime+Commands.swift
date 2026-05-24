@@ -45,6 +45,7 @@ extension DirectSubAgentRuntime {
                 isolationMode: payload.isolationMode,
                 backend: backend,
                 createdAt: now,
+                updatedAt: now,
                 status: payload.prompt == nil ? .idle : .queued,
                 pendingPrompts: [],
                 latestOutput: nil,
@@ -134,6 +135,7 @@ extension DirectSubAgentRuntime {
         agent.pendingPrompts.removeAll()
         agent.status = .closed
         agent.latestError = nil
+        agent.updatedAt = .now
         agents[id] = agent
 
         task?.cancel()

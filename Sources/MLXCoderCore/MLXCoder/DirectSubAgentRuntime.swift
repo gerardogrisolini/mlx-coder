@@ -10,7 +10,7 @@ import Foundation
 public typealias DirectSubAgentBackendFactory = @Sendable () -> any AgentRuntimeBackend
 
 public actor DirectSubAgentRuntime {
-    public enum Status: String {
+    public enum Status: String, Sendable {
         case queued
         case running
         case idle
@@ -22,7 +22,7 @@ public actor DirectSubAgentRuntime {
         }
     }
 
-    public enum IsolationMode: String {
+    public enum IsolationMode: String, Sendable {
         case report
         case implementation
 
@@ -44,6 +44,7 @@ public actor DirectSubAgentRuntime {
         public let isolationMode: IsolationMode
         public let backend: any AgentRuntimeBackend
         public let createdAt: Date
+        public var updatedAt: Date
         public var status: Status
         public var pendingPrompts: [String]
         public var latestOutput: String?
@@ -57,7 +58,7 @@ public actor DirectSubAgentRuntime {
         public let prompt: String
     }
 
-    public struct AgentSnapshot {
+    public struct AgentSnapshot: Sendable {
         public let id: String
         public let name: String
         public let role: String
@@ -66,6 +67,8 @@ public actor DirectSubAgentRuntime {
         public let pending: Bool
         public let latestOutput: String?
         public let latestError: String?
+        public let createdAt: Date
+        public let updatedAt: Date
     }
 
     public struct RequestedAgentPayload {

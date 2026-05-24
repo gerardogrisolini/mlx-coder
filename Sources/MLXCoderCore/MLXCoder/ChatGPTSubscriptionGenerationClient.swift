@@ -339,6 +339,10 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         await toolExecutor.descriptors()
     }
 
+    public func subAgentSnapshots() async -> [DirectSubAgentRuntime.AgentSnapshot] {
+        await toolExecutor.subAgentSnapshots()
+    }
+
     public func sendPrompt(
         sessionID: String,
         prompt: String,

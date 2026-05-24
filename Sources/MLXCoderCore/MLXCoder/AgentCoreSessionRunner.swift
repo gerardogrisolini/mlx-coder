@@ -166,6 +166,13 @@ public actor AgentCoreSessionRunner {
         )
     }
 
+    public func subAgentSnapshots() async -> [DirectSubAgentRuntime.AgentSnapshot] {
+        guard let backend else {
+            return []
+        }
+        return await backend.subAgentSnapshots()
+    }
+
     public func streamPrompt(
         _ prompt: String,
         configuration: AgentCoreSessionConfiguration,

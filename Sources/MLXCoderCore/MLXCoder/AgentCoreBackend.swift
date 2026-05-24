@@ -143,6 +143,13 @@ public actor AgentCoreBackend {
         return []
     }
 
+    public func subAgentSnapshots() async -> [DirectSubAgentRuntime.AgentSnapshot] {
+        if let backend = activeBackend {
+            return await backend.subAgentSnapshots()
+        }
+        return []
+    }
+
     public func sendPrompt(
         sessionID: String,
         prompt: String,

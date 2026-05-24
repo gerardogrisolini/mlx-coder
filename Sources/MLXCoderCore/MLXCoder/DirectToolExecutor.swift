@@ -62,6 +62,10 @@ public actor DirectToolExecutor {
         await subAgentRuntime.shutdown()
     }
 
+    public func subAgentSnapshots() async -> [DirectSubAgentRuntime.AgentSnapshot] {
+        await subAgentRuntime.snapshots()
+    }
+
     public func descriptors(
         allowedToolNames: Set<String>? = nil
     ) async -> [DirectToolDescriptor] {

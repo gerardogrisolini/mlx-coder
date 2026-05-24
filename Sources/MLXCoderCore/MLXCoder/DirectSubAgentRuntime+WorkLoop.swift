@@ -19,6 +19,7 @@ extension DirectSubAgentRuntime {
         if agent.status != .running {
             agent.status = .queued
         }
+        agent.updatedAt = .now
         agents[agentID] = agent
         startAgentIfNeeded(agentID: agentID)
     }
@@ -73,12 +74,14 @@ extension DirectSubAgentRuntime {
             if agent.status != .failed {
                 agent.status = .idle
             }
+            agent.updatedAt = .now
             agents[agentID] = agent
             return nil
         }
 
         let prompt = agent.pendingPrompts.removeFirst()
         agent.status = .running
+        agent.updatedAt = .now
         agents[agentID] = agent
 
         return AgentWork(
@@ -98,6 +101,7 @@ extension DirectSubAgentRuntime {
         agent.latestOutput = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
         agent.latestError = nil
         agent.status = agent.pendingPrompts.isEmpty ? .idle : .queued
+        agent.updatedAt = .now
         agents[agentID] = agent
     }
 
@@ -114,6 +118,7 @@ extension DirectSubAgentRuntime {
             agent.status = .failed
             agent.latestError = error.localizedDescription
         }
+        agent.updatedAt = .now
         agents[agentID] = agent
     }
 
@@ -127,6 +132,7 @@ extension DirectSubAgentRuntime {
             agent.status = .closed
             agent.latestError = "Cancelled."
         }
+        agent.updatedAt = .now
         agents[agentID] = agent
     }
 }

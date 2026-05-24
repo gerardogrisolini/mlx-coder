@@ -32,6 +32,10 @@ public final class TerminalChat: @unchecked Sendable {
     public var selectedToolGroups = Set<TerminalToolGroup>()
     public var selectedSkillIDs = Set<String>()
     public var pendingAttachments: [AgentRuntimeAttachment] = []
+    public var lastFileChangeSummary: TurnFileChangeSummary?
+    public var isSubAgentOverviewVisible = false
+    public var lastRenderedSubAgentOverviewSignature: String?
+    public var subAgentOverviewRefreshTask: Task<Void, Never>?
     public var availableSkillsCache: [MLXPromptSkill]?
     public var isStreamingThoughtOutput = false
     public let statusBar: TerminalStatusBar
@@ -98,6 +102,7 @@ public final class TerminalChat: @unchecked Sendable {
         await printStartupSummary(loadedModelID: loadedModelID)
         let statusBarStarted = statusBar.start()
         defer {
+            stopSubAgentOverviewRefreshLoop()
             statusBar.stop()
         }
 
@@ -311,6 +316,18 @@ public final class TerminalChat: @unchecked Sendable {
             requiresArgument: true
         ),
         TerminalCommandSuggestion(
+            command: "/changes",
+            summary: "show last file changes"
+        ),
+        TerminalCommandSuggestion(
+            command: "/undo",
+            summary: "revert last file changes"
+        ),
+        TerminalCommandSuggestion(
+            command: "/subagents",
+            summary: "show sub-agent status"
+        ),
+        TerminalCommandSuggestion(
             command: "/clear",
             summary: "reset conversation"
         ),
@@ -347,6 +364,9 @@ public final class TerminalChat: @unchecked Sendable {
                 /attach <file> [file ...] attaches image or video files to the next prompt.
                 /attachments shows pending attachments.
                 /detach [all|number] removes pending attachments.
+                /changes shows the most recent file change summary. Use /changes diff to include patches.
+                /undo reverts the most recent tracked file changes.
+                /subagents shows delegated sub-agent status. Use /subagents off to hide automatic updates.
                 /clear resets the conversation.
                 /exit closes the session.
 
@@ -390,6 +410,15 @@ public final class TerminalChat: @unchecked Sendable {
                 AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
             }
             return .continueChat
+        case let command where command == "/changes" || command.hasPrefix("/changes "):
+            handleChangesCommand(command)
+            return .continueChat
+        case "/undo":
+            await handleUndoFileChangesCommand()
+            return .continueChat
+        case let command where command == "/subagents" || command.hasPrefix("/subagents "):
+            await handleSubAgentsCommand(command)
+            return .continueChat
         case "/clear":
             do {
                 await sessionRunner.resetSession(id: sessionID)
@@ -397,6 +426,9 @@ public final class TerminalChat: @unchecked Sendable {
                 statusBar.reset()
                 refreshInitialStatusBarContextWindow()
                 pendingAttachments.removeAll()
+                isSubAgentOverviewVisible = false
+                lastRenderedSubAgentOverviewSignature = nil
+                stopSubAgentOverviewRefreshLoop()
                 AgentOutput.standardError.writeString("Session cleared.\n")
             } catch {
                 AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
@@ -448,41 +480,61 @@ public final class TerminalChat: @unchecked Sendable {
 
     private func generateResponse(prompt: String) async throws -> DirectAgentResponse {
         let attachments = consumePendingAttachmentsForPrompt()
-        return try await sessionRunner.sendPrompt(
-            configuration: await currentSessionConfiguration(),
-            prompt: prompt,
-            attachments: attachments,
-            onEvent: { event in
-                switch event {
-                case let .status(message):
-                    if self.configuration.verboseLogging {
-                        AgentOutput.standardError.writeString("[mlx-coder] \(message)\n")
-                    }
-                case let .diagnostic(message):
-                    if self.configuration.verboseLogging {
-                        self.writeDiagnostic(message)
-                    }
-                case let .thought(message):
-                    self.writeThought(message)
-                case let .modelLoaded(modelID):
-                    self.printModelIfNeeded(modelID)
-                case let .metrics(metrics):
-                    self.didReceiveMetricsForCurrentPrompt = true
-                    self.writeMetricsStatus(metrics)
-                case let .contextWindow(status):
-                    self.writeContextWindowStatus(status)
-                case let .content(delta):
-                    self.finishThoughtOutputIfNeeded()
-                    AgentOutput.standardOutput.writeString(delta)
-                case let .toolCallStarted(toolCall):
-                    self.finishThoughtOutputIfNeeded()
-                    self.writeToolCallStarted(toolCall)
-                case let .toolCallCompleted(toolCall, result):
-                    self.finishThoughtOutputIfNeeded()
-                    self.writeToolCallCompleted(toolCall, result: result)
-                }
-            }
+        let fileChangeTracker = TurnFileChangeTracker(
+            workspacePath: configuration.workingDirectory.path
         )
+        do {
+            let response = try await sessionRunner.sendPrompt(
+                configuration: await currentSessionConfiguration(),
+                prompt: prompt,
+                attachments: attachments,
+                onToolWillExecute: { toolCall in
+                    await fileChangeTracker.captureBaselineIfNeeded(
+                        forAgentToolCall: toolCall
+                    )
+                },
+                onEvent: { event in
+                    switch event {
+                    case let .status(message):
+                        if self.configuration.verboseLogging {
+                            AgentOutput.standardError.writeString("[mlx-coder] \(message)\n")
+                        }
+                    case let .diagnostic(message):
+                        if self.configuration.verboseLogging {
+                            self.writeDiagnostic(message)
+                        }
+                    case let .thought(message):
+                        self.writeThought(message)
+                    case let .modelLoaded(modelID):
+                        self.printModelIfNeeded(modelID)
+                    case let .metrics(metrics):
+                        self.didReceiveMetricsForCurrentPrompt = true
+                        self.writeMetricsStatus(metrics)
+                    case let .contextWindow(status):
+                        self.writeContextWindowStatus(status)
+                    case let .content(delta):
+                        self.finishThoughtOutputIfNeeded()
+                        AgentOutput.standardOutput.writeString(delta)
+                    case let .toolCallStarted(toolCall):
+                        self.finishThoughtOutputIfNeeded()
+                        self.writeToolCallStarted(toolCall)
+                    case let .toolCallCompleted(toolCall, result):
+                        self.finishThoughtOutputIfNeeded()
+                        self.writeToolCallCompleted(toolCall, result: result)
+                        await self.publishSubAgentOverviewIfVisible(
+                            relatedToolName: toolCall.name
+                        )
+                    }
+                }
+            )
+            await publishFileChangeSummaryIfNeeded(from: fileChangeTracker)
+            await publishSubAgentOverviewIfVisible()
+            return response
+        } catch {
+            await publishFileChangeSummaryIfNeeded(from: fileChangeTracker)
+            await publishSubAgentOverviewIfVisible()
+            throw error
+        }
     }
 
     private func finishPromptResult(_ result: TerminalChatGenerationResult) async {
