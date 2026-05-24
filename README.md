@@ -62,9 +62,11 @@ The required support files are:
 - `agents.json`
 - `settings.json`
 
-By default, the standalone package stores those files in the directory that
-contains the `mlx-coder` executable. This keeps a copied standalone binary
-self-contained.
+By default, the standalone executable stores those files in the directory that
+contains the `mlx-coder` binary. This keeps a copied standalone binary
+self-contained. When `mlx-coder` is embedded in a macOS `.app` bundle, support
+files are stored in the app's writable Application Support directory instead of
+`Contents/MacOS`.
 
 To force another support directory:
 

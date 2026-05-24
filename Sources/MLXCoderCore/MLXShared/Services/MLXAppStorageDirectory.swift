@@ -26,7 +26,8 @@ public enum MLXAppStorageDirectory {
         if let configuredDirectoryURL = configuredSupportDirectoryURL() {
             return configuredDirectoryURL
         }
-        if let executableDirectoryURL = executableDirectoryURL(fileManager: fileManager) {
+        if let executableDirectoryURL = executableDirectoryURL(fileManager: fileManager),
+           !isAppBundleExecutableDirectory(executableDirectoryURL) {
             return executableDirectoryURL
         }
 
@@ -82,6 +83,19 @@ public enum MLXAppStorageDirectory {
         }
 
         return nil
+    }
+
+    private static func isAppBundleExecutableDirectory(_ url: URL) -> Bool {
+        let components = url.standardizedFileURL.pathComponents
+        guard components.count >= 3 else {
+            return false
+        }
+
+        let suffix = components.suffix(3)
+        guard suffix.dropFirst().elementsEqual(["Contents", "MacOS"]) else {
+            return false
+        }
+        return suffix.first?.hasSuffix(".app") == true
     }
 
     private static func normalizedPath(_ value: String?) -> String? {
