@@ -396,7 +396,7 @@ public nonisolated struct MCPServerConfiguration: Hashable, Sendable {
         platformIsUsableXcodeProcessID(pidString)
         #else
         _ = pidString
-        false
+        return false
         #endif
     }
 

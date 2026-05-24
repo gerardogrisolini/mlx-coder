@@ -5,13 +5,13 @@
 //  Created by Codex on 03/05/26.
 //
 
-#if canImport(Darwin) || canImport(Glibc)
-#if canImport(Darwin)
+import Foundation
+
+#if os(macOS)
 import Darwin
-#elseif canImport(Glibc)
+#elseif os(Linux)
 import Glibc
 #endif
-import Foundation
 
 public struct AsyncProcessResult: Sendable {
     public let exitCode: Int32
@@ -38,6 +38,7 @@ public enum AsyncProcessRunner {
         timeout: TimeInterval? = nil,
         stdoutLineLimit: Int? = nil
     ) async throws -> AsyncProcessResult {
+        #if os(macOS) || os(Linux)
         try Task.checkCancellation()
 
         let process = Process()
@@ -103,8 +104,18 @@ public enum AsyncProcessRunner {
             timedOut: timedOut,
             stdoutWasTruncated: stdoutResult.1
         )
+        #else
+        _ = executableURL
+        _ = arguments
+        _ = workingDirectory
+        _ = environment
+        _ = timeout
+        _ = stdoutLineLimit
+        throw AsyncProcessRunnerError.unsupportedPlatform
+        #endif
     }
 
+    #if os(macOS) || os(Linux)
     private static func readStdout(
         from pipe: Pipe,
         process: Process,
@@ -201,8 +212,10 @@ public enum AsyncProcessRunner {
             return exited
         }
     }
+    #endif
 }
 
+#if os(macOS) || os(Linux)
 private actor AsyncProcessExitObserver {
     private var continuations: [CheckedContinuation<Void, Never>] = []
     private(set) var hasFinished = false
@@ -233,3 +246,14 @@ private actor AsyncProcessExitObserver {
     }
 }
 #endif
+
+public enum AsyncProcessRunnerError: LocalizedError, Sendable {
+    case unsupportedPlatform
+
+    public var errorDescription: String? {
+        switch self {
+        case .unsupportedPlatform:
+            return "Local process execution is unavailable on this platform."
+        }
+    }
+}

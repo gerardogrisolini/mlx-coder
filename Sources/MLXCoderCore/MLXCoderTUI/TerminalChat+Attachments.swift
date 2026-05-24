@@ -172,9 +172,9 @@ extension TerminalChat {
     private func resolvedAttachmentURL(from rawPath: String) -> URL {
         let expandedPath: String
         if rawPath == "~" {
-            expandedPath = FileManager.default.homeDirectoryForCurrentUser.path
+            expandedPath = MLXUserHomeDirectory.current().path
         } else if rawPath.hasPrefix("~/") {
-            expandedPath = FileManager.default.homeDirectoryForCurrentUser
+            expandedPath = MLXUserHomeDirectory.current()
                 .appendingPathComponent(String(rawPath.dropFirst(2)))
                 .path
         } else {

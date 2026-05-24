@@ -478,7 +478,13 @@ public actor TurnFileChangeTracker {
     }
 
     static func platformDefaultBaseDirectoryURL() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+        #if os(iOS)
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+            .standardizedFileURL
+            ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).standardizedFileURL
+        #else
+        MLXUserHomeDirectory.current()
+        #endif
     }
 }
 

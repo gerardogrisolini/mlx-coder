@@ -6,7 +6,8 @@ let package = Package(
     name: "mlx-coder",
     // SwiftPM supports Linux implicitly; `platforms` only declares Apple deployment targets.
     platforms: [
-        .macOS(.v14)
+        .macOS(.v26),
+        .iOS(.v26)
     ],
     products: [
         .library(
