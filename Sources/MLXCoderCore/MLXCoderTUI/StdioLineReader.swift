@@ -463,11 +463,28 @@ public enum TerminalPromptInputEvent: Sendable {
     case endOfInput
 }
 
+public struct TerminalCommandSuggestion: Sendable {
+    public let command: String
+    public let summary: String
+    public let requiresArgument: Bool
+
+    public init(
+        command: String,
+        summary: String,
+        requiresArgument: Bool = false
+    ) {
+        self.command = command
+        self.summary = summary
+        self.requiresArgument = requiresArgument
+    }
+}
+
 public final class TerminalInteractiveLineReader: @unchecked Sendable {
     private enum Key {
         case character(String)
         case enter
         case newline
+        case tab
         case backspace
         case delete
         case left
@@ -498,6 +515,8 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
     private var panelCursorIndex = 0
     private var panelIsProcessing = false
     private var panelQueuedPromptCount = 0
+    private var panelCommandSuggestions: [TerminalCommandSuggestion] = []
+    private var panelCommandSuggestionIndex = 0
 
     public func readLine(prompt: String) -> String? {
         var buffer: [Character] = []
@@ -532,6 +551,8 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
                     buffer.insert("\n", at: cursorIndex)
                     cursorIndex += 1
                     redraw(prompt: prompt, buffer: buffer, cursorIndex: cursorIndex)
+                case .tab:
+                    continue
                 case .backspace:
                     guard cursorIndex > 0 else {
                         continue
@@ -613,6 +634,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
     @discardableResult
     public func startPanelInput(
         statusBar: TerminalStatusBar,
+        commandSuggestions: [TerminalCommandSuggestion] = [],
         onEvent: @escaping @Sendable (TerminalPromptInputEvent) -> Void
     ) -> Bool {
         panelLock.lock()
@@ -623,6 +645,8 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
         panelStatusBar = statusBar
         panelBuffer.removeAll()
         panelCursorIndex = 0
+        panelCommandSuggestions = commandSuggestions
+        panelCommandSuggestionIndex = 0
         historyIndex = nil
         draftBeforeHistory.removeAll()
         guard rawInput.beginRawMode() else {
@@ -683,6 +707,8 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
             panelStatusBar = nil
             panelBuffer.removeAll()
             panelCursorIndex = 0
+            panelCommandSuggestions.removeAll()
+            panelCommandSuggestionIndex = 0
         }
         historyIndex = nil
         draftBeforeHistory.removeAll()
@@ -732,6 +758,18 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
             renderPanel()
         case .enter:
             panelLock.lock()
+            if let submission = acceptPanelCommandSuggestionLocked(
+                submitCommandWithoutArguments: true
+            ) {
+                panelLock.unlock()
+                if let submittedLine = submission.submittedLine {
+                    recordHistory(submittedLine)
+                    onEvent(.submitted(submittedLine))
+                }
+                renderPanel()
+                return
+            }
+
             let line = String(panelBuffer)
             panelBuffer.removeAll()
             panelCursorIndex = 0
@@ -739,18 +777,25 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
             draftBeforeHistory.removeAll()
             panelLock.unlock()
 
-            let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmedLine.isEmpty else {
-                renderPanel()
-                return
+            if !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                recordHistory(line)
             }
-            recordHistory(line)
             onEvent(.submitted(line))
             renderPanel()
+        case .tab:
+            panelLock.lock()
+            let accepted = acceptPanelCommandSuggestionLocked(
+                submitCommandWithoutArguments: false
+            ) != nil
+            panelLock.unlock()
+            if accepted {
+                renderPanel()
+            }
         case .newline:
             panelLock.lock()
             panelBuffer.insert("\n", at: panelCursorIndex)
             panelCursorIndex += 1
+            panelCommandSuggestionIndex = 0
             historyIndex = nil
             panelLock.unlock()
             renderPanel()
@@ -778,6 +823,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
             if panelCursorIndex > 0 {
                 panelCursorIndex -= 1
             }
+            panelCommandSuggestionIndex = 0
             panelLock.unlock()
             renderPanel()
         case .right:
@@ -785,11 +831,14 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
             if panelCursorIndex < panelBuffer.count {
                 panelCursorIndex += 1
             }
+            panelCommandSuggestionIndex = 0
             panelLock.unlock()
             renderPanel()
         case .up:
             panelLock.lock()
-            if let previous = previousHistory(currentBuffer: panelBuffer) {
+            if hasActiveCommandSuggestionsLocked() {
+                movePanelCommandSuggestionSelectionLocked(delta: -1)
+            } else if let previous = previousHistory(currentBuffer: panelBuffer) {
                 panelBuffer = previous
                 panelCursorIndex = panelBuffer.count
             }
@@ -797,7 +846,9 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
             renderPanel()
         case .down:
             panelLock.lock()
-            if let next = nextHistory() {
+            if hasActiveCommandSuggestionsLocked() {
+                movePanelCommandSuggestionSelectionLocked(delta: 1)
+            } else if let next = nextHistory() {
                 panelBuffer = next
                 panelCursorIndex = panelBuffer.count
             }
@@ -806,11 +857,13 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
         case .home:
             panelLock.lock()
             panelCursorIndex = 0
+            panelCommandSuggestionIndex = 0
             panelLock.unlock()
             renderPanel()
         case .end:
             panelLock.lock()
             panelCursorIndex = panelBuffer.count
+            panelCommandSuggestionIndex = 0
             panelLock.unlock()
             renderPanel()
         case .clearBeforeCursor:
@@ -819,6 +872,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
                 panelBuffer.removeSubrange(0..<panelCursorIndex)
                 panelCursorIndex = 0
             }
+            panelCommandSuggestionIndex = 0
             panelLock.unlock()
             renderPanel()
         case .clearAfterCursor:
@@ -826,6 +880,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
             if panelCursorIndex < panelBuffer.count {
                 panelBuffer.removeSubrange(panelCursorIndex..<panelBuffer.count)
             }
+            panelCommandSuggestionIndex = 0
             panelLock.unlock()
             renderPanel()
         case .cancel:
@@ -834,6 +889,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
             if !isProcessing {
                 panelBuffer.removeAll()
                 panelCursorIndex = 0
+                panelCommandSuggestionIndex = 0
                 historyIndex = nil
                 draftBeforeHistory.removeAll()
             }
@@ -861,13 +917,15 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
         let cursorIndex = panelCursorIndex
         let modeText = panelModeTextLocked()
         let helpText = panelHelpTextLocked()
+        let suggestionLines = panelCommandSuggestionLinesLocked()
         panelLock.unlock()
 
         statusBar?.updateInputPanel(
             text: text,
             cursorIndex: cursorIndex,
             modeText: modeText,
-            helpText: helpText
+            helpText: helpText,
+            suggestionLines: suggestionLines
         )
     }
 
@@ -880,9 +938,124 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
     }
 
     private func panelHelpTextLocked() -> String {
-        panelIsProcessing
+        if hasActiveCommandSuggestionsLocked() {
+            return "↑/↓ select · Tab complete · Enter choose"
+        }
+        return panelIsProcessing
             ? "Enter queue · Option+Enter newline · Esc stop"
             : "Enter send · Option+Enter newline · Esc clear"
+    }
+
+    private struct CommandSuggestionSelection {
+        let submittedLine: String?
+    }
+
+    private func acceptPanelCommandSuggestionLocked(
+        submitCommandWithoutArguments: Bool
+    ) -> CommandSuggestionSelection? {
+        guard let selectedSuggestion = selectedPanelCommandSuggestionLocked() else {
+            return nil
+        }
+
+        let replacement = selectedSuggestion.requiresArgument
+            ? "\(selectedSuggestion.command) "
+            : selectedSuggestion.command
+        panelBuffer = Array(replacement)
+        panelCursorIndex = panelBuffer.count
+        panelCommandSuggestionIndex = 0
+        historyIndex = nil
+        draftBeforeHistory.removeAll()
+
+        guard submitCommandWithoutArguments,
+              !selectedSuggestion.requiresArgument else {
+            return CommandSuggestionSelection(submittedLine: nil)
+        }
+
+        let submittedLine = String(panelBuffer)
+        panelBuffer.removeAll()
+        panelCursorIndex = 0
+        return CommandSuggestionSelection(submittedLine: submittedLine)
+    }
+
+    private func selectedPanelCommandSuggestionLocked() -> TerminalCommandSuggestion? {
+        let suggestions = activeCommandSuggestionsLocked()
+        guard !suggestions.isEmpty else {
+            return nil
+        }
+        panelCommandSuggestionIndex = min(
+            max(0, panelCommandSuggestionIndex),
+            suggestions.count - 1
+        )
+        return suggestions[panelCommandSuggestionIndex]
+    }
+
+    private func hasActiveCommandSuggestionsLocked() -> Bool {
+        !activeCommandSuggestionsLocked().isEmpty
+    }
+
+    private func movePanelCommandSuggestionSelectionLocked(delta: Int) {
+        let suggestions = activeCommandSuggestionsLocked()
+        guard !suggestions.isEmpty else {
+            panelCommandSuggestionIndex = 0
+            return
+        }
+        let count = suggestions.count
+        panelCommandSuggestionIndex = (panelCommandSuggestionIndex + delta + count) % count
+    }
+
+    private func panelCommandSuggestionLinesLocked() -> [String] {
+        let suggestions = activeCommandSuggestionsLocked()
+        guard !suggestions.isEmpty else {
+            panelCommandSuggestionIndex = 0
+            return []
+        }
+
+        panelCommandSuggestionIndex = min(
+            max(0, panelCommandSuggestionIndex),
+            suggestions.count - 1
+        )
+
+        return suggestions.enumerated().map { index, suggestion in
+            let marker = index == panelCommandSuggestionIndex ? "›" : " "
+            return "\(marker) \(suggestion.command)  \(suggestion.summary)"
+        }
+    }
+
+    private func activeCommandSuggestionsLocked() -> [TerminalCommandSuggestion] {
+        guard let commandPrefix = Self.commandPrefixForSuggestions(
+            text: String(panelBuffer),
+            cursorIndex: panelCursorIndex
+        ) else {
+            return []
+        }
+
+        let normalizedPrefix = commandPrefix.lowercased()
+        return panelCommandSuggestions.filter { suggestion in
+            suggestion.command.lowercased().hasPrefix(normalizedPrefix)
+        }
+    }
+
+    private static func commandPrefixForSuggestions(
+        text: String,
+        cursorIndex: Int
+    ) -> String? {
+        guard text.hasPrefix("/"), !text.contains("\n") else {
+            return nil
+        }
+
+        let characters = Array(text)
+        let boundedCursorIndex = min(max(0, cursorIndex), characters.count)
+        let tokenEnd = characters.firstIndex { character in
+            character.unicodeScalars.allSatisfy {
+                CharacterSet.whitespacesAndNewlines.contains($0)
+            }
+        } ?? characters.count
+        guard boundedCursorIndex <= tokenEnd else {
+            return nil
+        }
+
+        let prefix = String(characters.prefix(tokenEnd))
+        return prefix.isEmpty ? nil : prefix
     }
 
     private func recordHistory(_ line: String) {
@@ -957,6 +1130,8 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
             return .enter
         case 0x0D:
             return .enter
+        case 0x09:
+            return .tab
         case 0x7F, 0x08:
             return .backspace
         case 0x1B:

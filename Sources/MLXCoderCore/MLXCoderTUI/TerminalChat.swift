@@ -147,7 +147,10 @@ public final class TerminalChat: @unchecked Sendable {
 
         @discardableResult
         func startPanelInput() -> Bool {
-            let didStart = interactiveReader.startPanelInput(statusBar: statusBar) { event in
+            let didStart = interactiveReader.startPanelInput(
+                statusBar: statusBar,
+                commandSuggestions: Self.commandSuggestions
+            ) { event in
                 Task {
                     await eventQueue.send(.input(event))
                 }
@@ -271,6 +274,55 @@ public final class TerminalChat: @unchecked Sendable {
         let prompt = line.trimmingCharacters(in: .whitespacesAndNewlines)
         return prompt.hasPrefix("/")
     }
+
+    private static let commandSuggestions: [TerminalCommandSuggestion] = [
+        TerminalCommandSuggestion(
+            command: "/help",
+            summary: "show command help"
+        ),
+        TerminalCommandSuggestion(
+            command: "/models",
+            summary: "switch model"
+        ),
+        TerminalCommandSuggestion(
+            command: "/agents",
+            summary: "switch agent"
+        ),
+        TerminalCommandSuggestion(
+            command: "/tools",
+            summary: "select tool groups"
+        ),
+        TerminalCommandSuggestion(
+            command: "/skills",
+            summary: "select prompt skills"
+        ),
+        TerminalCommandSuggestion(
+            command: "/attach",
+            summary: "attach files",
+            requiresArgument: true
+        ),
+        TerminalCommandSuggestion(
+            command: "/attachments",
+            summary: "show pending attachments"
+        ),
+        TerminalCommandSuggestion(
+            command: "/detach",
+            summary: "remove attachments",
+            requiresArgument: true
+        ),
+        TerminalCommandSuggestion(
+            command: "/clear",
+            summary: "reset conversation"
+        ),
+        TerminalCommandSuggestion(
+            command: "/exit",
+            summary: "close session"
+        ),
+        TerminalCommandSuggestion(
+            command: "/quit",
+            summary: "close session"
+        )
+    ]
 
     private func submittedLineAction(_ promptInput: String) async -> TerminalSubmittedLineAction {
         let prompt = promptInput.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -396,7 +448,7 @@ public final class TerminalChat: @unchecked Sendable {
 
     private func generateResponse(prompt: String) async throws -> DirectAgentResponse {
         let attachments = consumePendingAttachmentsForPrompt()
-        try await sessionRunner.sendPrompt(
+        return try await sessionRunner.sendPrompt(
             configuration: await currentSessionConfiguration(),
             prompt: prompt,
             attachments: attachments,

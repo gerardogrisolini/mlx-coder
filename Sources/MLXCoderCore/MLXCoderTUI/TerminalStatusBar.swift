@@ -17,6 +17,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
         let cursorIndex: Int
         let modeText: String
         let helpText: String
+        let suggestionLines: [String]
     }
 
     private let isEnabled: Bool
@@ -84,7 +85,8 @@ public final class TerminalStatusBar: @unchecked Sendable {
         text: String,
         cursorIndex: Int,
         modeText: String,
-        helpText: String
+        helpText: String,
+        suggestionLines: [String] = []
     ) {
         lock.lock()
         defer { lock.unlock() }
@@ -96,7 +98,8 @@ public final class TerminalStatusBar: @unchecked Sendable {
             text: text,
             cursorIndex: boundedCursorIndex,
             modeText: modeText,
-            helpText: helpText
+            helpText: helpText,
+            suggestionLines: Array(suggestionLines.prefix(6))
         )
         guard isStarted else {
             return
@@ -285,6 +288,9 @@ public final class TerminalStatusBar: @unchecked Sendable {
             text: inputPanelState.text,
             cursorIndex: inputPanelState.cursorIndex
         )
+        let suggestionRows = inputPanelSuggestionRowsLocked(
+            lines: inputPanelState.suggestionLines
+        )
         let modeLine = Self.padded(
             Self.fit(
                 "\(inputPanelState.modeText) · \(inputPanelState.helpText)",
@@ -308,6 +314,24 @@ public final class TerminalStatusBar: @unchecked Sendable {
                 reset
             ].joined()
         }.joined()
+        let suggestionSequence = suggestionRows.enumerated().map { offset, suggestionRow in
+            [
+                "\u{1B}[\(topRow + inputRows.count + offset + 1);1H",
+                "\u{1B}[2K",
+                orange,
+                "│",
+                reset,
+                " ",
+                dim,
+                suggestionRow,
+                reset,
+                " ",
+                orange,
+                "│",
+                reset
+            ].joined()
+        }.joined()
+        let modeRow = topRow + inputRows.count + suggestionRows.count + 1
         let parts = [
             "\u{1B}7",
             "\u{1B}[\(topRow);1H",
@@ -318,7 +342,8 @@ public final class TerminalStatusBar: @unchecked Sendable {
             "╮",
             reset,
             inputSequence,
-            "\u{1B}[\(topRow + inputRows.count + 1);1H",
+            suggestionSequence,
+            "\u{1B}[\(modeRow);1H",
             "\u{1B}[2K",
             orange,
             "│",
@@ -331,7 +356,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
             orange,
             "│",
             reset,
-            "\u{1B}[\(topRow + inputRows.count + 2);1H",
+            "\u{1B}[\(modeRow + 1);1H",
             "\u{1B}[2K",
             orange,
             "├",
@@ -417,6 +442,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
                 text: inputPanelState.text,
                 cursorIndex: inputPanelState.cursorIndex
             )
+            + inputPanelState.suggestionLines.count
             + Self.attachedStatusRows
     }
 
@@ -591,7 +617,15 @@ public final class TerminalStatusBar: @unchecked Sendable {
         )
     }
 
+    private func inputPanelSuggestionRowsLocked(lines: [String]) -> [String] {
+        let contentWidth = max(1, columns - 4)
+        return lines.prefix(6).map { line in
+            Self.padded(Self.fit(line, width: contentWidth), width: contentWidth)
+        }
+    }
+
     private func maximumInputPanelTextRowsLocked() -> Int {
+        let suggestionLineCount = inputPanelState?.suggestionLines.count ?? 0
         guard row > 0 else {
             return 1
         }
@@ -600,6 +634,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
             1,
             row
                 - Self.inputPanelChromeRows
+                - suggestionLineCount
                 - Self.attachedStatusRows
                 - Self.minimumScrollableRows
         )
