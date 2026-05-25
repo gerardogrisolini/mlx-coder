@@ -10,6 +10,18 @@ public struct RemoteStreamResult {
     public let stopReason: String
     public let toolCalls: [DirectAgentToolCall]
     public let stats: RemoteGenerationStats
+
+    public init(
+        text: String,
+        stopReason: String,
+        toolCalls: [DirectAgentToolCall],
+        stats: RemoteGenerationStats
+    ) {
+        self.text = text
+        self.stopReason = stopReason
+        self.toolCalls = toolCalls
+        self.stats = stats
+    }
 }
 
 public struct RemoteGenerationStats {
@@ -18,6 +30,20 @@ public struct RemoteGenerationStats {
     public let firstDeltaAt: Date?
     public let finishedAt: Date
     public let generatedCharacterCount: Int
+
+    public init(
+        usage: RemoteGenerationUsage?,
+        requestStartedAt: Date,
+        firstDeltaAt: Date?,
+        finishedAt: Date,
+        generatedCharacterCount: Int
+    ) {
+        self.usage = usage
+        self.requestStartedAt = requestStartedAt
+        self.firstDeltaAt = firstDeltaAt
+        self.finishedAt = finishedAt
+        self.generatedCharacterCount = generatedCharacterCount
+    }
 
     public var prefillElapsed: TimeInterval {
         guard let firstDeltaAt else {

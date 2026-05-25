@@ -29,6 +29,12 @@ public struct ChatGPTSubscriptionContinuationState: Equatable, Sendable {
     public let responseID: String
     public let messageCount: Int
     public let instructions: String
+
+    public init(responseID: String, messageCount: Int, instructions: String) {
+        self.responseID = responseID
+        self.messageCount = messageCount
+        self.instructions = instructions
+    }
 }
 
 public enum ChatGPTSubscriptionRequestBuilder {

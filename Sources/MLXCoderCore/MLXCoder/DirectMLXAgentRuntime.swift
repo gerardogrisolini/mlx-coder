@@ -11,6 +11,16 @@ public struct DirectAgentResponse: Sendable {
     public let text: String
     public let stopReason: String
     public let modelID: String
+
+    public init(
+        text: String,
+        stopReason: String,
+        modelID: String
+    ) {
+        self.text = text
+        self.stopReason = stopReason
+        self.modelID = modelID
+    }
 }
 
 public struct DirectAgentToolCall: @unchecked Sendable {
@@ -18,11 +28,31 @@ public struct DirectAgentToolCall: @unchecked Sendable {
     public let name: String
     public let argumentsObject: [String: Any]
     public let argumentsJSON: String
+
+    public init(
+        id: String,
+        name: String,
+        argumentsObject: [String: Any],
+        argumentsJSON: String
+    ) {
+        self.id = id
+        self.name = name
+        self.argumentsObject = argumentsObject
+        self.argumentsJSON = argumentsJSON
+    }
 }
 
 public struct DirectAgentToolResult: Sendable {
     public let output: String
     public let summary: String
+
+    public init(
+        output: String,
+        summary: String
+    ) {
+        self.output = output
+        self.summary = summary
+    }
 }
 
 public struct DirectAgentGenerationMetrics: Sendable {
@@ -75,6 +105,18 @@ public struct DirectAgentContextWindowStatus: Sendable {
     public let maxTokens: Int?
     public let modelID: String
     public let isApproximate: Bool
+
+    public init(
+        usedTokens: Int?,
+        maxTokens: Int?,
+        modelID: String,
+        isApproximate: Bool
+    ) {
+        self.usedTokens = usedTokens
+        self.maxTokens = maxTokens
+        self.modelID = modelID
+        self.isApproximate = isApproximate
+    }
 }
 
 public enum DirectAgentEvent: Sendable {

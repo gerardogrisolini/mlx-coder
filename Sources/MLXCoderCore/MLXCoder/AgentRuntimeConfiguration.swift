@@ -23,6 +23,16 @@ public struct AgentToolCall: Sendable {
     public let id: String
     public let name: String
     public let argumentsJSON: String
+
+    public init(
+        id: String,
+        name: String,
+        argumentsJSON: String
+    ) {
+        self.id = id
+        self.name = name
+        self.argumentsJSON = argumentsJSON
+    }
 }
 
 public typealias AgentBorrowedToolCall = AgentToolCall
