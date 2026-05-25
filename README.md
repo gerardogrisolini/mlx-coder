@@ -15,6 +15,7 @@ The goal is simple: expose downloaded MLX models as a fast local server without 
 - Supports tool definitions and tool-call output for the three generation protocols.
 - Reads runtime settings from `settings.json` and model definitions from `models.json`.
 - Downloads and imports MLX models from Hugging Face through an interactive setup.
+- Configures agent clients with an explicit setup for Codex CLI, Codex App, Xcode Codex App, and Xcode Claude Code.
 - Can keep multiple models loaded, or unload the previous model before loading another one.
 - Records throughput metrics so regressions in tok/s are visible.
 - Provides a repeatable benchmark command that can fail when performance drops below a configured threshold.
@@ -78,6 +79,25 @@ On the first run, if `models.json` does not exist yet, the setup also offers to 
 When run directly, model setup also asks whether the server should keep only one model loaded at a time. That setting is stored in `settings.json`; when enabled, the runtime unloads the current model before loading a different one.
 
 `models.json` is the only source used by `/v1/models` and by request model resolution. The server does not scan cache folders or keep a hardcoded fallback model list.
+
+## Agent Integrations
+
+Agent integrations are configured through a dedicated setup:
+
+```bash
+swift run -c release mlx-server --setup-agents
+```
+
+The setup reads the current external configuration files as the source of truth, shows what is already active, then lets you enable or disable:
+
+- Codex CLI through the `mlx-server` profile in `~/.codex/config.toml`.
+- Codex App through the `mlx-server-codex-app` profile in `~/.codex/config.toml`.
+- Codex App in Xcode through `~/Library/Developer/Xcode/CodingAssistant/codex/config.toml`.
+- Claude Code in Xcode through `~/Library/Developer/Xcode/CodingAssistant/ClaudeAgentConfig/settings.json`.
+
+When a Codex integration is enabled, setup writes the local `mlx-server` model provider, the dedicated profile, and a small `mlx-server-codex-models.json` catalog pointing at the selected model. When it is disabled, setup removes only the profile it owns; the shared provider and catalog are removed only when no remaining `mlx-server` profile references them.
+
+Claude Code in Xcode is intentionally simpler: enabled means the dedicated Xcode Claude settings file exists and points at the local Anthropic-compatible server; disabled means that file is removed.
 
 ## Runtime
 
@@ -170,6 +190,7 @@ swift build -c release --product mlx-server
 swift run -c release mlx-server --help
 swift run -c release mlx-server --setup
 swift run -c release mlx-server --setup-models
+swift run -c release mlx-server --setup-agents
 swift run -c release mlx-server --prompt Ciao --quiet
 swift run -c release mlx-server --prompt Ciao --max-tokens 256 --benchmark-warmups 1 --benchmark-runs 3 --min-generation-tokens-per-second 29 --quiet
 ./Scripts/benchmark.sh

@@ -46,6 +46,11 @@ struct MLXServerMain {
             arguments = MLXServerModelSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
         }
 
+        if MLXServerAgentSetupRunner.shouldRunSetup(arguments: arguments) {
+            try MLXServerAgentSetupRunner.run(arguments: arguments)
+            arguments = MLXServerAgentSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
+        }
+
         if arguments.contains("--prompt") {
             let benchmarkOptions = try MLXServerBenchmarkOptions(arguments: arguments)
             try MLXMetalLibraryBootstrap.prepareIfNeeded()
@@ -352,6 +357,7 @@ private enum MLXServerHelp {
       mlx-server [--help] [--version]
       mlx-server --setup
       mlx-server --setup-models
+      mlx-server --setup-agents
       mlx-server
       mlx-server --prompt <text> [--model <id>] [--max-tokens <count>] [--quiet]
                  [--benchmark-warmups <count>] [--benchmark-runs <count>]
@@ -359,6 +365,7 @@ private enum MLXServerHelp {
 
     Run mlx-server --setup once to create settings.json. At the end it can launch model setup too.
     Run mlx-server --setup-models directly to create or update models.json and download MLX models.
+    Run mlx-server --setup-agents to configure Codex CLI, Codex App, Xcode Codex App, and Xcode Claude Code integrations.
     The server reads runtime settings from settings.json and models only from models.json.
     """
 }
