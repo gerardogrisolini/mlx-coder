@@ -140,7 +140,7 @@ public enum DirectToolCatalog {
         DirectToolDescriptor(
             name: "task.create",
             description: "Creates one or more session tasks. Prefer a single call with a tasks array when creating multiple tasks.",
-            inputSchema: #"{"type":"object","properties":{"title":{"type":"string"},"name":{"type":"string"},"details":{"type":"string"},"description":{"type":"string"},"status":{"type":"string"},"priority":{"type":"string"},"dependsOn":{"type":"array","items":{"type":"string"}},"depends_on":{"type":"array","items":{"type":"string"}},"assigneeAgentID":{"type":"string"},"assignee_agent_id":{"type":"string"},"output":{"type":"string"},"tasks":{"type":"array","items":{"type":"object"}},"items":{"type":"array","items":{"type":"object"}}},"anyOf":[{"required":["title"]},{"required":["tasks"]},{"required":["items"]}]}"#
+            inputSchema: #"{"type":"object","properties":{"title":{"type":"string"},"name":{"type":"string"},"details":{"type":"string"},"description":{"type":"string"},"status":{"type":"string"},"priority":{"type":"string"},"dependsOn":{"type":"array","items":{"type":"string"}},"depends_on":{"type":"array","items":{"type":"string"}},"assigneeAgentID":{"type":"string"},"assignee_agent_id":{"type":"string"},"output":{"type":"string"},"tasks":{"type":"array","items":{"type":"object"}},"items":{"type":"array","items":{"type":"object"}}}}"#
         ),
         DirectToolDescriptor(
             name: "task.list",

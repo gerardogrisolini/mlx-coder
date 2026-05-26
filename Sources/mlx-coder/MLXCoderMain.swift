@@ -1,5 +1,6 @@
 import Foundation
 import MLXCoderCore
+import MLXCoderSetup
 
 @main
 struct MLXCoderMain {
@@ -10,10 +11,15 @@ struct MLXCoderMain {
             return
         }
 
+        if !MLXCoderSetupRunner.shouldRunSetup(arguments: arguments),
+           MLXCoderSetupInspector.status().requiresSetup {
+            arguments.append(MLXCoderSetupRunner.option)
+        }
+
         if MLXCoderSetupRunner.shouldRunSetup(arguments: arguments) {
             do {
                 try await MLXCoderSetupRunner.run(arguments: arguments)
-                arguments = MLXCoderSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
+                return
             } catch {
                 AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
                 Foundation.exit(1)
@@ -35,7 +41,7 @@ private enum MLXCoderStandaloneHelp {
                 of: "  --app                  App-hosted mode. Suppresses runtime chatter and requires explicit tool enablement.",
                 with: """
                   --app                  App-hosted mode. Suppresses runtime chatter and requires explicit tool enablement.
-                  --setup                Create standalone support files, configure providers/models, then start mlx-coder.
+                  --setup                Create standalone support files and configure providers/models, then exit.
                 """
             )
     }

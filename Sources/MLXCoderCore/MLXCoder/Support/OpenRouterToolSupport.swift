@@ -243,14 +243,17 @@ public nonisolated struct RemoteToolWireCatalog {
         public let wireName: String
 
         public var responsesToolPayload: [String: Any]? {
-            guard let schema = descriptor.schemaObject else {
+            guard let schema = descriptor.schemaObject,
+                  let parameters = RemoteToolSchemaCompatibility.responsesFunctionParameters(
+                      from: schema
+                  ) else {
                 return nil
             }
             return [
                 "type": "function",
                 "name": wireName,
                 "description": descriptor.description,
-                "parameters": schema
+                "parameters": parameters
             ]
         }
     }
@@ -384,6 +387,90 @@ public nonisolated struct RemoteToolWireCatalog {
         let foldedName = foldedToolWireName(name)
         if overwrite || lookup[foldedName] == nil {
             lookup[foldedName] = binding
+        }
+    }
+}
+
+public enum RemoteToolSchemaCompatibility {
+    private static let unsupportedTopLevelKeywords: Set<String> = [
+        "oneOf",
+        "anyOf",
+        "allOf",
+        "enum",
+        "not"
+    ]
+
+    public static func responsesFunctionParameters(from schema: Any) -> [String: Any]? {
+        guard var object = schema as? [String: Any] else {
+            return [
+                "type": "object",
+                "properties": [:]
+            ]
+        }
+
+        var properties = object["properties"] as? [String: Any] ?? [:]
+        var required = Set(requiredProperties(from: object["required"]))
+
+        mergeTopLevelObjectSchemas(
+            from: object["allOf"],
+            into: &properties,
+            required: &required,
+            includeRequired: true
+        )
+        mergeTopLevelObjectSchemas(
+            from: object["oneOf"],
+            into: &properties,
+            required: &required,
+            includeRequired: false
+        )
+        mergeTopLevelObjectSchemas(
+            from: object["anyOf"],
+            into: &properties,
+            required: &required,
+            includeRequired: false
+        )
+
+        object["type"] = "object"
+        object["properties"] = properties
+        if required.isEmpty {
+            object.removeValue(forKey: "required")
+        } else {
+            object["required"] = required.sorted()
+        }
+        for keyword in unsupportedTopLevelKeywords {
+            object.removeValue(forKey: keyword)
+        }
+        return object
+    }
+
+    private static func mergeTopLevelObjectSchemas(
+        from value: Any?,
+        into properties: inout [String: Any],
+        required: inout Set<String>,
+        includeRequired: Bool
+    ) {
+        guard let schemas = value as? [[String: Any]] else {
+            return
+        }
+
+        for schema in schemas {
+            if let schemaProperties = schema["properties"] as? [String: Any] {
+                for (key, value) in schemaProperties where properties[key] == nil {
+                    properties[key] = value
+                }
+            }
+            if includeRequired {
+                required.formUnion(requiredProperties(from: schema["required"]))
+            }
+        }
+    }
+
+    private static func requiredProperties(from value: Any?) -> [String] {
+        guard let values = value as? [Any] else {
+            return []
+        }
+        return values.compactMap { value in
+            (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
         }
     }
 }

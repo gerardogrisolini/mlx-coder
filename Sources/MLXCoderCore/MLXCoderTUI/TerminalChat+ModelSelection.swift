@@ -252,24 +252,25 @@ extension TerminalChat {
                 if emitStatus {
                     self.printModelIfNeeded(modelID)
                 } else {
-                    self.printedModelID = modelID
+                    self.printedModelID = self.loadedModelDisplayTitle(modelID)
                 }
             case .diagnostic, .thought, .metrics, .contextWindow, .content, .toolCallStarted, .toolCallCompleted:
                 break
             }
         }
         if !emitStatus {
-            printedModelID = loadedModelID
+            printedModelID = loadedModelDisplayTitle(loadedModelID)
         }
         return loadedModelID
     }
 
     public func printModelIfNeeded(_ modelID: String) {
-        guard printedModelID != modelID else {
+        let displayTitle = loadedModelDisplayTitle(modelID)
+        guard printedModelID != displayTitle else {
             return
         }
-        printedModelID = modelID
-        AgentOutput.standardError.writeString("Loaded model: \(loadedModelDisplayTitle(modelID))\n")
+        printedModelID = displayTitle
+        AgentOutput.standardError.writeString("Loaded model: \(displayTitle)\n")
     }
 
     public func loadedModelDisplayTitle(_ modelID: String) -> String {

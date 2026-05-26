@@ -53,7 +53,7 @@ or, after building a release binary:
 ```
 
 Setup creates and updates the standalone support files, configures providers and
-models, then starts `mlx-coder`.
+models, then exits. Launch `mlx-coder` again after setup completes.
 
 The required support files are:
 
@@ -129,7 +129,7 @@ In ACP mode, stdout is reserved for ACP JSON-RPC messages.
 ## Runtime Options
 
 ```text
---setup                Create support files, configure providers/models, then start.
+--setup                Create support files, configure providers/models, then exit.
 --acp                  Run ACP JSON-RPC over stdio.
 --app                  App-hosted behavior with quieter runtime output.
 --agent NAME           Select an agent profile from agents.json.

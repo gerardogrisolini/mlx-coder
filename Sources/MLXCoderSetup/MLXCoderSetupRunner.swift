@@ -8,18 +8,14 @@
 import Foundation
 import MLXCoderCore
 
-enum MLXCoderSetupRunner {
-    static let option = "--setup"
+public enum MLXCoderSetupRunner {
+    public static let option = "--setup"
 
-    static func shouldRunSetup(arguments: [String]) -> Bool {
+    public static func shouldRunSetup(arguments: [String]) -> Bool {
         arguments.dropFirst().contains(option)
     }
 
-    static func argumentsAfterRemovingSetup(arguments: [String]) -> [String] {
-        arguments.filter { $0 != option }
-    }
-
-    static func run(arguments: [String]) async throws {
+    public static func run(arguments: [String]) async throws {
         _ = arguments
         guard TerminalRawInput.supportsInteractiveInput() else {
             throw MLXCoderSetupError.nonInteractiveTerminal
@@ -45,7 +41,7 @@ enum MLXCoderSetupRunner {
                 if !shouldReconfigure {
                     let result = try MLXCoderSupportFileService.ensureBaseFiles()
                     printResult(result, settingsWasWritten: false)
-                    AgentOutput.standardError.writeString("\nSetup completato. Avvio mlx-coder.\n\n")
+                    printCompletion()
                     return
                 }
             } catch {
@@ -65,7 +61,11 @@ enum MLXCoderSetupRunner {
             overwriteSettings: true
         )
         printResult(result, settingsWasWritten: true)
-        AgentOutput.standardError.writeString("\nSetup completato. Avvio mlx-coder.\n\n")
+        printCompletion()
+    }
+
+    private static func printCompletion() {
+        AgentOutput.standardError.writeString("\nSetup completato.\n\n")
     }
 
     private static func buildSettingsManifest() async throws -> AgentSettingsManifest {
@@ -380,28 +380,16 @@ enum MLXCoderSetupRunner {
         baseURL: String,
         chatEndpoint: AgentRemoteChatEndpoint
     ) -> AgentSettingsModelManifest {
-        let provider = AgentRemoteProvider(
-            id: providerID,
-            name: providerName,
-            baseURL: baseURL,
-            modelID: model.id,
-            chatEndpoint: chatEndpoint
-        )
-        let manifestID = "remoteapi:\(providerID.uuidString.lowercased()):\(model.id)"
-        return AgentSettingsModelManifest(
-            id: manifestID,
-            kind: .remoteAPI,
+        AgentSettingsModelManifestFactory.remoteAPIModel(
             title: model.name == model.id ? nil : model.name,
-            llmID: manifestID,
             modelID: model.id,
             providerID: providerID,
-            provider: provider,
+            providerName: providerName,
+            baseURL: baseURL,
+            chatEndpoint: chatEndpoint,
             configuredContextWindowLimit: model.contextLength,
             generationParameterOverrides: model.generationParameterOverrides,
-            thinkingOptions: agentThinkingOptions(from: model.thinkingSupport),
-            defaultThinkingSelection: agentThinkingSelection(
-                from: model.thinkingSupport?.defaultSelection
-            )
+            thinkingSupport: model.thinkingSupport
         )
     }
 
@@ -412,28 +400,18 @@ enum MLXCoderSetupRunner {
         baseURL: String,
         chatEndpoint: AgentRemoteChatEndpoint
     ) -> AgentSettingsModelManifest {
-        let provider = AgentRemoteProvider(
-            id: providerID,
-            name: providerName,
-            baseURL: baseURL,
-            modelID: option.modelID,
-            chatEndpoint: chatEndpoint
-        )
         let manifestID = CodexAgentModel.selectionID(forModelID: option.modelID)
-        return AgentSettingsModelManifest(
-            id: manifestID,
-            kind: .remoteAPI,
+        return AgentSettingsModelManifestFactory.remoteAPIModel(
+            manifestID: manifestID,
             title: option.title,
-            llmID: manifestID,
             modelID: option.modelID,
             providerID: providerID,
-            provider: provider,
+            providerName: providerName,
+            baseURL: baseURL,
+            chatEndpoint: chatEndpoint,
             configuredContextWindowLimit: option.contextWindowTokenLimit,
             generationParameterOverrides: nil,
-            thinkingOptions: agentThinkingOptions(from: CodexAgentModel.thinkingSupport),
-            defaultThinkingSelection: agentThinkingSelection(
-                from: CodexAgentModel.thinkingSupport.defaultSelection
-            )
+            thinkingSupport: CodexAgentModel.thinkingSupport
         )
     }
 
@@ -503,26 +481,6 @@ enum MLXCoderSetupRunner {
             return 3
         }
         return 2
-    }
-
-    private static func agentThinkingOptions(
-        from support: MLXModelThinkingSupport?
-    ) -> [AgentThinkingSelection]? {
-        guard let support,
-              support.supportsThinking else {
-            return nil
-        }
-        let options = support.availableSelections.compactMap(agentThinkingSelection)
-        return options.isEmpty ? nil : options
-    }
-
-    private static func agentThinkingSelection(
-        from selection: MLXThinkingSelection?
-    ) -> AgentThinkingSelection? {
-        guard let selection else {
-            return nil
-        }
-        return AgentThinkingSelection(rawValue: selection.rawValue)
     }
 
     private static func readModel(

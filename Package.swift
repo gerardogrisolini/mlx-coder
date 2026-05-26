@@ -14,6 +14,10 @@ let package = Package(
             name: "MLXCoderCore",
             targets: ["MLXCoderCore"]
         ),
+        .library(
+            name: "MLXCoderSetup",
+            targets: ["MLXCoderSetup"]
+        ),
         .executable(
             name: "mlx-coder",
             targets: ["mlx-coder"]
@@ -32,9 +36,19 @@ let package = Package(
                 .define("SWIFTPM_NON_SANDBOX_TUI")
             ]
         ),
+        .target(
+            name: "MLXCoderSetup",
+            dependencies: ["MLXCoderCore"],
+            swiftSettings: [
+                .define("SWIFTPM_NON_SANDBOX_TUI")
+            ]
+        ),
         .executableTarget(
             name: "mlx-coder",
-            dependencies: ["MLXCoderCore"],
+            dependencies: [
+                "MLXCoderCore",
+                "MLXCoderSetup"
+            ],
             swiftSettings: [
                 .define("SWIFTPM_NON_SANDBOX_TUI")
             ]
