@@ -23,10 +23,12 @@ public enum MLXServerModelLoading {
         useLatest: Bool = false,
         progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
     ) async throws -> ModelContainer {
-        switch runtimeKind {
+        _ = await MLXServerHuggingFaceCacheAccessStore.shared.activatePersistedAccess()
+        let hubClient = MLXServerHuggingFaceCacheAccessStore.hubClient()
+        return switch runtimeKind {
         case .llm:
             try await LLMModelFactory.shared.loadContainer(
-                from: #hubDownloader(),
+                from: #hubDownloader(hubClient),
                 using: #huggingFaceTokenizerLoader(),
                 configuration: configuration,
                 useLatest: useLatest,
@@ -34,7 +36,7 @@ public enum MLXServerModelLoading {
             )
         case .vlm:
             try await VLMModelFactory.shared.loadContainer(
-                from: #hubDownloader(),
+                from: #hubDownloader(hubClient),
                 using: #huggingFaceTokenizerLoader(),
                 configuration: configuration,
                 useLatest: useLatest,

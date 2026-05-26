@@ -14,6 +14,7 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
     public var tlsPrivateKeyPath: String?
     public var metricsLogPath: String?
     public var diskKVCache: MLXServerDiskKVCacheSettings
+    public var huggingFaceCache: MLXServerHuggingFaceCacheSettings
 
     private enum CodingKeys: String, CodingKey {
         case host
@@ -24,6 +25,7 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
         case tlsPrivateKeyPath = "tls_private_key_path"
         case metricsLogPath = "metrics_log_path"
         case diskKVCache = "disk_kv_cache"
+        case huggingFaceCache = "huggingface_cache"
     }
 
     public init(
@@ -34,7 +36,8 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
         tlsCertificatePath: String? = nil,
         tlsPrivateKeyPath: String? = nil,
         metricsLogPath: String? = nil,
-        diskKVCache: MLXServerDiskKVCacheSettings = .init()
+        diskKVCache: MLXServerDiskKVCacheSettings = .init(),
+        huggingFaceCache: MLXServerHuggingFaceCacheSettings = .init()
     ) {
         self.host = host
         self.port = port
@@ -44,6 +47,32 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
         self.tlsPrivateKeyPath = tlsPrivateKeyPath
         self.metricsLogPath = metricsLogPath
         self.diskKVCache = diskKVCache
+        self.huggingFaceCache = huggingFaceCache
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        host = try container.decodeIfPresent(String.self, forKey: .host) ?? "127.0.0.1"
+        port = try container.decodeIfPresent(Int.self, forKey: .port) ?? 8080
+        loadOneModelAtATime = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .loadOneModelAtATime
+        ) ?? true
+        http2PriorKnowledge = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .http2PriorKnowledge
+        ) ?? false
+        tlsCertificatePath = try container.decodeIfPresent(String.self, forKey: .tlsCertificatePath)
+        tlsPrivateKeyPath = try container.decodeIfPresent(String.self, forKey: .tlsPrivateKeyPath)
+        metricsLogPath = try container.decodeIfPresent(String.self, forKey: .metricsLogPath)
+        diskKVCache = try container.decodeIfPresent(
+            MLXServerDiskKVCacheSettings.self,
+            forKey: .diskKVCache
+        ) ?? .init()
+        huggingFaceCache = try container.decodeIfPresent(
+            MLXServerHuggingFaceCacheSettings.self,
+            forKey: .huggingFaceCache
+        ) ?? .init()
     }
 
     public func validated() throws -> Self {
@@ -62,7 +91,8 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
             tlsCertificatePath: normalizedTLSCertificatePath,
             tlsPrivateKeyPath: normalizedTLSPrivateKeyPath,
             metricsLogPath: metricsLogPath?.trimmedNonEmpty,
-            diskKVCache: try diskKVCache.validated()
+            diskKVCache: try diskKVCache.validated(),
+            huggingFaceCache: huggingFaceCache.validated()
         )
     }
 
@@ -72,6 +102,44 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
 
     public var modelRetentionPolicy: MLXServerModelRetentionPolicy {
         loadOneModelAtATime ? .unloadPreviousModel : .keepLoadedModels
+    }
+}
+
+public struct MLXServerHuggingFaceCacheSettings: Codable, Equatable, Sendable {
+    public var directoryPath: String?
+    public var bookmark: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case directoryPath = "directory_path"
+        case bookmark
+    }
+
+    public init(
+        directoryPath: String? = nil,
+        bookmark: String? = nil
+    ) {
+        self.directoryPath = directoryPath
+        self.bookmark = bookmark
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        directoryPath = try container.decodeIfPresent(String.self, forKey: .directoryPath)
+        bookmark = try container.decodeIfPresent(String.self, forKey: .bookmark)
+    }
+
+    public func validated() -> Self {
+        Self(
+            directoryPath: directoryPath?.trimmedNonEmpty,
+            bookmark: bookmark?.trimmedNonEmpty
+        )
+    }
+
+    public var bookmarkData: Data? {
+        guard let bookmark else {
+            return nil
+        }
+        return Data(base64Encoded: bookmark)
     }
 }
 
@@ -183,6 +251,34 @@ public enum MLXServerSettingsStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(try settings.validated())
         try data.write(to: url, options: [.atomic])
+    }
+
+    public static func loadOrDefault(
+        from url: URL = settingsURL(),
+        fileManager: FileManager = .default
+    ) -> MLXServerSettings {
+        (try? loadRequired(from: url, fileManager: fileManager)) ?? MLXServerSettings()
+    }
+
+    public static func saveHuggingFaceCacheAccess(
+        cacheDirectoryPath: String,
+        bookmarkData: Data?,
+        fileManager: FileManager = .default
+    ) throws {
+        var settings = loadOrDefault(fileManager: fileManager)
+        settings.huggingFaceCache = MLXServerHuggingFaceCacheSettings(
+            directoryPath: cacheDirectoryPath,
+            bookmark: bookmarkData?.base64EncodedString()
+        )
+        try save(settings, fileManager: fileManager)
+    }
+
+    public static func clearHuggingFaceCacheAccess(
+        fileManager: FileManager = .default
+    ) {
+        var settings = loadOrDefault(fileManager: fileManager)
+        settings.huggingFaceCache = MLXServerHuggingFaceCacheSettings()
+        try? save(settings, fileManager: fileManager)
     }
 
     private static func executableDirectoryURL(

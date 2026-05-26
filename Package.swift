@@ -16,6 +16,10 @@ let package = Package(
             name: "MLXServerHTTP",
             targets: ["MLXServerHTTP"]
         ),
+        .library(
+            name: "MLXServerSetup",
+            targets: ["MLXServerSetup"]
+        ),
         .executable(
             name: "mlx-server",
             targets: ["mlx-server"]
@@ -46,6 +50,14 @@ let package = Package(
             dependencies: [
                 "MLXServerCore",
                 "MLXServerHTTP",
+                "MLXServerSetup",
+                .product(name: "HuggingFace", package: "swift-huggingface")
+            ]
+        ),
+        .target(
+            name: "MLXServerSetup",
+            dependencies: [
+                "MLXServerCore",
                 .product(name: "HuggingFace", package: "swift-huggingface")
             ]
         ),

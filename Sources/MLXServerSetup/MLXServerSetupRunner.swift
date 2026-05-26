@@ -11,18 +11,18 @@ import Darwin
 import Glibc
 #endif
 
-enum MLXServerSetupRunner {
-    static let option = "--setup"
+public enum MLXServerSetupRunner {
+    public static let option = "--setup"
 
-    static func shouldRunSetup(arguments: [String]) -> Bool {
+    public static func shouldRunSetup(arguments: [String]) -> Bool {
         arguments.contains(option)
     }
 
-    static func argumentsAfterRemovingSetup(arguments: [String]) -> [String] {
+    public static func argumentsAfterRemovingSetup(arguments: [String]) -> [String] {
         arguments.filter { $0 != option }
     }
 
-    static func run(arguments: [String]) throws -> Bool {
+    public static func run(arguments: [String]) throws -> Bool {
         _ = arguments
         guard supportsInteractiveInput() else {
             throw MLXServerSetupError.nonInteractiveTerminal
@@ -178,7 +178,8 @@ enum MLXServerSetupRunner {
             tlsCertificatePath: tlsCertificatePath,
             tlsPrivateKeyPath: tlsPrivateKeyPath,
             metricsLogPath: metricsLogPath,
-            diskKVCache: diskKVCache
+            diskKVCache: diskKVCache,
+            huggingFaceCache: defaultSettings.huggingFaceCache
         ).validated()
     }
 
@@ -295,11 +296,5 @@ private extension String {
     var trimmedNonEmpty: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
-    }
-}
-
-private extension FileHandle {
-    func writeString(_ string: String) {
-        try? write(contentsOf: Data(string.utf8))
     }
 }

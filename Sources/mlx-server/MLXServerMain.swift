@@ -7,10 +7,12 @@ import Foundation
 import MLXLMCommon
 import MLXServerCore
 import MLXServerHTTP
+import MLXServerSetup
 import Dispatch
 
 @main
 struct MLXServerMain {
+    @MainActor
     static func main() async {
         do {
             try await run()
@@ -20,6 +22,7 @@ struct MLXServerMain {
         }
     }
 
+    @MainActor
     private static func run() async throws {
         var arguments = Array(CommandLine.arguments.dropFirst())
         if arguments.contains("--help") || arguments.contains("-h") {

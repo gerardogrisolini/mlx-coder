@@ -12,18 +12,19 @@ import Darwin
 import Glibc
 #endif
 
-enum MLXServerModelSetupRunner {
-    static let option = "--setup-models"
+public enum MLXServerModelSetupRunner {
+    public static let option = "--setup-models"
 
-    static func shouldRunSetup(arguments: [String]) -> Bool {
+    public static func shouldRunSetup(arguments: [String]) -> Bool {
         arguments.contains(option)
     }
 
-    static func argumentsAfterRemovingSetup(arguments: [String]) -> [String] {
+    public static func argumentsAfterRemovingSetup(arguments: [String]) -> [String] {
         arguments.filter { $0 != option }
     }
 
-    static func run(arguments: [String], configureRetentionPolicy: Bool = true) async throws {
+    @MainActor
+    public static func run(arguments: [String], configureRetentionPolicy: Bool = true) async throws {
         _ = arguments
         guard supportsInteractiveInput() else {
             throw MLXServerModelSetupError.nonInteractiveTerminal
@@ -42,21 +43,14 @@ enum MLXServerModelSetupRunner {
         if configureRetentionPolicy {
             try configureModelRetentionPolicy()
         }
+        try await MLXServerHuggingFaceCachePermissionRequester.ensureAccessIfNeeded()
 
         var manifest = MLXServerModelsManifest()
-        let isFirstSetup = !FileManager.default.fileExists(atPath: modelsURL.path)
-        if !isFirstSetup {
+        let modelsFileExists = FileManager.default.fileExists(atPath: modelsURL.path)
+        if modelsFileExists {
             do {
                 manifest = try MLXServerModelsManifestStore.loadRequired(from: modelsURL)
                 printExistingModels(manifest)
-                let shouldContinue = try promptYesNo(
-                    "Vuoi aggiungere o aggiornare un modello?",
-                    defaultValue: true
-                )
-                guard shouldContinue else {
-                    FileHandle.standardError.writeString("\nSetup modelli completato. Avvio mlx-server.\n\n")
-                    return
-                }
             } catch {
                 let shouldOverwrite = try promptYesNo(
                     "models.json esiste ma non e valido. Vuoi riscriverlo?",
@@ -68,19 +62,12 @@ enum MLXServerModelSetupRunner {
             }
         }
 
-        if isFirstSetup {
-            try importCachedModelsIfRequested(into: &manifest)
-        }
+        try importCachedModelsIfRequested(into: &manifest)
 
-        let shouldConfigureRemoteModel: Bool
-        if manifest.models.isEmpty {
-            shouldConfigureRemoteModel = true
-        } else {
-            shouldConfigureRemoteModel = try promptYesNo(
-                "Cercare e scaricare un modello da Hugging Face?",
-                defaultValue: false
-            )
-        }
+        let shouldConfigureRemoteModel = try promptYesNo(
+            "Cercare e scaricare altri modelli da Hugging Face?",
+            defaultValue: manifest.models.isEmpty
+        )
         if shouldConfigureRemoteModel {
             repeat {
                 let record = try await configureRemoteModel()
@@ -91,7 +78,7 @@ enum MLXServerModelSetupRunner {
 
         try MLXServerModelsManifestStore.save(manifest, to: modelsURL)
         FileHandle.standardError.writeString("Aggiornato: models.json\n")
-        FileHandle.standardError.writeString("\nSetup modelli completato. Avvio mlx-server.\n\n")
+        FileHandle.standardError.writeString("\nSetup modelli completato.\n\n")
     }
 
     private static func configureModelRetentionPolicy() throws {
@@ -111,18 +98,32 @@ enum MLXServerModelSetupRunner {
     }
 
     private static func importCachedModelsIfRequested(into manifest: inout MLXServerModelsManifest) throws {
-        let candidates = MLXServerCachedModelScanner.candidates()
+        let candidates = MLXServerCachedModelScanner.candidates(
+            cache: MLXServerHuggingFaceCacheAccessStore.cache
+        )
         guard !candidates.isEmpty else {
+            return
+        }
+        let importableCandidates = candidates.filter { candidate in
+            !manifest.models.contains { model in
+                model.repositoryID == candidate.repositoryID
+                    && model.revision == candidate.revision
+            }
+        }
+        guard !importableCandidates.isEmpty else {
+            FileHandle.standardError.writeString(
+                "I modelli gia scaricati risultano gia configurati in models.json.\n\n"
+            )
             return
         }
 
         FileHandle.standardError.writeString(
             """
-            Trovati modelli gia scaricati nella cache Hugging Face:
+            Trovati modelli gia scaricati nella cache Hugging Face non ancora configurati:
 
             """
         )
-        for (index, candidate) in candidates.enumerated() {
+        for (index, candidate) in importableCandidates.enumerated() {
             FileHandle.standardError.writeString(
                 "\(index + 1). \(candidate.repositoryID) [\(candidate.revision)]\n"
             )
@@ -136,7 +137,7 @@ enum MLXServerModelSetupRunner {
             return
         }
 
-        for candidate in candidates {
+        for candidate in importableCandidates {
             guard try promptYesNo(
                 "Importare \(candidate.repositoryID)?",
                 defaultValue: true
@@ -150,7 +151,7 @@ enum MLXServerModelSetupRunner {
     }
 
     private static func configureRemoteModel() async throws -> MLXServerModelRecord {
-        let client = HubClient.default
+        let client = MLXServerHuggingFaceCacheAccessStore.hubClient()
         let selectedModel = try await selectHuggingFaceModel(client: client)
         let repositoryID = selectedModel.id.rawValue
         let revision = selectedModel.sha ?? "main"
@@ -158,7 +159,10 @@ enum MLXServerModelSetupRunner {
         FileHandle.standardError.writeString("\nScarico \(repositoryID) [\(revision)]...\n")
         let snapshotURL = try await client.downloadSnapshot(
             of: selectedModel.id,
-            revision: revision
+            revision: revision,
+            progressHandler: { progress in
+                Self.printDownloadProgress(progress)
+            }
         )
         FileHandle.standardError.writeString("\nDownload completato: \(snapshotURL.path)\n")
 
@@ -325,26 +329,20 @@ enum MLXServerModelSetupRunner {
                 allowEmpty: true
             ).trimmedNonEmpty
 
-            let response = try await client.listModels(
-                search: query,
-                filter: "mlx",
-                sort: "downloads",
-                direction: .descending,
-                limit: 10,
-                full: true,
-                expand: [
-                    .known(.downloads),
-                    .known(.likes),
-                    .known(.libraryName),
-                    .known(.pipelineTag),
-                    .known(.siblings),
-                    .known(.tags),
-                    .known(.config)
-                ],
-                fetchConfig: true
-            )
+            let models: [Model]
+            do {
+                models = try await searchHuggingFaceModels(
+                    client: client,
+                    query: query
+                )
+            } catch {
+                FileHandle.standardError.writeString(
+                    "Ricerca Hugging Face fallita: \(describeHuggingFaceError(error))\n"
+                )
+                FileHandle.standardError.writeString("Riprova con una ricerca diversa.\n")
+                continue
+            }
 
-            let models = response.items.filter(isUsableMLXModel)
             guard !models.isEmpty else {
                 FileHandle.standardError.writeString("Nessun modello MLX trovato.\n")
                 continue
@@ -366,6 +364,48 @@ enum MLXServerModelSetupRunner {
             )
             return models[selection - 1]
         }
+    }
+
+    private static func searchHuggingFaceModels(
+        client: HubClient,
+        query: String?
+    ) async throws -> [Model] {
+        let response = try await client.listModels(
+            search: query,
+            filter: "mlx",
+            sort: "downloads",
+            direction: .descending,
+            limit: 10,
+            full: true
+        )
+        return response.items.filter(isUsableMLXModel)
+    }
+
+    private static func describeHuggingFaceError(_ error: Error) -> String {
+        if let error = error as? HTTPClientError {
+            return error.description
+        }
+        return error.localizedDescription
+    }
+
+    private static func printDownloadProgress(_ progress: Progress) {
+        let fraction = progress.fractionCompleted.isFinite
+            ? min(max(progress.fractionCompleted, 0), 1)
+            : 0
+        let percent = Int((fraction * 100).rounded(.down))
+        let completed = max(progress.completedUnitCount, 0)
+        let total = max(progress.totalUnitCount, 0)
+        let sizeDetail = total > 1
+            ? " \(formatBytes(completed)) / \(formatBytes(total))"
+            : ""
+        FileHandle.standardError.writeString("\rDownload: \(percent)%\(sizeDetail)")
+    }
+
+    private static func formatBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(
+            fromByteCount: bytes,
+            countStyle: .file
+        )
     }
 
     private static func isUsableMLXModel(_ model: Model) -> Bool {
@@ -635,7 +675,7 @@ private struct MLXServerCachedModelCandidate: Sendable {
 
 private enum MLXServerCachedModelScanner {
     static func candidates(
-        cache: HubCache = .default,
+        cache: HubCache = MLXServerHuggingFaceCacheAccessStore.cache,
         fileManager: FileManager = .default
     ) -> [MLXServerCachedModelCandidate] {
         guard let repositoryDirectories = try? fileManager.contentsOfDirectory(
@@ -1141,7 +1181,7 @@ private extension String {
     }
 }
 
-private extension FileHandle {
+extension FileHandle {
     func writeString(_ string: String) {
         try? write(contentsOf: Data(string.utf8))
     }

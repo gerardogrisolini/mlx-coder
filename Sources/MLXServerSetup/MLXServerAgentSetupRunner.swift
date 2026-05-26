@@ -11,18 +11,18 @@ import Darwin
 import Glibc
 #endif
 
-enum MLXServerAgentSetupRunner {
-    static let option = "--setup-agents"
+public enum MLXServerAgentSetupRunner {
+    public static let option = "--setup-agents"
 
-    static func shouldRunSetup(arguments: [String]) -> Bool {
+    public static func shouldRunSetup(arguments: [String]) -> Bool {
         arguments.contains(option)
     }
 
-    static func argumentsAfterRemovingSetup(arguments: [String]) -> [String] {
+    public static func argumentsAfterRemovingSetup(arguments: [String]) -> [String] {
         arguments.filter { $0 != option }
     }
 
-    static func run(arguments: [String]) throws {
+    public static func run(arguments: [String]) throws {
         _ = arguments
         guard supportsInteractiveInput() else {
             throw MLXServerAgentSetupError.nonInteractiveTerminal
@@ -87,7 +87,7 @@ enum MLXServerAgentSetupRunner {
             )
         }
 
-        FileHandle.standardError.writeString("\nSetup agent completato. Avvio mlx-server.\n\n")
+        FileHandle.standardError.writeString("\nSetup agent completato.\n\n")
     }
 
     private static func promptIntegrationConfiguration()

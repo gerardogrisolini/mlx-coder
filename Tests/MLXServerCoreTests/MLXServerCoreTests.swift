@@ -59,6 +59,10 @@ func savesAndLoadsServerSettingsJSON() throws {
             enabled: true,
             directoryPath: " /tmp/mlx-server-kv ",
             limitGB: 42
+        ),
+        huggingFaceCache: MLXServerHuggingFaceCacheSettings(
+            directoryPath: " /tmp/huggingface/hub ",
+            bookmark: " dGVzdA== "
         )
     )
 
@@ -72,6 +76,31 @@ func savesAndLoadsServerSettingsJSON() throws {
     #expect(loaded.metricsLogPath == "/tmp/mlx-server.metrics.jsonl")
     #expect(loaded.diskKVCache.directoryPath == "/tmp/mlx-server-kv")
     #expect(loaded.diskKVCache.limitGB == 42)
+    #expect(loaded.huggingFaceCache.directoryPath == "/tmp/huggingface/hub")
+    #expect(loaded.huggingFaceCache.bookmark == "dGVzdA==")
+    #expect(loaded.huggingFaceCache.bookmarkData == Data("test".utf8))
+}
+
+@Test
+func serverSettingsLoadsOlderJSONWithoutHuggingFaceCache() throws {
+    let data = Data(
+        """
+        {
+          "host": "127.0.0.1",
+          "port": 8080,
+          "load_one_model_at_a_time": true,
+          "disk_kv_cache": {
+            "enabled": true,
+            "limit_gb": 100
+          }
+        }
+        """.utf8
+    )
+
+    let settings = try JSONDecoder().decode(MLXServerSettings.self, from: data).validated()
+
+    #expect(settings.huggingFaceCache.directoryPath == nil)
+    #expect(settings.huggingFaceCache.bookmark == nil)
 }
 
 @Test
