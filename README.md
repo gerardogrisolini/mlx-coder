@@ -18,7 +18,7 @@ The goal is simple: expose downloaded MLX models as a fast local server without 
 - Configures agent clients with an explicit setup for Codex CLI, Codex App, Xcode Codex App, and Xcode Claude Code.
 - Can keep multiple models loaded, or unload the previous model before loading another one.
 - Records throughput metrics so regressions in tok/s are visible.
-- Provides a repeatable benchmark command that can fail when performance drops below a configured threshold.
+- Provides a terminal chat mode that keeps session context alive and reports tok/s per turn.
 
 ## What It Is For
 
@@ -160,21 +160,24 @@ Non-stream responses include `mlx_metrics` with the internal MLX `GenerateComple
 
 The executable prepares `mlx.metallib` automatically from the checked-out `mlx-swift` package when SwiftPM has not copied it next to the binary yet. It also enables `MLX_METAL_FAST_SYNCH=1` by default unless the environment already defines it.
 
-## Benchmarking
+## Terminal Chat
 
-The benchmark path runs the same runtime used by the server, but without starting HTTP:
+The chat path runs the same session runtime used by the server, but without starting HTTP. It keeps the conversation alive until stdin closes; in an interactive terminal, press `Ctrl+D` to exit:
 
 ```bash
 swift run -c release mlx-server \
-  --prompt Ciao \
+  --chat \
   --max-tokens 256 \
-  --benchmark-warmups 1 \
-  --benchmark-runs 3 \
-  --min-generation-tokens-per-second 29 \
-  --quiet
+  --min-generation-tokens-per-second 29
 ```
 
-If any measured run falls below the configured minimum generation tok/s, the command exits with an error. This is useful before changing the runtime, protocol adapters, cache behavior, or model loading code.
+You can also pass the first message directly. After that first answer, the process keeps reading more turns until EOF:
+
+```bash
+swift run -c release mlx-server --chat Ciao --max-tokens 256
+```
+
+Each turn prints prompt/generation token counts and tok/s. If a turn falls below `--min-generation-tokens-per-second`, the command exits with an error. This is useful before changing the runtime, protocol adapters, cache behavior, or model loading code.
 
 The helper script wraps the same command:
 
@@ -191,8 +194,8 @@ swift run -c release mlx-server --help
 swift run -c release mlx-server --setup
 swift run -c release mlx-server --setup-models
 swift run -c release mlx-server --setup-agents
-swift run -c release mlx-server --prompt Ciao --quiet
-swift run -c release mlx-server --prompt Ciao --max-tokens 256 --benchmark-warmups 1 --benchmark-runs 3 --min-generation-tokens-per-second 29 --quiet
+swift run -c release mlx-server --chat
+swift run -c release mlx-server --chat Ciao --max-tokens 256 --min-generation-tokens-per-second 29 --quiet
 ./Scripts/benchmark.sh
 ```
 
@@ -203,5 +206,5 @@ curl -s http://127.0.0.1:8080/health
 
 curl -s http://127.0.0.1:8080/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"messages":[{"role":"user","content":"Ciao"}],"max_tokens":128,"temperature":0}'
+  -d '{"messages":[{"role":"user","content":"Ciao"}],"max_tokens":128}'
 ```

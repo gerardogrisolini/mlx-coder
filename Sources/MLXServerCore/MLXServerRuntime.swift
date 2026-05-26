@@ -343,12 +343,12 @@ public actor MLXServerRuntime {
                         priorTranscript: priorTranscript,
                         current: currentFingerprint,
                         reasoningText: retainsReasoningInHistory
-                            ? ChatSessionTranscriptText.reasoningContent(
+                            ? MLXServerChatSessionTranscriptText.reasoningContent(
                                 from: assistantText,
                                 startsInThinking: emitsThinking
                             )
                             : "",
-                        assistantText: ChatSessionTranscriptText.visibleAssistantContent(
+                        assistantText: MLXServerChatSessionTranscriptText.visibleAssistantContent(
                             from: assistantText,
                             startsInThinking: emitsThinking
                         ),
@@ -828,11 +828,11 @@ private enum ChatSessionSignature {
     }
 }
 
-private enum ChatSessionTranscriptText {
+public enum MLXServerChatSessionTranscriptText {
     private static let openTag = "<think>"
     private static let closeTag = "</think>"
 
-    static func visibleAssistantContent(from generatedText: String, startsInThinking: Bool) -> String {
+    public static func visibleAssistantContent(from generatedText: String, startsInThinking: Bool) -> String {
         var text = generatedText
 
         if startsInThinking {
@@ -869,7 +869,7 @@ private enum ChatSessionTranscriptText {
         return visible
     }
 
-    static func reasoningContent(from generatedText: String, startsInThinking: Bool) -> String {
+    public static func reasoningContent(from generatedText: String, startsInThinking: Bool) -> String {
         var text = generatedText
         var reasoning = ""
 

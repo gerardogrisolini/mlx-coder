@@ -52,6 +52,7 @@ public enum MLXServerModelSetupRunner {
                 manifest = try MLXServerModelsManifestStore.loadRequired(from: modelsURL)
                 refreshExistingModelRuntimeKinds(in: &manifest)
                 printExistingModels(manifest)
+                try reconfigureExistingModelsIfRequested(in: &manifest)
             } catch {
                 let shouldOverwrite = try promptYesNo(
                     "models.json esiste ma non e valido. Vuoi riscriverlo?",
@@ -71,9 +72,13 @@ public enum MLXServerModelSetupRunner {
         )
         if shouldConfigureRemoteModel {
             repeat {
-                let record = try await configureRemoteModel()
-                upsert(record: record, in: &manifest)
-                try updateDefaultModel(afterAdding: record, in: &manifest)
+                let configuredModel = try await configureRemoteModel()
+                upsert(record: configuredModel.record, in: &manifest)
+                try updateDefaultModel(
+                    afterAdding: configuredModel.record,
+                    askUser: configuredModel.shouldPromptForDefault,
+                    in: &manifest
+                )
             } while try promptYesNo("Aggiungere un altro modello?", defaultValue: false)
         }
 
@@ -111,6 +116,36 @@ public enum MLXServerModelSetupRunner {
                 continue
             }
             manifest.models[modelIndex].runtimeKind = inferredRuntimeKind(from: candidate)
+        }
+    }
+
+    private static func reconfigureExistingModelsIfRequested(
+        in manifest: inout MLXServerModelsManifest
+    ) throws {
+        guard !manifest.models.isEmpty else {
+            return
+        }
+        guard try promptYesNo(
+            "Vuoi riconfigurare i parametri dei modelli gia configurati?",
+            defaultValue: false
+        ) else {
+            return
+        }
+
+        let candidates = MLXServerCachedModelScanner.candidates(
+            cache: MLXServerHuggingFaceCacheAccessStore.cache
+        )
+        let existingModels = manifest.models
+        for model in existingModels {
+            let updatedModel = try reconfigureExistingModel(
+                model,
+                cachedCandidate: cachedCandidate(for: model, in: candidates)
+            )
+            replaceExistingModel(
+                oldID: model.id,
+                with: updatedModel,
+                in: &manifest
+            )
         }
     }
 
@@ -161,13 +196,17 @@ public enum MLXServerModelSetupRunner {
             ) else {
                 continue
             }
-            let record = try configureCachedModel(candidate)
-            upsert(record: record, in: &manifest)
-            try updateDefaultModel(afterAdding: record, in: &manifest)
+            let configuredModel = try configureCachedModel(candidate)
+            upsert(record: configuredModel.record, in: &manifest)
+            try updateDefaultModel(
+                afterAdding: configuredModel.record,
+                askUser: configuredModel.shouldPromptForDefault,
+                in: &manifest
+            )
         }
     }
 
-    private static func configureRemoteModel() async throws -> MLXServerModelRecord {
+    private static func configureRemoteModel() async throws -> ConfiguredModelRecord {
         let client = MLXServerHuggingFaceCacheAccessStore.hubClient()
         let selectedModel = try await selectHuggingFaceModel(client: client)
         let repositoryID = selectedModel.id.rawValue
@@ -194,7 +233,9 @@ public enum MLXServerModelSetupRunner {
         )
     }
 
-    private static func configureCachedModel(_ candidate: MLXServerCachedModelCandidate) throws -> MLXServerModelRecord {
+    private static func configureCachedModel(
+        _ candidate: MLXServerCachedModelCandidate
+    ) throws -> ConfiguredModelRecord {
         try configureModelRecord(
             repositoryID: candidate.repositoryID,
             revision: candidate.revision,
@@ -203,26 +244,105 @@ public enum MLXServerModelSetupRunner {
         )
     }
 
+    private static func reconfigureExistingModel(
+        _ model: MLXServerModelRecord,
+        cachedCandidate: MLXServerCachedModelCandidate?
+    ) throws -> MLXServerModelRecord {
+        let importedDefaults = cachedCandidate.map {
+            MLXServerModelParameterImporter.importDefaults(from: $0.snapshotURL)
+        } ?? .init()
+        let effectiveDefaults = generationDefaults(
+            model.generationDefaults,
+            fallingBackTo: importedDefaults
+        )
+        let detectedThinking = cachedCandidate.map {
+            MLXServerModelParameterImporter.importThinking(
+                from: $0.snapshotURL,
+                repositoryID: model.repositoryID
+            )
+        }?.validated() ?? model.thinking.validated()
+        let runtimeKind = cachedCandidate.map { inferredRuntimeKind(from: $0) } ?? model.runtimeKind
+        let thinkingLabel = cachedCandidate == nil ? "Thinking corrente" : "Thinking rilevato"
+
+        FileHandle.standardError.writeString(
+            """
+
+            Modello configurato: \(model.id)
+            Repository: \(model.repositoryID)
+            Parametri correnti: \(generationDefaultsSummary(effectiveDefaults))
+            \(thinkingLabel): \(thinkingSummary(detectedThinking))
+
+            """
+        )
+
+        guard try promptYesNo(
+            "Vuoi modificare i parametri di questo modello?",
+            defaultValue: false
+        ) else {
+            return model
+        }
+
+        let id = try promptString(
+            "ID modello esposto dal server",
+            defaultValue: model.id,
+            allowEmpty: false
+        )
+        let generationDefaults = try configureGenerationDefaults(effectiveDefaults)
+
+        return try MLXServerModelRecord(
+            id: id,
+            displayName: repositoryDisplayName(model.repositoryID),
+            repositoryID: model.repositoryID,
+            revision: model.revision,
+            runtimeKind: runtimeKind,
+            enabled: model.enabled,
+            generationDefaults: generationDefaults,
+            thinking: detectedThinking
+        ).validated()
+    }
+
     private static func configureModelRecord(
         repositoryID: String,
         revision: String,
         snapshotURL: URL,
         defaultRuntimeKind: MLXServerModelRuntimeKind
-    ) throws -> MLXServerModelRecord {
+    ) throws -> ConfiguredModelRecord {
         let importedDefaults = MLXServerModelParameterImporter.importDefaults(from: snapshotURL)
         let importedThinking = MLXServerModelParameterImporter.importThinking(
             from: snapshotURL,
             repositoryID: repositoryID
-        )
-        let id = try promptString(
-            "ID modello esposto dal server",
-            defaultValue: repositoryID,
-            allowEmpty: false
-        )
-        let generationDefaults = try configureGenerationDefaults(importedDefaults)
-        let thinking = try configureThinking(importedThinking)
+        ).validated()
 
-        return try MLXServerModelRecord(
+        FileHandle.standardError.writeString(
+            """
+
+            Modello: \(repositoryID)
+            Parametri rilevati: \(generationDefaultsSummary(importedDefaults))
+            Thinking rilevato: \(thinkingSummary(importedThinking))
+
+            """
+        )
+
+        let shouldConfigureParameters = try promptYesNo(
+            "Vuoi modificare i parametri di questo modello?",
+            defaultValue: false
+        )
+
+        let id: String
+        let generationDefaults: MLXServerModelGenerationDefaults
+        if shouldConfigureParameters {
+            id = try promptString(
+                "ID modello esposto dal server",
+                defaultValue: repositoryID,
+                allowEmpty: false
+            )
+            generationDefaults = try configureGenerationDefaults(importedDefaults)
+        } else {
+            id = repositoryID
+            generationDefaults = importedDefaults.validated()
+        }
+
+        let record = try MLXServerModelRecord(
             id: id,
             displayName: repositoryDisplayName(repositoryID),
             repositoryID: repositoryID,
@@ -230,8 +350,13 @@ public enum MLXServerModelSetupRunner {
             runtimeKind: defaultRuntimeKind,
             enabled: true,
             generationDefaults: generationDefaults,
-            thinking: thinking
+            thinking: importedThinking
         ).validated()
+
+        return ConfiguredModelRecord(
+            record: record,
+            shouldPromptForDefault: shouldConfigureParameters
+        )
     }
 
     private static func configureGenerationDefaults(
@@ -243,8 +368,8 @@ public enum MLXServerModelSetupRunner {
             allowedRange: 1...Int.max
         )
         let maxOutputTokens = try promptInt(
-            "Max tokens in output",
-            defaultValue: defaults.maxOutputTokens ?? 4_096,
+            "max_output_tokens",
+            defaultValue: defaults.maxOutputTokens ?? 32_768,
             allowedRange: 1...Int.max
         )
         let temperature = try promptFloat(
@@ -261,6 +386,11 @@ public enum MLXServerModelSetupRunner {
             "top_k",
             defaultValue: defaults.topK ?? 0,
             allowedRange: 0...Int.max
+        )
+        let repetitionPenalty = try promptFloat(
+            "repetition_penalty",
+            defaultValue: defaults.repetitionPenalty ?? 1.0,
+            allowedRange: 0...Float.greatestFiniteMagnitude
         )
         let presencePenalty = try promptFloat(
             "presence_penalty",
@@ -279,66 +409,67 @@ public enum MLXServerModelSetupRunner {
             temperature: temperature,
             topP: topP,
             topK: topK,
+            repetitionPenalty: repetitionPenalty,
             presencePenalty: presencePenalty,
             frequencyPenalty: frequencyPenalty
         )
     }
 
-    private static func configureThinking(
-        _ defaults: MLXServerModelThinkingConfiguration
-    ) throws -> MLXServerModelThinkingConfiguration {
-        let normalizedDefaults = defaults.validated()
-        let supportsThinking = try promptYesNo(
-            "Il modello supporta thinking?",
-            defaultValue: normalizedDefaults.supportsThinking
-        )
-        guard supportsThinking else {
-            return .disabled
-        }
-
-        let supportsReasoningEffort = try promptYesNo(
-            "Supporta livelli di thinking?",
-            defaultValue: normalizedDefaults.supportsReasoningEffort
-        )
-        let supportsPreserveThinking = try promptYesNo(
-            "Preservare il thinking nella history quando il protocollo lo richiede?",
-            defaultValue: normalizedDefaults.supportsPreserveThinking
-        )
-
-        guard supportsReasoningEffort else {
-            return MLXServerModelThinkingConfiguration(
-                supportsThinking: true,
-                supportsReasoningEffort: false,
-                supportsPreserveThinking: supportsPreserveThinking,
-                availableSelections: [.off, .enabled],
-                defaultSelection: .enabled
-            ).validated()
-        }
-
-        let defaultLevels = MLXServerModelThinkingConfiguration.normalizedEffortLevels(
-            from: normalizedDefaults.availableSelections
-        )
-        let levels = try promptThinkingLevels(
-            "Livelli thinking disponibili",
-            defaultValue: defaultLevels.isEmpty
-                ? [.minimal, .low, .medium, .high, .xhigh]
-                : defaultLevels
-        )
-        let defaultSelection = try promptThinkingSelection(
-            "Livello thinking default",
-            defaultValue: normalizedDefaults.defaultSelection.isEffortLevel
-                ? normalizedDefaults.defaultSelection
-                : (levels.contains(.medium) ? .medium : levels[0]),
-            availableLevels: levels
-        )
-
-        return MLXServerModelThinkingConfiguration(
-            supportsThinking: true,
-            supportsReasoningEffort: true,
-            supportsPreserveThinking: supportsPreserveThinking,
-            availableSelections: [.off] + levels,
-            defaultSelection: defaultSelection
+    private static func generationDefaults(
+        _ preferred: MLXServerModelGenerationDefaults,
+        fallingBackTo fallback: MLXServerModelGenerationDefaults
+    ) -> MLXServerModelGenerationDefaults {
+        MLXServerModelGenerationDefaults(
+            contextWindow: preferred.contextWindow ?? fallback.contextWindow,
+            maxOutputTokens: preferred.maxOutputTokens ?? fallback.maxOutputTokens,
+            temperature: preferred.temperature ?? fallback.temperature,
+            topP: preferred.topP ?? fallback.topP,
+            topK: preferred.topK ?? fallback.topK,
+            repetitionPenalty: preferred.repetitionPenalty ?? fallback.repetitionPenalty,
+            presencePenalty: preferred.presencePenalty ?? fallback.presencePenalty,
+            frequencyPenalty: preferred.frequencyPenalty ?? fallback.frequencyPenalty
         ).validated()
+    }
+
+    private static func generationDefaultsSummary(
+        _ defaults: MLXServerModelGenerationDefaults
+    ) -> String {
+        let values = [
+            defaults.contextWindow.map { "context=\($0)" },
+            defaults.maxOutputTokens.map { "max_output_tokens=\($0)" },
+            defaults.temperature.map { "temperature=\(formatFloat($0))" },
+            defaults.topP.map { "top_p=\(formatFloat($0))" },
+            defaults.topK.map { "top_k=\($0)" },
+            defaults.repetitionPenalty.map { "repetition_penalty=\(formatFloat($0))" },
+            defaults.presencePenalty.map { "presence_penalty=\(formatFloat($0))" },
+            defaults.frequencyPenalty.map { "frequency_penalty=\(formatFloat($0))" }
+        ].compactMap { $0 }
+
+        return values.isEmpty ? "default runtime" : values.joined(separator: ", ")
+    }
+
+    private static func thinkingSummary(
+        _ thinking: MLXServerModelThinkingConfiguration
+    ) -> String {
+        let normalized = thinking.validated()
+        guard normalized.supportsThinking else {
+            return "off"
+        }
+
+        var parts = ["default=\(normalized.defaultSelection.rawValue)"]
+        if normalized.supportsReasoningEffort {
+            let levels = MLXServerModelThinkingConfiguration
+                .normalizedEffortLevels(from: normalized.availableSelections)
+                .map(\.rawValue)
+                .joined(separator: ", ")
+            parts.append("levels=\(levels)")
+        } else {
+            parts.append("mode=on/off")
+        }
+        if normalized.supportsPreserveThinking {
+            parts.append("preserve=true")
+        }
+        return parts.joined(separator: ", ")
     }
 
     private static func selectHuggingFaceModel(client: HubClient) async throws -> Model {
@@ -493,6 +624,17 @@ public enum MLXServerModelSetupRunner {
         return try? JSONDecoder().decode(ModelRuntimeKindProbe.self, from: data)
     }
 
+    private static func cachedCandidate(
+        for model: MLXServerModelRecord,
+        in candidates: [MLXServerCachedModelCandidate]
+    ) -> MLXServerCachedModelCandidate? {
+        candidates.first {
+            $0.repositoryID == model.repositoryID && $0.revision == model.revision
+        } ?? candidates.first {
+            $0.repositoryID == model.repositoryID
+        }
+    }
+
     private static func hasVisionProcessorFiles(in snapshotURL: URL) -> Bool {
         FileManager.default.fileExists(
             atPath: snapshotURL.appendingPathComponent("preprocessor_config.json").path
@@ -516,15 +658,39 @@ public enum MLXServerModelSetupRunner {
         }
     }
 
+    private static func replaceExistingModel(
+        oldID: String,
+        with record: MLXServerModelRecord,
+        in manifest: inout MLXServerModelsManifest
+    ) {
+        let wasDefault = manifest.defaultModelID == oldID
+        if let replacementIndex = manifest.models.firstIndex(where: { $0.id == oldID }) {
+            manifest.models[replacementIndex] = record
+            let duplicateIndices = manifest.models.indices.reversed().filter {
+                $0 != replacementIndex && manifest.models[$0].id == record.id
+            }
+            for index in duplicateIndices {
+                manifest.models.remove(at: index)
+            }
+        } else {
+            upsert(record: record, in: &manifest)
+        }
+        if wasDefault {
+            manifest.defaultModelID = record.id
+        }
+    }
+
     private static func updateDefaultModel(
         afterAdding record: MLXServerModelRecord,
+        askUser: Bool,
         in manifest: inout MLXServerModelsManifest
     ) throws {
         if manifest.defaultModelID == nil || manifest.models.count == 1 {
             manifest.defaultModelID = record.id
             return
         }
-        if try promptYesNo("Impostare \(record.id) come modello default?", defaultValue: false) {
+        if askUser,
+           try promptYesNo("Impostare \(record.id) come modello default?", defaultValue: false) {
             manifest.defaultModelID = record.id
         }
     }
@@ -604,65 +770,6 @@ public enum MLXServerModelSetupRunner {
         }
     }
 
-    private static func promptThinkingLevels(
-        _ prompt: String,
-        defaultValue: [MLXServerThinkingSelection]
-    ) throws -> [MLXServerThinkingSelection] {
-        let resolvedDefault = MLXServerModelThinkingConfiguration.normalizedEffortLevels(
-            from: defaultValue
-        )
-        let defaultString = formatThinkingLevels(
-            resolvedDefault.isEmpty ? [.minimal, .low, .medium, .high, .xhigh] : resolvedDefault
-        )
-
-        while true {
-            let value = try promptString(
-                prompt,
-                defaultValue: defaultString,
-                allowEmpty: false
-            )
-            let levels = MLXServerModelThinkingConfiguration.normalizedEffortLevels(
-                from: value
-                    .split(separator: ",")
-                    .compactMap { MLXServerThinkingSelection(protocolValue: String($0)) }
-            )
-            guard !levels.isEmpty else {
-                FileHandle.standardError.writeString("Valore non valido. Usa per esempio: low, medium, high\n")
-                continue
-            }
-            return levels
-        }
-    }
-
-    private static func promptThinkingSelection(
-        _ prompt: String,
-        defaultValue: MLXServerThinkingSelection,
-        availableLevels: [MLXServerThinkingSelection]
-    ) throws -> MLXServerThinkingSelection {
-        while true {
-            let value = try promptString(
-                prompt,
-                defaultValue: defaultValue.rawValue,
-                allowEmpty: false
-            )
-            guard let selection = MLXServerThinkingSelection(protocolValue: value),
-                  selection.isEffortLevel,
-                  availableLevels.contains(selection) else {
-                FileHandle.standardError.writeString(
-                    "Valore non valido. Disponibili: \(formatThinkingLevels(availableLevels))\n"
-                )
-                continue
-            }
-            return selection
-        }
-    }
-
-    private static func formatThinkingLevels(_ levels: [MLXServerThinkingSelection]) -> String {
-        MLXServerModelThinkingConfiguration.normalizedEffortLevels(from: levels)
-            .map(\.rawValue)
-            .joined(separator: ", ")
-    }
-
     private static func formatFloat(_ value: Float) -> String {
         String(format: "%.4g", Double(value))
     }
@@ -715,6 +822,11 @@ enum MLXServerModelSetupError: LocalizedError {
             return "Input closed during mlx-server model setup."
         }
     }
+}
+
+private struct ConfiguredModelRecord: Sendable {
+    var record: MLXServerModelRecord
+    var shouldPromptForDefault: Bool
 }
 
 private struct MLXServerCachedModelCandidate: Sendable {
@@ -854,6 +966,7 @@ private enum MLXServerModelParameterImporter {
             temperature: generationConfig?.temperature,
             topP: generationConfig?.topP,
             topK: generationConfig?.topK,
+            repetitionPenalty: generationConfig?.repetitionPenalty,
             presencePenalty: generationConfig?.presencePenalty,
             frequencyPenalty: generationConfig?.frequencyPenalty
         )
@@ -990,7 +1103,7 @@ private struct ModelThinkingMetadataDetector {
             supportsThinking = true
         }
 
-        if containsPreserveThinkingReference(text) {
+        if containsPreserveThinkingReference(text) || isKnownPreserveThinkingModelIdentifier(text) {
             supportsThinking = true
             supportsPreserveThinking = true
         }
@@ -1101,6 +1214,11 @@ private struct ModelThinkingMetadataDetector {
             || normalizedValue.contains("thinking")
             || normalizedValue.contains("deepseekr1")
             || normalizedValue.contains("gptoss")
+    }
+
+    private func isKnownPreserveThinkingModelIdentifier(_ value: String) -> Bool {
+        let normalizedValue = normalizedToken(value)
+        return normalizedValue.contains("qwen36")
     }
 
     private func isTruthy(_ value: String) -> Bool {
@@ -1226,6 +1344,7 @@ private struct GenerationConfigProbe: Decodable {
     var temperature: Float?
     var topP: Float?
     var topK: Int?
+    var repetitionPenalty: Float?
     var presencePenalty: Float?
     var frequencyPenalty: Float?
 
@@ -1235,6 +1354,7 @@ private struct GenerationConfigProbe: Decodable {
         case temperature
         case topP = "top_p"
         case topK = "top_k"
+        case repetitionPenalty = "repetition_penalty"
         case presencePenalty = "presence_penalty"
         case frequencyPenalty = "frequency_penalty"
     }

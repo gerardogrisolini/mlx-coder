@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import MLXCoderCore
 import MLXLMCommon
 import MLXServerCore
 import MLXServerHTTP
@@ -54,13 +55,20 @@ struct MLXServerMain {
             arguments = MLXServerAgentSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
         }
 
-        if arguments.contains("--prompt") {
-            let benchmarkOptions = try MLXServerBenchmarkOptions(arguments: arguments)
+        if arguments.contains("--coder") {
+            try await runCoder(arguments: arguments)
+            return
+        }
+
+        if arguments.contains("--chat") {
+            let chatOptions = try MLXServerChatOptions(arguments: arguments)
             try MLXMetalLibraryBootstrap.prepareIfNeeded()
+            let settings = try MLXServerSettingsStore.loadRequired()
             let modelCatalog = try MLXServerModelsManifestStore.loadRequired().catalog
-            try await runBenchmark(
-                model: try modelCatalog.resolve(id: benchmarkOptions.modelID),
-                options: benchmarkOptions
+            try await runChat(
+                model: try modelCatalog.resolve(id: chatOptions.modelID),
+                settings: settings,
+                options: chatOptions
             )
             return
         }
@@ -97,90 +105,209 @@ struct MLXServerMain {
         dispatchMain()
     }
 
-    private static func runBenchmark(
-        model: MLXServerModelDescriptor,
-        options: MLXServerBenchmarkOptions
-    ) async throws {
-        let runtime = MLXServerRuntime()
-
-        print("model: \(model.id)")
-        print("prompt: \(options.prompt)")
-        if let maxTokens = options.maxTokens {
-            print("maxTokens: \(maxTokens)")
-        } else {
-            print("maxTokens: unlimited")
-        }
-        print("warmups: \(options.warmupRuns)")
-        print("runs: \(options.measuredRuns)")
-        if let minimumGenerationTokensPerSecond = options.minimumGenerationTokensPerSecond {
-            print(
-                "minimumGenerationTokensPerSecond: \(formattedRate(minimumGenerationTokensPerSecond)) tok/s"
-            )
-        }
-        fflush(stdout)
-
-        if options.warmupRuns > 0 {
-            for index in 1...options.warmupRuns {
-                _ = try await runBenchmarkOnce(
+    private static func runCoder(arguments: [String]) async throws {
+        let options = try MLXServerCoderOptions(arguments: arguments)
+        try MLXMetalLibraryBootstrap.prepareIfNeeded()
+        let settings = try MLXServerSettingsStore.loadRequired()
+        let modelCatalog = try MLXServerModelsManifestStore.loadRequired().catalog
+        let initialModel = try modelCatalog.resolve(id: options.modelID)
+        let runtime = MLXServerRuntime(
+            retentionPolicy: settings.modelRetentionPolicy,
+            diskKVCacheConfiguration: settings.diskKVCache.configuration
+        )
+        let permissionAuthorizer = LocalExecPermissionAuthorizer()
+        let sessionRunner = AgentCoreSessionRunner(
+            defaultToolAuthorizationHandler: { request in
+                await permissionAuthorizer.authorize(request)
+            },
+            backendFactory: { configuration, mcpRuntime in
+                let model = try modelCatalog.resolve(
+                    id: configuration.modelID ?? initialModel.id
+                )
+                return MLXServerCoderBackend(
+                    configuration: configuration,
                     runtime: runtime,
                     model: model,
-                    options: options,
-                    label: "warmup \(index)",
-                    printsOutput: false
+                    mcpRuntime: mcpRuntime
                 )
             }
-        }
+        )
+        let configuration = try AgentConfiguration(
+            hostedModelID: initialModel.id,
+            agentName: options.agentName,
+            availableModels: coderModelManifests(from: modelCatalog.models),
+            bearerToken: nil,
+            runMode: .chat,
+            workingDirectory: options.workingDirectory,
+            initialSkillSelection: options.initialSkillSelection,
+            maxToolRounds: options.maxToolRounds,
+            maxOutputTokens: options.maxOutputTokens,
+            verboseLogging: options.verboseLogging,
+            appMode: false
+        )
+        let terminal = TerminalChat(
+            configuration: configuration,
+            stdinIsTerminal: TerminalRawInput.supportsInteractiveInput(),
+            sessionRunner: sessionRunner
+        )
 
-        var measuredResults: [MLXServerBenchmarkRunResult] = []
-        for index in 1...options.measuredRuns {
-            let result = try await runBenchmarkOnce(
-                runtime: runtime,
-                model: model,
-                options: options,
-                label: "run \(index)",
-                printsOutput: !options.quiet
+        do {
+            try await terminal.run()
+            await sessionRunner.shutdown()
+        } catch {
+            await sessionRunner.shutdown()
+            throw error
+        }
+    }
+
+    private static func coderModelManifests(
+        from models: [MLXServerModelDescriptor]
+    ) -> [AgentSettingsModelManifest] {
+        let providerID = UUID(uuidString: "00000000-0000-0000-0000-000000008080")!
+        return models.map { model in
+            let provider = AgentRemoteProvider(
+                id: providerID,
+                name: "mlx-server",
+                baseURL: "http://127.0.0.1",
+                modelID: model.id
             )
-            measuredResults.append(result)
-        }
-
-        let generationRates = measuredResults.map(\.generationTokensPerSecond)
-        let minimum = generationRates.min() ?? 0
-        let maximum = generationRates.max() ?? 0
-        let average = generationRates.reduce(0, +) / Double(max(generationRates.count, 1))
-        let median = median(generationRates)
-
-        print("summaryGenerationMin: \(formattedRate(minimum)) tok/s")
-        print("summaryGenerationMedian: \(formattedRate(median)) tok/s")
-        print("summaryGenerationAverage: \(formattedRate(average)) tok/s")
-        print("summaryGenerationMax: \(formattedRate(maximum)) tok/s")
-
-        if let threshold = options.minimumGenerationTokensPerSecond,
-           minimum < threshold {
-            throw MLXServerMainError.benchmarkThresholdNotMet(
-                required: threshold,
-                observed: minimum
+            return AgentSettingsModelManifest(
+                id: model.id,
+                kind: .remoteAPI,
+                title: model.displayName,
+                llmID: model.id,
+                modelID: model.id,
+                provider: provider,
+                configuredContextWindowLimit: model.generationDefaults.contextWindow,
+                generationParameterOverrides: AgentGenerationParameterOverrides(
+                    maxTokens: model.generationDefaults.maxOutputTokens,
+                    temperature: model.generationDefaults.temperature.map(Double.init),
+                    topP: model.generationDefaults.topP.map(Double.init),
+                    topK: model.generationDefaults.topK,
+                    repetitionPenalty: model.generationDefaults.repetitionPenalty.map(Double.init),
+                    presencePenalty: model.generationDefaults.presencePenalty.map(Double.init),
+                    frequencyPenalty: model.generationDefaults.frequencyPenalty.map(Double.init)
+                ),
+                thinkingOptions: coderThinkingOptions(from: model.thinking),
+                defaultThinkingSelection: AgentThinkingSelection(
+                    rawValue: model.thinking.defaultSelection.rawValue
+                )
             )
         }
     }
 
-    private static func runBenchmarkOnce(
+    private static func coderThinkingOptions(
+        from thinking: MLXServerModelThinkingConfiguration
+    ) -> [AgentThinkingSelection]? {
+        guard thinking.supportsThinking else {
+            return nil
+        }
+        let options = thinking.availableSelections.compactMap {
+            AgentThinkingSelection(rawValue: $0.rawValue)
+        }
+        return options.isEmpty ? nil : options
+    }
+
+    private static func runChat(
+        model: MLXServerModelDescriptor,
+        settings: MLXServerSettings,
+        options: MLXServerChatOptions
+    ) async throws {
+        let runtime = MLXServerRuntime(
+            retentionPolicy: settings.modelRetentionPolicy,
+            diskKVCacheConfiguration: settings.diskKVCache.configuration
+        )
+        let thinkingSelection = model.thinking.defaultEnabledSelection()
+        var additionalContext = model.thinking.additionalContext(for: thinkingSelection)
+        additionalContext["preserve_thinking"] = false
+        var messages: [MLXServerChatMessage] = []
+        var pendingInitialPrompt = options.initialPrompt
+        var turnResults: [MLXServerChatTurnResult] = []
+        var turnIndex = 1
+
+        if !options.quiet {
+            FileHandle.standardError.writeString(
+                """
+                mlx-server chat
+                model: \(model.id)
+                end: Ctrl+D
+
+                """
+            )
+        }
+
+        while true {
+            let userText: String
+            if let initialPrompt = pendingInitialPrompt {
+                pendingInitialPrompt = nil
+                userText = initialPrompt
+            } else {
+                if !options.quiet {
+                    FileHandle.standardError.writeString("mlx-server> ")
+                }
+                guard let line = readLine() else {
+                    if !options.quiet {
+                        FileHandle.standardError.writeString("\n")
+                    }
+                    break
+                }
+                userText = line
+            }
+
+            let trimmedUserText = userText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedUserText.isEmpty else {
+                continue
+            }
+
+            let result = try await runChatTurn(
+                runtime: runtime,
+                model: model,
+                messages: messages,
+                userText: trimmedUserText,
+                additionalContext: additionalContext,
+                options: options,
+                label: "turn \(turnIndex)",
+                printsOutput: !options.quiet
+            )
+            turnResults.append(result.metrics)
+            messages.append(.user(trimmedUserText))
+            messages.append(.assistant(result.visibleAssistantText))
+            turnIndex += 1
+
+            if let threshold = options.minimumGenerationTokensPerSecond,
+               result.metrics.generationTokensPerSecond < threshold {
+                throw MLXServerMainError.generationThresholdNotMet(
+                    required: threshold,
+                    observed: result.metrics.generationTokensPerSecond
+                )
+            }
+        }
+
+        if !turnResults.isEmpty {
+            printSummary(for: turnResults)
+        }
+    }
+
+    private static func runChatTurn(
         runtime: MLXServerRuntime,
         model: MLXServerModelDescriptor,
-        options: MLXServerBenchmarkOptions,
+        messages: [MLXServerChatMessage],
+        userText: String,
+        additionalContext: [String: any Sendable],
+        options: MLXServerChatOptions,
         label: String,
         printsOutput: Bool
-    ) async throws -> MLXServerBenchmarkRunResult {
+    ) async throws -> MLXServerChatTurnOutput {
         let request = MLXServerGenerationRequest(
             model: model,
-            messages: [
-                .user(options.prompt)
-            ],
+            messages: messages + [.user(userText)],
             parameters: model.generationDefaults.generateParameters(
-                maxTokens: options.maxTokens,
-                temperature: 0
-            )
+                maxTokens: options.maxTokens
+            ),
+            additionalContext: additionalContext,
+            retainsReasoningInHistory: false
         )
-        let stream = try await runtime.generate(request: request)
+        let stream = try await runtime.generateChatSession(request: request)
         var output = ""
         var completionInfo: GenerateCompletionInfo?
 
@@ -204,7 +331,7 @@ struct MLXServerMain {
         }
 
         guard let completionInfo else {
-            throw MLXServerMainError.benchmarkMissingMetrics
+            throw MLXServerMainError.generationMissingMetrics
         }
 
         print("\(label) promptTokens: \(completionInfo.promptTokenCount)")
@@ -216,10 +343,29 @@ struct MLXServerMain {
             print("\(label) warning: empty output")
         }
 
-        return MLXServerBenchmarkRunResult(
-            promptTokensPerSecond: completionInfo.promptTokensPerSecond,
-            generationTokensPerSecond: completionInfo.tokensPerSecond
+        return MLXServerChatTurnOutput(
+            visibleAssistantText: MLXServerChatSessionTranscriptText.visibleAssistantContent(
+                from: output,
+                startsInThinking: request.emitsThinking
+            ),
+            metrics: MLXServerChatTurnResult(
+                promptTokensPerSecond: completionInfo.promptTokensPerSecond,
+                generationTokensPerSecond: completionInfo.tokensPerSecond
+            )
         )
+    }
+
+    private static func printSummary(for results: [MLXServerChatTurnResult]) {
+        let generationRates = results.map(\.generationTokensPerSecond)
+        let minimum = generationRates.min() ?? 0
+        let maximum = generationRates.max() ?? 0
+        let average = generationRates.reduce(0, +) / Double(max(generationRates.count, 1))
+        let median = median(generationRates)
+
+        print("summaryGenerationMin: \(formattedRate(minimum)) tok/s")
+        print("summaryGenerationMedian: \(formattedRate(median)) tok/s")
+        print("summaryGenerationAverage: \(formattedRate(average)) tok/s")
+        print("summaryGenerationMax: \(formattedRate(maximum)) tok/s")
     }
 
     private static func median(_ values: [Double]) -> Double {
@@ -239,50 +385,127 @@ struct MLXServerMain {
     }
 }
 
-private struct MLXServerBenchmarkOptions {
+private struct MLXServerCoderOptions {
     var modelID: String?
-    var prompt: String
+    var agentName: String?
+    var workingDirectory: URL
+    var initialSkillSelection: String?
+    var maxToolRounds: Int
+    var maxOutputTokens: Int?
+    var verboseLogging: Bool
+
+    init(arguments: [String]) throws {
+        var modelID: String?
+        var agentName: String?
+        var workingDirectoryPath = ProcessInfo.processInfo.environment["PWD"]
+            ?? FileManager.default.currentDirectoryPath
+        var initialSkillSelection: String?
+        var maxToolRounds = 100
+        var maxOutputTokens: Int?
+        var verboseLogging = false
+        var didSeeCoder = false
+        var index = arguments.startIndex
+
+        while index < arguments.endIndex {
+            let argument = arguments[index]
+            switch argument {
+            case "--coder":
+                didSeeCoder = true
+            case "--chat":
+                throw MLXServerMainError.unsupportedArguments([argument])
+            case "--model":
+                let value = try Self.requiredValue(after: argument, in: arguments, index: &index)
+                modelID = value
+            case "--agent":
+                agentName = try Self.requiredValue(after: argument, in: arguments, index: &index)
+            case "--cwd":
+                workingDirectoryPath = try Self.requiredValue(after: argument, in: arguments, index: &index)
+            case "--skills":
+                initialSkillSelection = try Self.requiredValue(after: argument, in: arguments, index: &index)
+            case "--max-tool-rounds":
+                let value = try Self.requiredValue(after: argument, in: arguments, index: &index)
+                guard let parsed = Int(value), parsed > 0 else {
+                    throw MLXServerMainError.invalidArgument(argument, value)
+                }
+                maxToolRounds = parsed
+            case "--max-output-tokens":
+                let value = try Self.requiredValue(after: argument, in: arguments, index: &index)
+                guard let parsed = Int(value), parsed > 0 else {
+                    throw MLXServerMainError.invalidArgument(argument, value)
+                }
+                maxOutputTokens = parsed
+            case "--verbose":
+                verboseLogging = true
+            default:
+                throw MLXServerMainError.unsupportedArguments([argument])
+            }
+            index = arguments.index(after: index)
+        }
+
+        guard didSeeCoder else {
+            throw MLXServerMainError.missingRequiredArgument("--coder")
+        }
+
+        self.modelID = modelID
+        self.agentName = agentName
+        self.workingDirectory = AgentConfiguration.resolvedWorkingDirectory(
+            rawValue: workingDirectoryPath
+        )
+        self.initialSkillSelection = initialSkillSelection
+        self.maxToolRounds = maxToolRounds
+        self.maxOutputTokens = maxOutputTokens
+        self.verboseLogging = verboseLogging
+    }
+
+    private static func requiredValue(
+        after flag: String,
+        in arguments: [String],
+        index: inout Array<String>.Index
+    ) throws -> String {
+        let valueIndex = arguments.index(after: index)
+        guard valueIndex < arguments.endIndex else {
+            throw MLXServerMainError.missingRequiredArgument(flag)
+        }
+        index = valueIndex
+        return arguments[valueIndex]
+    }
+}
+
+private struct MLXServerChatOptions {
+    var modelID: String?
+    var initialPrompt: String?
     var maxTokens: Int?
     var quiet: Bool
-    var warmupRuns: Int
-    var measuredRuns: Int
     var minimumGenerationTokensPerSecond: Double?
 
     init(arguments: [String]) throws {
         var modelID: String?
-        var prompt: String?
+        var initialPrompt: String?
         var maxTokens: Int?
         var quiet = false
-        var warmupRuns = 0
-        var measuredRuns = 1
         var minimumGenerationTokensPerSecond: Double?
+        var didSeeChat = false
 
         var index = arguments.startIndex
         while index < arguments.endIndex {
             let argument = arguments[index]
             switch argument {
+            case "--chat":
+                didSeeChat = true
+                let valueIndex = arguments.index(after: index)
+                if valueIndex < arguments.endIndex,
+                   !arguments[valueIndex].hasPrefix("-") {
+                    initialPrompt = arguments[valueIndex]
+                    index = valueIndex
+                }
             case "--model":
                 modelID = try Self.requiredValue(after: argument, in: arguments, index: &index)
-            case "--prompt":
-                prompt = try Self.requiredValue(after: argument, in: arguments, index: &index)
             case "--max-tokens":
                 let value = try Self.requiredValue(after: argument, in: arguments, index: &index)
                 guard let parsed = Int(value), parsed > 0 else {
                     throw MLXServerMainError.invalidArgument(argument, value)
                 }
                 maxTokens = parsed
-            case "--benchmark-warmups":
-                let value = try Self.requiredValue(after: argument, in: arguments, index: &index)
-                guard let parsed = Int(value), parsed >= 0 else {
-                    throw MLXServerMainError.invalidArgument(argument, value)
-                }
-                warmupRuns = parsed
-            case "--benchmark-runs":
-                let value = try Self.requiredValue(after: argument, in: arguments, index: &index)
-                guard let parsed = Int(value), parsed > 0 else {
-                    throw MLXServerMainError.invalidArgument(argument, value)
-                }
-                measuredRuns = parsed
             case "--min-generation-tokens-per-second":
                 let value = try Self.requiredValue(after: argument, in: arguments, index: &index)
                 guard let parsed = Double(value), parsed >= 0 else {
@@ -297,16 +520,14 @@ private struct MLXServerBenchmarkOptions {
             index = arguments.index(after: index)
         }
 
-        guard let prompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw MLXServerMainError.missingRequiredArgument("--prompt")
+        guard didSeeChat else {
+            throw MLXServerMainError.missingRequiredArgument("--chat")
         }
 
         self.modelID = modelID
-        self.prompt = prompt
+        self.initialPrompt = initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.maxTokens = maxTokens
         self.quiet = quiet
-        self.warmupRuns = warmupRuns
-        self.measuredRuns = measuredRuns
         self.minimumGenerationTokensPerSecond = minimumGenerationTokensPerSecond
     }
 
@@ -324,7 +545,12 @@ private struct MLXServerBenchmarkOptions {
     }
 }
 
-private struct MLXServerBenchmarkRunResult {
+private struct MLXServerChatTurnOutput {
+    var visibleAssistantText: String
+    var metrics: MLXServerChatTurnResult
+}
+
+private struct MLXServerChatTurnResult {
     var promptTokensPerSecond: Double
     var generationTokensPerSecond: Double
 }
@@ -333,8 +559,8 @@ private enum MLXServerMainError: LocalizedError {
     case unsupportedArguments([String])
     case missingRequiredArgument(String)
     case invalidArgument(String, String)
-    case benchmarkMissingMetrics
-    case benchmarkThresholdNotMet(required: Double, observed: Double)
+    case generationMissingMetrics
+    case generationThresholdNotMet(required: Double, observed: Double)
 
     var errorDescription: String? {
         switch self {
@@ -344,10 +570,10 @@ private enum MLXServerMainError: LocalizedError {
             return "Missing required value for \(argument)."
         case .invalidArgument(let argument, let value):
             return "Invalid value for \(argument): \(value)."
-        case .benchmarkMissingMetrics:
-            return "Benchmark did not receive MLX completion metrics."
-        case .benchmarkThresholdNotMet(let required, let observed):
-            return "Benchmark failed: generation \(observed.formatted(.number.precision(.fractionLength(1)))) tok/s is below required \(required.formatted(.number.precision(.fractionLength(1)))) tok/s."
+        case .generationMissingMetrics:
+            return "Generation did not receive MLX completion metrics."
+        case .generationThresholdNotMet(let required, let observed):
+            return "Generation \(observed.formatted(.number.precision(.fractionLength(1)))) tok/s is below required \(required.formatted(.number.precision(.fractionLength(1)))) tok/s."
         }
     }
 }
@@ -362,13 +588,16 @@ private enum MLXServerHelp {
       mlx-server --setup-models
       mlx-server --setup-agents
       mlx-server
-      mlx-server --prompt <text> [--model <id>] [--max-tokens <count>] [--quiet]
-                 [--benchmark-warmups <count>] [--benchmark-runs <count>]
+      mlx-server --coder [--cwd <path>] [--model <id>] [--agent <name>] [--skills <list>]
+                 [--max-output-tokens <count>] [--max-tool-rounds <count>] [--verbose]
+      mlx-server --chat [initial text] [--model <id>] [--max-tokens <count>] [--quiet]
                  [--min-generation-tokens-per-second <tok/s>]
 
     Run mlx-server --setup once to create settings.json. At the end it can launch model setup too.
     Run mlx-server --setup-models directly to create or update models.json and download MLX models.
     Run mlx-server --setup-agents to configure Codex CLI, Codex App, Xcode Codex App, and Xcode Claude Code integrations.
+    Run mlx-server --coder to start the mlx-coder TUI with the local MLXServerRuntime directly, without HTTP or ACP.
+    Run mlx-server --chat to start an interactive terminal chat. Press Ctrl+D to exit.
     The server reads runtime settings from settings.json and models only from models.json.
     """
 }

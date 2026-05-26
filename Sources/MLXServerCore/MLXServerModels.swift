@@ -411,6 +411,7 @@ public struct MLXServerModelGenerationDefaults: Codable, Equatable, Sendable {
     public var temperature: Float?
     public var topP: Float?
     public var topK: Int?
+    public var repetitionPenalty: Float?
     public var presencePenalty: Float?
     public var frequencyPenalty: Float?
 
@@ -420,6 +421,7 @@ public struct MLXServerModelGenerationDefaults: Codable, Equatable, Sendable {
         case temperature
         case topP = "top_p"
         case topK = "top_k"
+        case repetitionPenalty = "repetition_penalty"
         case presencePenalty = "presence_penalty"
         case frequencyPenalty = "frequency_penalty"
     }
@@ -430,6 +432,7 @@ public struct MLXServerModelGenerationDefaults: Codable, Equatable, Sendable {
         temperature: Float? = nil,
         topP: Float? = nil,
         topK: Int? = nil,
+        repetitionPenalty: Float? = nil,
         presencePenalty: Float? = nil,
         frequencyPenalty: Float? = nil
     ) {
@@ -438,6 +441,7 @@ public struct MLXServerModelGenerationDefaults: Codable, Equatable, Sendable {
         self.temperature = temperature
         self.topP = topP
         self.topK = topK
+        self.repetitionPenalty = repetitionPenalty
         self.presencePenalty = presencePenalty
         self.frequencyPenalty = frequencyPenalty
     }
@@ -449,27 +453,31 @@ public struct MLXServerModelGenerationDefaults: Codable, Equatable, Sendable {
             temperature: temperature.map { max(0, $0) },
             topP: topP.map { min(max($0, 0), 1) },
             topK: topK.map { max(0, $0) },
+            repetitionPenalty: repetitionPenalty.map { max(0, $0) },
             presencePenalty: presencePenalty,
             frequencyPenalty: frequencyPenalty
         )
     }
 
     public func generateParameters(
-        maxTokens: Int? = nil,
-        temperature: Float? = nil,
-        topP: Float? = nil,
-        topK: Int? = nil,
-        presencePenalty: Float? = nil,
-        frequencyPenalty: Float? = nil
+        maxTokens: Int? = nil
     ) -> GenerateParameters {
         GenerateParameters(
             maxTokens: maxTokens ?? maxOutputTokens,
-            temperature: temperature ?? self.temperature ?? 0.6,
-            topP: topP ?? self.topP ?? 1.0,
-            topK: topK ?? self.topK ?? 0,
-            presencePenalty: presencePenalty ?? self.presencePenalty,
-            frequencyPenalty: frequencyPenalty ?? self.frequencyPenalty
+            temperature: temperature ?? 0.6,
+            topP: topP ?? 1.0,
+            topK: topK ?? 0,
+            repetitionPenalty: Self.runtimeRepetitionPenalty(repetitionPenalty),
+            presencePenalty: presencePenalty,
+            frequencyPenalty: frequencyPenalty
         )
+    }
+
+    private static func runtimeRepetitionPenalty(_ value: Float?) -> Float? {
+        guard let value, value != 0, value != 1 else {
+            return nil
+        }
+        return value
     }
 }
 

@@ -181,6 +181,7 @@ func savesAndLoadsModelsJSON() throws {
                     temperature: 0.2,
                     topP: 0.9,
                     topK: 40,
+                    repetitionPenalty: 1.1,
                     presencePenalty: 0.1,
                     frequencyPenalty: 0.2
                 ),
@@ -206,6 +207,7 @@ func savesAndLoadsModelsJSON() throws {
     #expect(model.generationDefaults.temperature == 0.2)
     #expect(model.generationDefaults.topP == 0.9)
     #expect(model.generationDefaults.topK == 40)
+    #expect(model.generationDefaults.repetitionPenalty == 1.1)
     #expect(model.generationDefaults.presencePenalty == 0.1)
     #expect(model.generationDefaults.frequencyPenalty == 0.2)
     #expect(model.thinking.supportsThinking)
@@ -267,6 +269,7 @@ func appliesModelGenerationDefaults() {
         temperature: 0.3,
         topP: 0.8,
         topK: 20,
+        repetitionPenalty: 1.1,
         presencePenalty: 0.4,
         frequencyPenalty: 0.5
     )
@@ -276,35 +279,33 @@ func appliesModelGenerationDefaults() {
     #expect(parameters.temperature == 0.3)
     #expect(parameters.topP == 0.8)
     #expect(parameters.topK == 20)
+    #expect(parameters.repetitionPenalty == 1.1)
     #expect(parameters.presencePenalty == 0.4)
     #expect(parameters.frequencyPenalty == 0.5)
 }
 
 @Test
-func requestGenerationParametersCanOverrideModelDefaults() {
+func maxTokensCanOverrideModelDefaultOutputLimit() {
     let defaults = MLXServerModelGenerationDefaults(
         maxOutputTokens: 1_024,
         temperature: 0.3,
         topP: 0.8,
         topK: 20,
+        repetitionPenalty: 1.1,
         presencePenalty: 0.4,
         frequencyPenalty: 0.5
     )
     let parameters = defaults.generateParameters(
-        maxTokens: 128,
-        temperature: 0,
-        topP: 1,
-        topK: 0,
-        presencePenalty: 0,
-        frequencyPenalty: 0
+        maxTokens: 128
     )
 
     #expect(parameters.maxTokens == 128)
-    #expect(parameters.temperature == 0)
-    #expect(parameters.topP == 1)
-    #expect(parameters.topK == 0)
-    #expect(parameters.presencePenalty == 0)
-    #expect(parameters.frequencyPenalty == 0)
+    #expect(parameters.temperature == 0.3)
+    #expect(parameters.topP == 0.8)
+    #expect(parameters.topK == 20)
+    #expect(parameters.repetitionPenalty == 1.1)
+    #expect(parameters.presencePenalty == 0.4)
+    #expect(parameters.frequencyPenalty == 0.5)
 }
 
 @Test

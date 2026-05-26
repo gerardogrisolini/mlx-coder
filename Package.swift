@@ -26,6 +26,7 @@ let package = Package(
         )
     ],
     dependencies: [
+        .package(path: "../mlx-coder"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.100.0"),
         .package(url: "https://github.com/apple/swift-nio-http2.git", from: "1.39.0"),
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.0.0"),
@@ -51,6 +52,7 @@ let package = Package(
                 "MLXServerCore",
                 "MLXServerHTTP",
                 "MLXServerSetup",
+                .product(name: "MLXCoderCore", package: "mlx-coder"),
                 .product(name: "HuggingFace", package: "swift-huggingface")
             ]
         ),

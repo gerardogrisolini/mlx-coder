@@ -943,11 +943,6 @@ private struct OpenAIChatCompletionRequest: Decodable, Sendable {
     var stream: Bool?
     var maxTokens: Int?
     var maxCompletionTokens: Int?
-    var temperature: Float?
-    var topP: Float?
-    var topK: Int?
-    var presencePenalty: Float?
-    var frequencyPenalty: Float?
     var tools: [OpenAIChatToolDefinition]?
     var reasoningEffort: String?
 
@@ -957,11 +952,6 @@ private struct OpenAIChatCompletionRequest: Decodable, Sendable {
         case stream
         case maxTokens = "max_tokens"
         case maxCompletionTokens = "max_completion_tokens"
-        case temperature
-        case topP = "top_p"
-        case topK = "top_k"
-        case presencePenalty = "presence_penalty"
-        case frequencyPenalty = "frequency_penalty"
         case tools
         case reasoningEffort = "reasoning_effort"
     }
@@ -983,12 +973,7 @@ private struct OpenAIChatCompletionRequest: Decodable, Sendable {
 
     func generateParameters(defaults: MLXServerModelGenerationDefaults) -> GenerateParameters {
         defaults.generateParameters(
-            maxTokens: maxCompletionTokens ?? maxTokens,
-            temperature: temperature,
-            topP: topP,
-            topK: topK,
-            presencePenalty: presencePenalty,
-            frequencyPenalty: frequencyPenalty
+            maxTokens: maxCompletionTokens ?? maxTokens
         )
     }
 }
@@ -1413,11 +1398,6 @@ private struct ResponsesRequest: Decodable, Sendable {
     var input: ResponsesInput
     var stream: Bool?
     var maxOutputTokens: Int?
-    var temperature: Float?
-    var topP: Float?
-    var topK: Int?
-    var presencePenalty: Float?
-    var frequencyPenalty: Float?
     var tools: [ResponsesToolDefinition]?
     var reasoning: ResponsesReasoningConfiguration?
 
@@ -1427,11 +1407,6 @@ private struct ResponsesRequest: Decodable, Sendable {
         case input
         case stream
         case maxOutputTokens = "max_output_tokens"
-        case temperature
-        case topP = "top_p"
-        case topK = "top_k"
-        case presencePenalty = "presence_penalty"
-        case frequencyPenalty = "frequency_penalty"
         case tools
         case reasoning
     }
@@ -1460,12 +1435,7 @@ private struct ResponsesRequest: Decodable, Sendable {
 
     func generateParameters(defaults: MLXServerModelGenerationDefaults) -> GenerateParameters {
         defaults.generateParameters(
-            maxTokens: maxOutputTokens,
-            temperature: temperature,
-            topP: topP,
-            topK: topK,
-            presencePenalty: presencePenalty,
-            frequencyPenalty: frequencyPenalty
+            maxTokens: maxOutputTokens
         )
     }
 }
@@ -2385,11 +2355,6 @@ private struct AnthropicMessagesRequest: Decodable, Sendable {
     var system: FlexibleMessageContent?
     var messages: [AnthropicInputMessage]
     var stream: Bool?
-    var temperature: Float?
-    var topP: Float?
-    var topK: Int?
-    var presencePenalty: Float?
-    var frequencyPenalty: Float?
     var tools: [AnthropicToolDefinition]?
     var thinking: AnthropicThinkingConfiguration?
 
@@ -2399,11 +2364,6 @@ private struct AnthropicMessagesRequest: Decodable, Sendable {
         case system
         case messages
         case stream
-        case temperature
-        case topP = "top_p"
-        case topK = "top_k"
-        case presencePenalty = "presence_penalty"
-        case frequencyPenalty = "frequency_penalty"
         case tools
         case thinking
     }
@@ -2433,12 +2393,7 @@ private struct AnthropicMessagesRequest: Decodable, Sendable {
 
     func generateParameters(defaults: MLXServerModelGenerationDefaults) -> GenerateParameters {
         defaults.generateParameters(
-            maxTokens: maxTokens,
-            temperature: temperature,
-            topP: topP,
-            topK: topK,
-            presencePenalty: presencePenalty,
-            frequencyPenalty: frequencyPenalty
+            maxTokens: maxTokens
         )
     }
 }
