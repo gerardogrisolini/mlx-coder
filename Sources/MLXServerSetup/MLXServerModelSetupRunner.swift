@@ -50,6 +50,7 @@ public enum MLXServerModelSetupRunner {
         if modelsFileExists {
             do {
                 manifest = try MLXServerModelsManifestStore.loadRequired(from: modelsURL)
+                refreshExistingModelRuntimeKinds(in: &manifest)
                 printExistingModels(manifest)
             } catch {
                 let shouldOverwrite = try promptYesNo(
@@ -95,6 +96,22 @@ public enum MLXServerModelSetupRunner {
 
         try MLXServerSettingsStore.save(settings, to: settingsURL)
         FileHandle.standardError.writeString("Aggiornato: settings.json\n\n")
+    }
+
+    private static func refreshExistingModelRuntimeKinds(in manifest: inout MLXServerModelsManifest) {
+        let candidates = MLXServerCachedModelScanner.candidates(
+            cache: MLXServerHuggingFaceCacheAccessStore.cache
+        )
+        for modelIndex in manifest.models.indices {
+            let repositoryID = manifest.models[modelIndex].repositoryID
+            let revision = manifest.models[modelIndex].revision
+            guard let candidate = candidates.first(where: {
+                $0.repositoryID == repositoryID && $0.revision == revision
+            }) else {
+                continue
+            }
+            manifest.models[modelIndex].runtimeKind = inferredRuntimeKind(from: candidate)
+        }
     }
 
     private static func importCachedModelsIfRequested(into manifest: inout MLXServerModelsManifest) throws {
@@ -170,7 +187,10 @@ public enum MLXServerModelSetupRunner {
             repositoryID: repositoryID,
             revision: revision,
             snapshotURL: snapshotURL,
-            defaultRuntimeKind: inferredRuntimeKind(from: selectedModel)
+            defaultRuntimeKind: inferredRuntimeKind(
+                fromSnapshot: snapshotURL,
+                fallback: inferredRuntimeKind(from: selectedModel)
+            )
         )
     }
 
@@ -433,22 +453,56 @@ public enum MLXServerModelSetupRunner {
     }
 
     private static func inferredRuntimeKind(from candidate: MLXServerCachedModelCandidate) -> MLXServerModelRuntimeKind {
-        let searchable = candidate.repositoryID.lowercased()
+        inferredRuntimeKind(
+            fromSnapshot: candidate.snapshotURL,
+            fallback: inferredRuntimeKind(fromRepositoryID: candidate.repositoryID)
+        )
+    }
+
+    private static func inferredRuntimeKind(
+        fromSnapshot snapshotURL: URL,
+        fallback: MLXServerModelRuntimeKind
+    ) -> MLXServerModelRuntimeKind {
+        if let probe = decodeRuntimeKindProbe(from: snapshotURL),
+           let preferredRuntimeKind = probe.preferredTextRuntimeKind {
+            return preferredRuntimeKind
+        }
+
+        if hasVisionProcessorFiles(in: snapshotURL) {
+            return .vlm
+        }
+
+        return fallback
+    }
+
+    private static func inferredRuntimeKind(fromRepositoryID repositoryID: String) -> MLXServerModelRuntimeKind {
+        let searchable = repositoryID.lowercased()
         if searchable.contains("vision")
             || searchable.contains("image")
-            || searchable.contains("vlm")
-            || FileManager.default.fileExists(
-                atPath: candidate.snapshotURL.appendingPathComponent("preprocessor_config.json").path
-            )
-            || FileManager.default.fileExists(
-                atPath: candidate.snapshotURL.appendingPathComponent("image_processor_config.json").path
-            )
-            || FileManager.default.fileExists(
-                atPath: candidate.snapshotURL.appendingPathComponent("processor_config.json").path
-            ) {
+            || searchable.contains("vlm") {
             return .vlm
         }
         return .llm
+    }
+
+    private static func decodeRuntimeKindProbe(from snapshotURL: URL) -> ModelRuntimeKindProbe? {
+        let configURL = snapshotURL.appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: configURL) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(ModelRuntimeKindProbe.self, from: data)
+    }
+
+    private static func hasVisionProcessorFiles(in snapshotURL: URL) -> Bool {
+        FileManager.default.fileExists(
+            atPath: snapshotURL.appendingPathComponent("preprocessor_config.json").path
+        )
+            || FileManager.default.fileExists(
+                atPath: snapshotURL.appendingPathComponent("image_processor_config.json").path
+            )
+            || FileManager.default.fileExists(
+                atPath: snapshotURL.appendingPathComponent("processor_config.json").path
+            )
     }
 
     private static func upsert(
@@ -1087,6 +1141,81 @@ private extension ModelMetadataValue {
             !array.isEmpty
         case .object(let object):
             !object.isEmpty
+        }
+    }
+}
+
+private struct ModelRuntimeKindProbe: Decodable {
+    var modelType: String?
+    var architectures: [String]?
+    var textConfig: Nested?
+
+    enum CodingKeys: String, CodingKey {
+        case modelType = "model_type"
+        case architectures
+        case textConfig = "text_config"
+    }
+
+    var preferredTextRuntimeKind: MLXServerModelRuntimeKind? {
+        for modelType in normalizedModelTypes {
+            if Self.llmTextRuntimeModelTypes.contains(modelType) {
+                return .llm
+            }
+        }
+
+        for modelType in normalizedModelTypes {
+            if Self.vlmOnlyModelTypes.contains(modelType) {
+                return .vlm
+            }
+        }
+
+        let architectureText = (architectures ?? [])
+            .joined(separator: " ")
+            .lowercased()
+        if architectureText.contains("vision")
+            || architectureText.contains("vlm")
+            || architectureText.contains("llava") {
+            return .vlm
+        }
+
+        return nil
+    }
+
+    private var normalizedModelTypes: [String] {
+        [modelType, textConfig?.modelType]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+    }
+
+    private static let llmTextRuntimeModelTypes: Set<String> = [
+        "qwen3_5",
+        "qwen3_5_moe",
+        "gemma3",
+        "gemma3n",
+        "gemma4"
+    ]
+
+    private static let vlmOnlyModelTypes: Set<String> = [
+        "fastvlm",
+        "glm_ocr",
+        "idefics3",
+        "lfm2-vl",
+        "lfm2_vl",
+        "llava_qwen2",
+        "mistral3",
+        "paligemma",
+        "pixtral",
+        "qwen2_5_vl",
+        "qwen2_vl",
+        "qwen3_vl",
+        "smolvlm"
+    ]
+
+    struct Nested: Decodable {
+        var modelType: String?
+
+        enum CodingKeys: String, CodingKey {
+            case modelType = "model_type"
         }
     }
 }
