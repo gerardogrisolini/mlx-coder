@@ -1,0 +1,150 @@
+//
+//  Generated split from MLXCoder.swift
+//  mlx-coder
+//
+
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+import Dispatch
+import Foundation
+
+public actor ACPPermissionBroker {
+    private let writer: ACPWriter
+    private var alwaysAllowedKeys = Set<String>()
+    private var alwaysRejectedKeys = Set<String>()
+
+    public init(writer: ACPWriter) {
+        self.writer = writer
+    }
+
+    public func authorize(_ request: AgentToolAuthorizationRequest) async -> Bool {
+        let cacheKey = permissionCacheKey(for: request)
+        if alwaysAllowedKeys.contains(cacheKey) {
+            return true
+        }
+        if alwaysRejectedKeys.contains(cacheKey) {
+            return false
+        }
+
+        let optionID: String
+        do {
+            let result = try await writer.request(
+                method: "session/request_permission",
+                params: JSONValue.acpValue(from: permissionParams(for: request))
+            )
+            optionID = Self.permissionOptionID(from: result) ?? "reject_once"
+        } catch {
+            return false
+        }
+
+        if optionID == "allow_always" {
+            alwaysAllowedKeys.insert(cacheKey)
+            return true
+        }
+        if optionID == "reject_always" {
+            alwaysRejectedKeys.insert(cacheKey)
+            return false
+        }
+        if optionID == "allow" || optionID.hasPrefix("allow_") {
+            return true
+        }
+        return false
+    }
+
+    public func handleResponse(_ message: JSONValue) async {
+        await writer.handleResponse(message)
+    }
+
+    private func permissionParams(for request: AgentToolAuthorizationRequest) -> [String: Any] {
+        let sessionID = request.sessionID ?? ""
+        return [
+            "sessionId": sessionID,
+            "options": [
+                [
+                    "optionId": "allow_once",
+                    "name": "Allow Once",
+                    "kind": "allow_once"
+                ],
+                [
+                    "optionId": "allow_always",
+                    "name": "Allow Always",
+                    "kind": "allow_always"
+                ],
+                [
+                    "optionId": "reject_once",
+                    "name": "Reject",
+                    "kind": "reject_once"
+                ],
+                [
+                    "optionId": "reject_always",
+                    "name": "Reject Always",
+                    "kind": "reject_always"
+                ]
+            ],
+            "toolCall": [
+                "toolCallId": request.toolCallID,
+                "rawInput": [
+                    "command": request.command,
+                    "description": "Run shell command in \(request.workingDirectory)",
+                    "workingDirectory": request.workingDirectory
+                ],
+                "status": "pending",
+                "title": request.title,
+                "kind": request.kind,
+                "content": [
+                    [
+                        "type": "content",
+                        "content": [
+                            "type": "text",
+                            "text": """
+                            Directory:
+                            \(request.workingDirectory)
+
+                            Command:
+                            \(request.command)
+                            """
+                        ]
+                    ]
+                ],
+                "locations": [
+                    [
+                        "path": request.workingDirectory
+                    ]
+                ]
+            ]
+        ]
+    }
+
+    private func permissionCacheKey(for request: AgentToolAuthorizationRequest) -> String {
+        [
+            request.sessionID ?? "",
+            request.toolName,
+            request.workingDirectory,
+            request.command
+        ].joined(separator: "\u{1f}")
+    }
+
+    private static func permissionOptionID(from result: JSONValue?) -> String? {
+        if let optionID = result?.acpStringValue {
+            return optionID
+        }
+        guard let object = result?.mlxObjectValue else {
+            return nil
+        }
+        if let optionID = object["optionId"]?.acpStringValue {
+            return optionID
+        }
+        if let outcome = object["outcome"]?.mlxObjectValue,
+           let optionID = outcome["optionId"]?.acpStringValue {
+            return optionID
+        }
+        if let selected = object["selected"]?.mlxObjectValue,
+           let optionID = selected["optionId"]?.acpStringValue {
+            return optionID
+        }
+        return nil
+    }
+}

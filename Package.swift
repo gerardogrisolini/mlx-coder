@@ -5,7 +5,8 @@ import PackageDescription
 let package = Package(
     name: "mlx-server",
     platforms: [
-        .macOS(.v26)
+        .macOS(.v26),
+        .iOS(.v26)
     ],
     products: [
         .library(
@@ -20,13 +21,25 @@ let package = Package(
             name: "MLXServerSetup",
             targets: ["MLXServerSetup"]
         ),
+        .library(
+            name: "MLXCoderCore",
+            targets: ["MLXCoderCore"]
+        ),
+        .library(
+            name: "MLXCoderSetup",
+            targets: ["MLXCoderSetup"]
+        ),
         .executable(
             name: "mlx-server",
             targets: ["mlx-server"]
+        ),
+        .executable(
+            name: "mlx-coder",
+            targets: ["mlx-coder"]
         )
     ],
     dependencies: [
-        .package(path: "../mlx-coder"),
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.100.0"),
         .package(url: "https://github.com/apple/swift-nio-http2.git", from: "1.39.0"),
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.0.0"),
@@ -52,8 +65,34 @@ let package = Package(
                 "MLXServerCore",
                 "MLXServerHTTP",
                 "MLXServerSetup",
-                .product(name: "MLXCoderCore", package: "mlx-coder"),
+                "MLXCoderCore",
                 .product(name: "HuggingFace", package: "swift-huggingface")
+            ]
+        ),
+        .target(
+            name: "MLXCoderCore",
+            dependencies: [
+                .product(name: "Crypto", package: "swift-crypto")
+            ],
+            swiftSettings: [
+                .define("SWIFTPM_NON_SANDBOX_TUI")
+            ]
+        ),
+        .target(
+            name: "MLXCoderSetup",
+            dependencies: ["MLXCoderCore"],
+            swiftSettings: [
+                .define("SWIFTPM_NON_SANDBOX_TUI")
+            ]
+        ),
+        .executableTarget(
+            name: "mlx-coder",
+            dependencies: [
+                "MLXCoderCore",
+                "MLXCoderSetup"
+            ],
+            swiftSettings: [
+                .define("SWIFTPM_NON_SANDBOX_TUI")
             ]
         ),
         .target(

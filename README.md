@@ -1,6 +1,6 @@
 # mlx-server
 
-`mlx-server` is a standalone Swift Package that runs local MLX language models behind API-compatible HTTP endpoints.
+`mlx-server` is a standalone Swift Package that runs local MLX language models behind API-compatible HTTP endpoints and includes the `mlx-coder` agent runtime.
 
 It is meant to be the local inference engine used by agent clients such as Codex, Claude Code, Xcode integrations, command line tools, and any app that can speak OpenAI-compatible, Responses-compatible, or Anthropic-compatible APIs. The server keeps model loading, prompt execution, protocol adaptation, streaming, thinking blocks, tool calls, and performance metrics in one small runtime path.
 
@@ -19,6 +19,7 @@ The goal is simple: expose downloaded MLX models as a fast local server without 
 - Can keep multiple models loaded, or unload the previous model before loading another one.
 - Records throughput metrics so regressions in tok/s are visible.
 - Provides a terminal chat mode that keeps session context alive and reports tok/s per turn.
+- Provides `mlx-coder` as a separate executable backed by the same package sources, plus a direct `mlx-server --coder` mode that runs it against the local MLX runtime without HTTP or ACP.
 
 ## What It Is For
 
@@ -35,7 +36,11 @@ The server is not a desktop app and does not own UI settings. It is the runtime/
 
 - `Sources/MLXServerCore`: reusable server core.
 - `Sources/MLXServerHTTP`: HTTP server, protocol adapters, SSE streaming, and metrics logging.
+- `Sources/MLXServerSetup`: server, model, and agent integration setup.
+- `Sources/MLXCoderCore`: reusable coder agent runtime, TUI, tools, skills, ACP, and shared prompt/config logic.
+- `Sources/MLXCoderSetup`: interactive setup for standalone `mlx-coder`.
 - `Sources/mlx-server`: command line executable.
+- `Sources/mlx-coder`: command line executable.
 - `Tests/MLXServerCoreTests`: core tests.
 - `Tests/MLXServerHTTPTests`: end-to-end HTTP tests for the supported protocols.
 - `Scripts/benchmark.sh`: repeatable local performance benchmark.
@@ -46,6 +51,7 @@ The server is not a desktop app and does not own UI settings. It is the runtime/
 - `MLXServerCore` currently links `MLXLLM`, `MLXLMCommon`, `MLXHuggingFace`, and `MLXVLM`.
 - `MLXServerHTTP` uses SwiftNIO, NIO HTTP/2, and NIO SSL.
 - `HuggingFace` and `Tokenizers` are linked directly for the MLX Hugging Face downloader/tokenizer macros.
+- `MLXCoderCore` uses Swift Crypto for local token and auth support.
 
 ## Configuration Files
 
@@ -72,7 +78,7 @@ swift run -c release mlx-server --setup-models
 
 The setup searches Hugging Face with the MLX filter, downloads the selected repository into the Hugging Face cache, imports the context window from `config.json`, generation defaults from `generation_config.json`, and thinking metadata from the model metadata/template files when available, then writes the model record to `models.json`.
 
-For each model the setup asks for the exposed model id, generation defaults, and the thinking configuration used by the API adapters: whether thinking is supported, whether effort levels are supported, the available levels, and the default level.
+For each model the setup shows the detected parameters and asks whether to edit them. If accepted, it lets you set the exposed model id, context window, `max_output_tokens`, sampling defaults, repetition penalty, and presence/frequency penalties. Thinking support, effort levels, and preserve-thinking support are detected automatically from the model metadata/template instead of being entered by hand.
 
 On the first run, if `models.json` does not exist yet, the setup also offers to import model snapshots that are already present in the Hugging Face cache. Each imported model still goes through the same generation parameter prompts before it is written to `models.json`.
 
@@ -98,6 +104,23 @@ The setup reads the current external configuration files as the source of truth,
 When a Codex integration is enabled, setup writes the local `mlx-server` model provider, the dedicated profile, and a small `mlx-server-codex-models.json` catalog pointing at the selected model. When it is disabled, setup removes only the profile it owns; the shared provider and catalog are removed only when no remaining `mlx-server` profile references them.
 
 Claude Code in Xcode is intentionally simpler: enabled means the dedicated Xcode Claude settings file exists and points at the local Anthropic-compatible server; disabled means that file is removed.
+
+## mlx-coder
+
+The package also builds `mlx-coder`:
+
+```bash
+swift run -c release mlx-coder --setup
+swift run -c release mlx-coder
+```
+
+`mlx-coder` keeps its own setup files (`AGENTS.md`, `MEMORY.md`, `agents.json`, and `settings.json`) and can still run as a standalone terminal agent. The server executable can also host the same coder runtime directly:
+
+```bash
+swift run -c release mlx-server --coder --cwd /path/to/project
+```
+
+In direct mode, `mlx-coder` uses the configured `mlx-server` model catalog and local MLX runtime without going through HTTP or ACP.
 
 ## Runtime
 
@@ -190,11 +213,14 @@ The helper script wraps the same command:
 ```bash
 swift test
 swift build -c release --product mlx-server
+swift build -c release --product mlx-coder
 swift run -c release mlx-server --help
 swift run -c release mlx-server --setup
 swift run -c release mlx-server --setup-models
 swift run -c release mlx-server --setup-agents
+swift run -c release mlx-coder --setup
 swift run -c release mlx-server --chat
+swift run -c release mlx-server --coder --cwd /path/to/project
 swift run -c release mlx-server --chat Ciao --max-tokens 256 --min-generation-tokens-per-second 29 --quiet
 ./Scripts/benchmark.sh
 ```

@@ -1,0 +1,224 @@
+//
+//  Split from DirectMLXAgentRuntime.swift
+//  MLXCoder
+//
+
+import Foundation
+
+public actor DirectToolExecutor {
+    public enum DirectToolExecutorError: LocalizedError {
+        case toolNotAllowed(String)
+
+        public var errorDescription: String? {
+            switch self {
+            case let .toolNotAllowed(toolName):
+                return "The tool '\(toolName)' is not enabled for this agent session."
+            }
+        }
+    }
+
+    public struct ProcessResult: Sendable {
+        public let status: Int32
+        public let stdout: String
+        public let stderr: String
+        public let timedOut: Bool
+    }
+
+    public let outputLimit: Int
+    public let authorizationHandler: AgentToolAuthorizationHandler?
+    public let subAgentRuntime: DirectSubAgentRuntime
+    public let mcpRuntime: DirectMCPToolRuntime
+    public let orchestrationRuntime = DirectOrchestrationRuntime()
+    public var borrowedOrchestrationToolExecutor: AgentBorrowedToolExecutor?
+    public var toolProviderRegistry = AgentToolProviderRegistry()
+
+    public init(
+        outputLimit: Int,
+        authorizationHandler: AgentToolAuthorizationHandler? = nil,
+        mcpRuntime: DirectMCPToolRuntime = DirectMCPToolRuntime(),
+        borrowedOrchestrationToolExecutor: AgentBorrowedToolExecutor? = nil,
+        subAgentBackendFactory: @escaping DirectSubAgentBackendFactory
+    ) {
+        self.outputLimit = outputLimit
+        self.authorizationHandler = authorizationHandler
+        self.mcpRuntime = mcpRuntime
+        self.borrowedOrchestrationToolExecutor = borrowedOrchestrationToolExecutor
+        self.subAgentRuntime = DirectSubAgentRuntime(
+            backendFactory: subAgentBackendFactory
+        )
+    }
+
+    public func updateBorrowedOrchestrationToolExecutor(
+        _ executor: AgentBorrowedToolExecutor?
+    ) {
+        borrowedOrchestrationToolExecutor = executor
+    }
+
+    public func updateToolProviders(_ providers: [AgentToolProvider]) {
+        toolProviderRegistry.update(providers)
+    }
+
+    public func shutdown() async {
+        await subAgentRuntime.shutdown()
+    }
+
+    public func subAgentSnapshots() async -> [DirectSubAgentRuntime.AgentSnapshot] {
+        await subAgentRuntime.snapshots()
+    }
+
+    public func descriptors(
+        allowedToolNames: Set<String>? = nil
+    ) async -> [DirectToolDescriptor] {
+        if allowedToolNames?.isEmpty == true {
+            return []
+        }
+
+        var descriptors = DirectToolCatalog.baseDescriptors
+        descriptors.append(contentsOf: toolProviderRegistry.descriptors)
+        descriptors.append(
+            contentsOf: await mcpRuntime.descriptors(
+                allowedToolNames: allowedToolNames
+            )
+        )
+        return Self.filtered(
+            Self.canonicalized(descriptors),
+            allowedToolNames: allowedToolNames
+        )
+    }
+
+    public func chatCompletionToolPayloads(
+        allowedToolNames: Set<String>? = nil
+    ) async -> [[String: Any]] {
+        let descriptors = await descriptors(allowedToolNames: allowedToolNames)
+        return descriptors.compactMap { descriptor in
+            guard let schema = descriptor.schemaObject else {
+                return nil
+            }
+            return [
+                "type": "function",
+                "function": [
+                    "name": descriptor.name,
+                    "description": descriptor.description,
+                    "parameters": schema
+                ]
+            ]
+        }
+    }
+
+    public func responsesToolPayloads(
+        allowedToolNames: Set<String>? = nil
+    ) async -> [[String: Any]] {
+        let descriptors = await descriptors(allowedToolNames: allowedToolNames)
+        return descriptors.compactMap { descriptor in
+            guard let schema = descriptor.schemaObject else {
+                return nil
+            }
+            return [
+                "type": "function",
+                "name": descriptor.name,
+                "description": descriptor.description,
+                "parameters": schema
+            ]
+        }
+    }
+
+    public func execute(
+        sessionID: String?,
+        toolCall: DirectAgentToolCall,
+        workingDirectory: URL,
+        allowedToolNames: Set<String>? = nil
+    ) async -> DirectAgentToolResult {
+        do {
+            guard Self.isAllowed(toolCall.name, allowedToolNames: allowedToolNames) else {
+                throw DirectToolExecutorError.toolNotAllowed(toolCall.name)
+            }
+            let output = try await executeThrowing(
+                sessionID: sessionID,
+                toolCall: toolCall,
+                workingDirectory: workingDirectory,
+                allowedToolNames: allowedToolNames
+            )
+            return DirectAgentToolResult(
+                output: truncated(output),
+                summary: summary(from: output)
+            )
+        } catch {
+            let output = "Tool error: \(error.localizedDescription)"
+            return DirectAgentToolResult(output: output, summary: output)
+        }
+    }
+
+    public static func filtered(
+        _ descriptors: [DirectToolDescriptor],
+        allowedToolNames: Set<String>?
+    ) -> [DirectToolDescriptor] {
+        guard let allowedToolNames else {
+            return descriptors
+        }
+
+        guard !allowedToolNames.isEmpty else {
+            return []
+        }
+
+        return descriptors.filter {
+            isAllowed($0.name, allowedToolNames: allowedToolNames)
+        }
+    }
+
+    public static func isAllowed(
+        _ toolName: String,
+        allowedToolNames: Set<String>?
+    ) -> Bool {
+        guard let allowedToolNames else {
+            return true
+        }
+
+        guard !allowedToolNames.isEmpty else {
+            return false
+        }
+
+        if allowedToolNames.contains(toolName) {
+            return true
+        }
+
+        if allowedToolNames.contains(where: { allowedToolName in
+            allowedToolName.hasSuffix(".") && toolName.hasPrefix(allowedToolName)
+        }) {
+            return true
+        }
+
+        if let canonicalSubAgentToolName = DirectSubAgentRuntime.canonicalSubAgentToolName(for: toolName),
+           allowedToolNames.contains(canonicalSubAgentToolName) {
+            return true
+        }
+
+        if let canonicalOrchestrationToolName = OrchestrationToolRequestCompatibility.canonicalToolName(for: toolName),
+           allowedToolNames.contains(canonicalOrchestrationToolName) {
+            return true
+        }
+
+        if DirectMCPToolRuntime.isXcodeToolName(toolName) {
+            if allowedToolNames.contains("xcode.") {
+                return true
+            }
+            if let canonicalXcodeToolName = DirectMCPToolRuntime.canonicalXcodeToolName(for: toolName),
+               allowedToolNames.contains(canonicalXcodeToolName) {
+                return true
+            }
+        }
+
+        for prefix in ["xcode.", "figma."] where toolName.hasPrefix(prefix) {
+            let unprefixedName = String(toolName.dropFirst(prefix.count))
+            if allowedToolNames.contains(unprefixedName) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    public static func isOrchestrationToolName(_ toolName: String) -> Bool {
+        DirectSubAgentRuntime.isSubAgentToolName(toolName)
+            || DirectOrchestrationRuntime.isTodoOrTaskToolName(toolName)
+    }
+}
