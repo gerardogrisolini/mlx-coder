@@ -3,8 +3,11 @@
 //  mlx-server
 //
 
+import CryptoKit
 import Foundation
+import MLX
 @preconcurrency import MLXLMCommon
+import Tokenizers
 
 public struct MLXServerChatMessage: Sendable, Equatable {
     public enum Role: String, Sendable, Hashable {
@@ -111,6 +114,76 @@ public struct MLXServerGenerationOutput: Sendable {
     }
 }
 
+public enum MLXServerRuntimeError: LocalizedError, Sendable, Equatable {
+    case emptyPrompt
+
+    public var errorDescription: String? {
+        switch self {
+        case .emptyPrompt:
+            "Prompt can not be empty."
+        }
+    }
+}
+
+public struct MLXServerChatCacheEvent: Sendable, Equatable {
+    public enum Status: String, Sendable, Equatable {
+        case memoryHit = "memory_hit"
+        case diskHit = "disk_hit"
+        case diskPrefixHit = "disk_prefix_hit"
+        case miss
+    }
+
+    public var status: Status
+    public var cachedSessionCount: Int
+    public var modelSessionCount: Int
+    public var priorTranscriptCount: Int
+    public var bestCommonPrefixCount: Int
+    public var bestCachedTranscriptCount: Int
+    public var bestModelCommonPrefixCount: Int
+    public var bestModelCachedTranscriptCount: Int
+    public var bestModelSameSystemSignature: Bool?
+    public var bestModelSameToolsSignature: Bool?
+    public var bestModelSameAdditionalContextSignature: Bool?
+    public var bestModelSameMediaResizeSignature: Bool?
+    public var bestModelSameReasoningRetention: Bool?
+    public var restoredPromptPrefixTokenCount: Int?
+    public var cachedPromptTokenCount: Int?
+
+    public init(
+        status: Status,
+        cachedSessionCount: Int,
+        modelSessionCount: Int,
+        priorTranscriptCount: Int,
+        bestCommonPrefixCount: Int,
+        bestCachedTranscriptCount: Int,
+        bestModelCommonPrefixCount: Int,
+        bestModelCachedTranscriptCount: Int,
+        bestModelSameSystemSignature: Bool? = nil,
+        bestModelSameToolsSignature: Bool? = nil,
+        bestModelSameAdditionalContextSignature: Bool? = nil,
+        bestModelSameMediaResizeSignature: Bool? = nil,
+        bestModelSameReasoningRetention: Bool? = nil,
+        restoredPromptPrefixTokenCount: Int? = nil,
+        cachedPromptTokenCount: Int? = nil
+    ) {
+        self.status = status
+        self.cachedSessionCount = cachedSessionCount
+        self.modelSessionCount = modelSessionCount
+        self.priorTranscriptCount = priorTranscriptCount
+        self.bestCommonPrefixCount = bestCommonPrefixCount
+        self.bestCachedTranscriptCount = bestCachedTranscriptCount
+        self.bestModelCommonPrefixCount = bestModelCommonPrefixCount
+        self.bestModelCachedTranscriptCount = bestModelCachedTranscriptCount
+        self.bestModelSameSystemSignature = bestModelSameSystemSignature
+        self.bestModelSameToolsSignature = bestModelSameToolsSignature
+        self.bestModelSameAdditionalContextSignature = bestModelSameAdditionalContextSignature
+        self.bestModelSameMediaResizeSignature = bestModelSameMediaResizeSignature
+        self.bestModelSameReasoningRetention = bestModelSameReasoningRetention
+        self.restoredPromptPrefixTokenCount = restoredPromptPrefixTokenCount
+        self.cachedPromptTokenCount = cachedPromptTokenCount
+    }
+}
+
 public protocol MLXServerRuntimeGenerating: Sendable {
     func generateChatSession(
         request: MLXServerGenerationRequest
@@ -119,6 +192,10 @@ public protocol MLXServerRuntimeGenerating: Sendable {
     func generateChatSessionText(
         request: MLXServerGenerationRequest
     ) async throws -> MLXServerGenerationOutput
+}
+
+public protocol MLXServerRuntimeCacheDiagnosing: Sendable {
+    func consumeLastChatCacheEvent() async -> MLXServerChatCacheEvent?
 }
 
 extension MLXServerRuntime: MLXServerRuntimeGenerating {
@@ -132,6 +209,15 @@ extension MLXServerRuntime: MLXServerRuntimeGenerating {
         request: MLXServerGenerationRequest
     ) async throws -> MLXServerGenerationOutput {
         try await generateChatSessionText(request: request, progressHandler: { _ in })
+    }
+}
+
+extension MLXServerRuntime: MLXServerRuntimeCacheDiagnosing {
+    public func consumeLastChatCacheEvent() async -> MLXServerChatCacheEvent? {
+        defer {
+            lastChatCacheEvent = nil
+        }
+        return lastChatCacheEvent
     }
 }
 
@@ -171,11 +257,12 @@ public enum MLXServerReasoningTranscript {
 public actor MLXServerRuntime {
     private var containers: [LoadedModelKey: ModelContainer] = [:]
     private var loadingTasks: [LoadedModelKey: Task<ModelContainer, any Error>] = [:]
-    private var chatSessions: [ChatSessionKey: [ChatSessionState]] = [:]
-    private var chatSessionGeneration: UInt64 = 0
+    private var promptPrefixCaches: [PromptPrefixCacheKey: [PromptPrefixCacheState]] = [:]
+    private var promptPrefixCacheGeneration: UInt64 = 0
     private let generationGate = MLXServerGenerationGate()
     private let retentionPolicy: MLXServerModelRetentionPolicy
     private let diskKVCacheStore: MLXServerDiskKVCacheStore?
+    private var lastChatCacheEvent: MLXServerChatCacheEvent?
 
     public init(
         retentionPolicy: MLXServerModelRetentionPolicy = .keepLoadedModels,
@@ -194,7 +281,7 @@ public actor MLXServerRuntime {
     public func unloadAll() {
         containers.removeAll(keepingCapacity: true)
         loadingTasks.removeAll(keepingCapacity: true)
-        chatSessions.removeAll(keepingCapacity: true)
+        promptPrefixCaches.removeAll(keepingCapacity: true)
     }
 
     public func generate(
@@ -252,116 +339,182 @@ public actor MLXServerRuntime {
         request: MLXServerGenerationRequest,
         progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
     ) async throws -> AsyncStream<Generation> {
-        guard let descriptor = ChatSessionDescriptor(request: request) else {
+        guard request.messages.allSatisfy({ $0.imageURLs.isEmpty && $0.videoURLs.isEmpty }) else {
             return try await generate(request: request, progressHandler: progressHandler)
         }
 
         await generationGate.acquire()
 
-        let container = try await container(
-            for: request.model,
-            runtimeKind: request.runtimeKind,
-            progressHandler: progressHandler
-        )
+        let container: ModelContainer
+        let rendering: PromptPrefixRendering
+        let cacheKey: PromptPrefixCacheKey
+        let cache: [KVCache]
+        let cachedPromptTokenCount: Int
+        let tokenStream: AsyncStream<TokenGeneration>
+        let generationTask: Task<Void, Never>
+        let tokenizer: any MLXLMCommon.Tokenizer
+        let toolCallFormat: ToolCallFormat
+        let toolCallSchemas = request.tools
 
-        let state: ChatSessionState
-        let parameters = request.parameters
-        if let cached = cachedChatSession(for: descriptor) {
-            state = cached
-            state.session.generateParameters = parameters
-            state.session.processing = .init(resize: request.mediaResize)
-            state.session.additionalContext = request.additionalContext
-            state.session.tools = request.tools
-        } else if let restoredCache = restoredDiskCache(for: descriptor, parameters: parameters) {
-            let session = ChatSession(
-                container,
-                instructions: nil,
-                cache: restoredCache,
-                generateParameters: parameters,
-                processing: .init(resize: request.mediaResize),
-                additionalContext: request.additionalContext,
-                tools: request.tools
+        do {
+            container = try await self.container(
+                for: request.model,
+                runtimeKind: request.runtimeKind,
+                progressHandler: progressHandler
             )
-            state = registerChatSession(session, for: descriptor)
-        } else {
-            let session = ChatSession(
-                container,
-                instructions: nil,
-                history: descriptor.history,
-                generateParameters: parameters,
-                processing: .init(resize: request.mediaResize),
-                additionalContext: request.additionalContext,
-                tools: request.tools
+            rendering = try await renderedPrompt(
+                for: request,
+                container: container
             )
-            state = registerChatSession(session, for: descriptor)
+            guard !rendering.tokenIDs.isEmpty else {
+                throw MLXServerRuntimeError.emptyPrompt
+            }
+            tokenizer = rendering.tokenizer
+            toolCallFormat = rendering.toolCallFormat
+            cacheKey = PromptPrefixCacheKey(
+                modelID: request.model.id,
+                runtimeKind: request.runtimeKind,
+                cacheLayoutSignature: PromptPrefixSignature.cacheLayout(request.parameters)
+            )
+
+            let cacheProbe = promptPrefixCacheProbe(
+                key: cacheKey,
+                promptTokenIDs: rendering.tokenIDs
+            )
+
+            let selectedCache: [KVCache]
+            let selectedCachedPromptTokenCount: Int
+            let selectedCacheStatus: MLXServerChatCacheEvent.Status
+
+            if let memoryMatch = promptPrefixMemoryMatch(
+                key: cacheKey,
+                promptTokenIDs: rendering.tokenIDs
+            ) {
+                selectedCache = memoryMatch.cache
+                selectedCachedPromptTokenCount = memoryMatch.prefixTokenCount
+                selectedCacheStatus = .memoryHit
+            } else if let diskMatch = diskKVCacheStore?.loadLongestPromptPrefix(
+                for: MLXServerDiskKVCachePrefixQuery(
+                    modelID: request.model.id,
+                    runtimeKind: request.runtimeKind,
+                    cacheLayoutSignature: PromptPrefixSignature.cacheLayout(request.parameters),
+                    promptTokenIDs: rendering.tokenIDs
+                )
+            ) {
+                selectedCache = diskMatch.cache
+                selectedCachedPromptTokenCount = diskMatch.promptTokenCount
+                selectedCacheStatus = .diskPrefixHit
+            } else {
+                selectedCache = try await newPromptCache(
+                    container: container,
+                    parameters: request.parameters
+                )
+                selectedCachedPromptTokenCount = 0
+                selectedCacheStatus = .miss
+            }
+
+            let effectiveCache = effectivePromptPrefixCache(
+                selectedCache,
+                cachedPromptTokenCount: selectedCachedPromptTokenCount,
+                promptTokenCount: rendering.tokenIDs.count
+            )
+            if effectiveCache.cache.isEmpty {
+                cache = try await newPromptCache(
+                    container: container,
+                    parameters: request.parameters
+                )
+                cachedPromptTokenCount = 0
+            } else {
+                cache = effectiveCache.cache
+                cachedPromptTokenCount = effectiveCache.prefixTokenCount
+            }
+            let effectiveCacheStatus: MLXServerChatCacheEvent.Status =
+                cachedPromptTokenCount > 0 ? selectedCacheStatus : .miss
+            lastChatCacheEvent = cacheProbe.event(
+                status: effectiveCacheStatus,
+                restoredPromptPrefixTokenCount: cachedPromptTokenCount > 0 ? cachedPromptTokenCount : nil,
+                cachedPromptTokenCount: cachedPromptTokenCount > 0 ? cachedPromptTokenCount : nil
+            )
+
+            let suffixTokenIDs = Array(rendering.tokenIDs.dropFirst(cachedPromptTokenCount))
+            guard !suffixTokenIDs.isEmpty else {
+                throw MLXServerRuntimeError.emptyPrompt
+            }
+
+            let generation = try await promptPrefixTokenStream(
+                cache: cache,
+                suffixTokenIDs: suffixTokenIDs,
+                parameters: request.parameters,
+                container: container
+            )
+            tokenStream = generation.stream
+            generationTask = generation.task
+        } catch {
+            await generationGate.release()
+            throw error
         }
 
-        let current = descriptor.current
-        let currentFingerprint = descriptor.currentFingerprint
-        let priorTranscript = descriptor.priorTranscript
-        let key = descriptor.key
-        let sessionID = state.id
-        let emitsThinking = request.emitsThinking
-        let retainsReasoningInHistory = request.retainsReasoningInHistory
-        let stream = state.session.streamDetails(
-            to: current.content,
-            role: current.mlxRole,
-            images: current.imageURLs.map(UserInput.Image.url),
-            videos: current.videoURLs.map(UserInput.Video.url)
-        )
-
+        let promptTokenIDs = rendering.tokenIDs
+        let parameters = request.parameters
         return AsyncStream { continuation in
-            let task = Task.detached {
-                var assistantText = ""
+            let task = Task {
+                var detokenizer = NaiveStreamingDetokenizer(tokenizer: tokenizer)
+                let toolCallProcessor = ToolCallProcessor(
+                    format: toolCallFormat,
+                    tools: toolCallSchemas
+                )
+                var generatedTokenIDs: [Int] = []
                 var toolCalls: [ToolCall] = []
-                var completed = false
-                do {
-                    for try await event in stream {
-                        if Task.isCancelled {
-                            break
-                        }
-                        switch event {
-                        case .chunk(let chunk):
-                            assistantText += chunk
-                        case .toolCall(let toolCall):
-                            toolCalls.append(toolCall)
-                        case .info:
-                            break
-                        }
-                        if case .info = event {
-                            completed = true
-                        }
-                        continuation.yield(event)
+                var completionInfo: GenerateCompletionInfo?
+
+                for await event in tokenStream {
+                    if Task.isCancelled {
+                        break
                     }
-                } catch {
-                    completed = false
+                    switch event {
+                    case .token(let token):
+                        generatedTokenIDs.append(token)
+                        detokenizer.append(token: token)
+                        guard let chunk = detokenizer.next() else {
+                            continue
+                        }
+                        if let text = toolCallProcessor.processChunk(chunk) {
+                            continuation.yield(.chunk(text))
+                        }
+                        if let toolCall = toolCallProcessor.toolCalls.popLast() {
+                            toolCalls.append(toolCall)
+                            continuation.yield(.toolCall(toolCall))
+                        }
+                    case .info(let info):
+                        completionInfo = info
+                    }
                 }
-                if completed, !Task.isCancelled {
-                    await self.finishChatSessionTurn(
-                        key: key,
-                        sessionID: sessionID,
-                        priorTranscript: priorTranscript,
-                        current: currentFingerprint,
-                        reasoningText: retainsReasoningInHistory
-                            ? MLXServerChatSessionTranscriptText.reasoningContent(
-                                from: assistantText,
-                                startsInThinking: emitsThinking
-                            )
-                            : "",
-                        assistantText: MLXServerChatSessionTranscriptText.visibleAssistantContent(
-                            from: assistantText,
-                            startsInThinking: emitsThinking
-                        ),
-                        toolCalls: toolCalls
+
+                toolCallProcessor.processEOS()
+                for toolCall in toolCallProcessor.toolCalls {
+                    toolCalls.append(toolCall)
+                    continuation.yield(.toolCall(toolCall))
+                }
+
+                await generationTask.value
+
+                if let completionInfo, !Task.isCancelled {
+                    await self.finishPromptPrefixGeneration(
+                        key: cacheKey,
+                        cache: cache,
+                        promptTokenIDs: promptTokenIDs,
+                        generatedTokenIDs: generatedTokenIDs,
+                        parameters: parameters
                     )
-                } else {
-                    await self.invalidateChatSession(key: key, sessionID: sessionID)
+                    continuation.yield(.info(completionInfo))
                 }
+
                 await self.generationGate.release()
                 continuation.finish()
             }
             continuation.onTermination = { _ in
                 task.cancel()
+                generationTask.cancel()
             }
         }
     }
@@ -452,153 +605,288 @@ public actor MLXServerRuntime {
 
     private func unloadOtherModelsBeforeLoading(_ key: LoadedModelKey) {
         containers = containers.filter { $0.key == key }
-        chatSessions.removeAll(keepingCapacity: true)
+        promptPrefixCaches.removeAll(keepingCapacity: true)
         for (loadingKey, task) in loadingTasks where loadingKey != key {
             task.cancel()
         }
         loadingTasks = loadingTasks.filter { $0.key == key }
     }
 
-    private func cachedChatSession(for descriptor: ChatSessionDescriptor) -> ChatSessionState? {
-        guard var states = chatSessions[descriptor.key],
-              let index = states.lastIndex(where: { $0.transcript == descriptor.priorTranscript }) else {
-            return nil
-        }
-        chatSessionGeneration += 1
-        states[index].lastAccessGeneration = chatSessionGeneration
-        chatSessions[descriptor.key] = states
-        return states[index]
-    }
-
-    private func restoredDiskCache(
-        for descriptor: ChatSessionDescriptor,
-        parameters: GenerateParameters
-    ) -> [KVCache]? {
-        guard !descriptor.priorTranscript.isEmpty else {
-            return nil
-        }
-        return diskKVCacheStore?.loadCache(
-            for: MLXServerDiskKVCacheIdentity(
-                key: descriptor.key,
-                transcript: descriptor.priorTranscript,
-                parameters: parameters
-            )
-        )
-    }
-
-    private func registerChatSession(
-        _ session: ChatSession,
-        for descriptor: ChatSessionDescriptor
-    ) -> ChatSessionState {
-        chatSessionGeneration += 1
-        let state = ChatSessionState(
-            id: ChatSessionID(rawValue: chatSessionGeneration),
-            session: session,
-            transcript: descriptor.priorTranscript,
-            lastAccessGeneration: chatSessionGeneration
-        )
-        chatSessions[descriptor.key, default: []].append(state)
-        trimChatSessions(for: descriptor.key)
-        return state
-    }
-
-    private func finishChatSessionTurn(
-        key: ChatSessionKey,
-        sessionID: ChatSessionID,
-        priorTranscript: [ChatSessionMessageFingerprint],
-        current: ChatSessionMessageFingerprint,
-        reasoningText: String,
-        assistantText: String,
-        toolCalls: [ToolCall]
-    ) async {
-        guard var states = chatSessions[key],
-              let index = states.firstIndex(where: { $0.id == sessionID }) else {
-            return
-        }
-        chatSessionGeneration += 1
-        var state = states[index]
-        guard state.transcript == priorTranscript else {
-            states.remove(at: index)
-            chatSessions[key] = states.isEmpty ? nil : states
-            return
-        }
-        var nextTranscript = priorTranscript + [current]
-        if !reasoningText.isEmpty {
-            nextTranscript.append(
-                ChatSessionMessageFingerprint(
-                    role: .assistant,
-                    content: MLXServerReasoningTranscript.reasoningSummary(reasoningText)
-                        .normalizedForChatSessionMatch,
-                    imageURLs: [],
-                    videoURLs: []
+    private func renderedPrompt(
+        for request: MLXServerGenerationRequest,
+        container: ModelContainer
+    ) async throws -> PromptPrefixRendering {
+        let payload = PromptPrefixRenderingPayload(
+            messages: request.messages.map {
+                PromptPrefixRenderingMessage(
+                    role: $0.role.rawValue,
+                    content: $0.content
                 )
-            )
-        }
-        if !assistantText.isEmpty {
-            nextTranscript.append(
-                ChatSessionMessageFingerprint(
-                    role: .assistant,
-                    content: assistantText.normalizedForChatSessionMatch,
-                    imageURLs: [],
-                    videoURLs: []
+            },
+            tools: request.tools,
+            additionalContext: request.additionalContext
+        )
+
+        return try await container.perform(values: payload) { context, payload in
+            let messages: [[String: any Sendable]] = payload.messages.map { message in
+                [
+                    "role": message.role,
+                    "content": message.content
+                ]
+            }
+
+            let tokenIDs: [Int]
+            do {
+                tokenIDs = try context.tokenizer.applyChatTemplate(
+                    messages: messages,
+                    tools: payload.tools,
+                    additionalContext: payload.additionalContext
                 )
-            )
-        }
-        nextTranscript.append(
-            contentsOf: toolCalls.map { toolCall in
-                ChatSessionMessageFingerprint(
-                    role: .assistant,
-                    content: MLXServerToolTranscript.toolCall(toolCall).normalizedForChatSessionMatch,
-                    imageURLs: [],
-                    videoURLs: []
+            } catch {
+                guard let tokenizerError = error as? MLXLMCommon.TokenizerError,
+                      case .missingChatTemplate = tokenizerError else {
+                    throw error
+                }
+                tokenIDs = context.tokenizer.encode(
+                    text: messages
+                        .compactMap { $0["content"] as? String }
+                        .joined(separator: "\n\n")
                 )
             }
-        )
-        if reasoningText.isEmpty, assistantText.isEmpty, toolCalls.isEmpty {
-            nextTranscript.append(
-                ChatSessionMessageFingerprint(
-                    role: .assistant,
-                    content: "",
-                    imageURLs: [],
-                    videoURLs: []
-                )
-            )
-        }
 
-        state.transcript = nextTranscript
-        state.lastAccessGeneration = chatSessionGeneration
-        states[index] = state
-        chatSessions[key] = states
-        trimChatSessions(for: key)
-
-        if !state.transcript.isEmpty {
-            let identity = MLXServerDiskKVCacheIdentity(
-                key: key,
-                transcript: state.transcript,
-                parameters: state.session.generateParameters
-            )
-            await persistDiskCacheIfNeeded(
-                session: state.session,
-                identity: identity
+            return PromptPrefixRendering(
+                tokenIDs: tokenIDs,
+                tokenizer: context.tokenizer,
+                toolCallFormat: context.configuration.toolCallFormat ?? .json
             )
         }
     }
 
-    private func persistDiskCacheIfNeeded(
-        session: ChatSession,
-        identity: MLXServerDiskKVCacheIdentity
+    private func newPromptCache(
+        container: ModelContainer,
+        parameters: GenerateParameters
+    ) async throws -> [KVCache] {
+        let transfer = await container.perform(values: parameters) { context, parameters in
+            MLXServerKVCacheTransfer(
+                cache: context.model.newCache(parameters: parameters)
+            )
+        }
+        return transfer.cache
+    }
+
+    private func promptPrefixTokenStream(
+        cache: [KVCache],
+        suffixTokenIDs: [Int],
+        parameters: GenerateParameters,
+        container: ModelContainer
+    ) async throws -> PromptPrefixTokenGeneration {
+        guard !suffixTokenIDs.isEmpty, !cache.isEmpty else {
+            throw MLXServerRuntimeError.emptyPrompt
+        }
+        let payload = PromptPrefixTokenGenerationPayload(
+            cache: cache,
+            suffixTokenIDs: suffixTokenIDs,
+            parameters: parameters
+        )
+
+        return try await container.perform(values: payload) { context, payload in
+            let input = LMInput(tokens: MLXArray(payload.suffixTokenIDs))
+            let (stream, task) = try MLXLMCommon.generateTokensTask(
+                input: input,
+                cache: payload.cache,
+                parameters: payload.parameters,
+                context: context
+            )
+            return PromptPrefixTokenGeneration(stream: stream, task: task)
+        }
+    }
+
+    private func effectivePromptPrefixCache(
+        _ cache: [KVCache],
+        cachedPromptTokenCount: Int,
+        promptTokenCount: Int
+    ) -> PromptPrefixMemoryMatch {
+        guard promptTokenCount > 0,
+              cachedPromptTokenCount >= promptTokenCount else {
+            return PromptPrefixMemoryMatch(
+                cache: cache,
+                prefixTokenCount: cachedPromptTokenCount
+            )
+        }
+
+        let targetCachedPromptTokenCount = promptTokenCount - 1
+        guard targetCachedPromptTokenCount > 0 else {
+            return PromptPrefixMemoryMatch(cache: [], prefixTokenCount: 0)
+        }
+
+        let cacheCopy = cache.map { $0.copy() }
+        let tokensToTrim = cachedPromptTokenCount - targetCachedPromptTokenCount
+        guard tokensToTrim > 0,
+              trimPromptPrefixCache(cacheCopy, numTokens: tokensToTrim) == tokensToTrim else {
+            return PromptPrefixMemoryMatch(cache: [], prefixTokenCount: 0)
+        }
+
+        return PromptPrefixMemoryMatch(
+            cache: cacheCopy,
+            prefixTokenCount: targetCachedPromptTokenCount
+        )
+    }
+
+    private func promptPrefixCacheProbe(
+        key: PromptPrefixCacheKey,
+        promptTokenIDs: [Int]
+    ) -> PromptPrefixCacheProbe {
+        let sameKeyStates = promptPrefixCaches[key] ?? []
+        let sameModelStates = promptPrefixCaches.reduce(into: [PromptPrefixCacheState]()) {
+            result, entry in
+            let (candidateKey, states) = entry
+            if candidateKey.modelID == key.modelID,
+               candidateKey.runtimeKind == key.runtimeKind {
+                result.append(contentsOf: states)
+            }
+        }
+
+        var bestCommonPrefixCount = 0
+        var bestCachedTokenCount = 0
+        for state in sameKeyStates {
+            let commonPrefixCount = state.tokenIDs.reusablePrefixCount(
+                with: promptTokenIDs
+            )
+            if commonPrefixCount > bestCommonPrefixCount {
+                bestCommonPrefixCount = commonPrefixCount
+                bestCachedTokenCount = state.tokenIDs.count
+            }
+        }
+
+        var bestModelCommonPrefixCount = 0
+        var bestModelCachedTokenCount = 0
+        for state in sameModelStates {
+            let commonPrefixCount = state.tokenIDs.reusablePrefixCount(
+                with: promptTokenIDs
+            )
+            if commonPrefixCount > bestModelCommonPrefixCount {
+                bestModelCommonPrefixCount = commonPrefixCount
+                bestModelCachedTokenCount = state.tokenIDs.count
+            }
+        }
+
+        return PromptPrefixCacheProbe(
+            cachedSessionCount: sameKeyStates.count,
+            modelSessionCount: sameModelStates.count,
+            priorTranscriptCount: promptTokenIDs.count,
+            bestCommonPrefixCount: bestCommonPrefixCount,
+            bestCachedTranscriptCount: bestCachedTokenCount,
+            bestModelCommonPrefixCount: bestModelCommonPrefixCount,
+            bestModelCachedTranscriptCount: bestModelCachedTokenCount
+        )
+    }
+
+    private func promptPrefixMemoryMatch(
+        key: PromptPrefixCacheKey,
+        promptTokenIDs: [Int]
+    ) -> PromptPrefixMemoryMatch? {
+        guard var states = promptPrefixCaches[key], !states.isEmpty else {
+            return nil
+        }
+
+        var bestIndex: Int?
+        var bestPrefixTokenCount = 0
+        for index in states.indices {
+            let prefixTokenCount = states[index].tokenIDs.reusablePrefixCount(
+                with: promptTokenIDs
+            )
+            if prefixTokenCount > bestPrefixTokenCount {
+                bestPrefixTokenCount = prefixTokenCount
+                bestIndex = index
+            }
+        }
+
+        guard let bestIndex, bestPrefixTokenCount > 0 else {
+            return nil
+        }
+
+        promptPrefixCacheGeneration += 1
+        states[bestIndex].lastAccessGeneration = promptPrefixCacheGeneration
+        let state = states[bestIndex]
+        promptPrefixCaches[key] = states
+
+        if bestPrefixTokenCount == state.tokenIDs.count {
+            return PromptPrefixMemoryMatch(
+                cache: state.cache,
+                prefixTokenCount: bestPrefixTokenCount
+            )
+        }
+
+        let cacheCopy = state.cache.map { $0.copy() }
+        let tokensToTrim = state.tokenIDs.count - bestPrefixTokenCount
+        let trimmed = trimPromptPrefixCache(cacheCopy, numTokens: tokensToTrim)
+        guard trimmed == tokensToTrim else {
+            return nil
+        }
+        return PromptPrefixMemoryMatch(
+            cache: cacheCopy,
+            prefixTokenCount: bestPrefixTokenCount
+        )
+    }
+
+    private func finishPromptPrefixGeneration(
+        key: PromptPrefixCacheKey,
+        cache: [KVCache],
+        promptTokenIDs: [Int],
+        generatedTokenIDs: [Int],
+        parameters: GenerateParameters
     ) async {
-        guard let diskKVCacheStore,
-              let target = try? diskKVCacheStore.preparePersistenceTarget(for: identity) else {
+        guard cache.hasPromptState else {
+            return
+        }
+        let cachedTokenIDs = promptTokenIDs + generatedTokenIDs
+        guard !cachedTokenIDs.isEmpty else {
+            return
+        }
+
+        promptPrefixCacheGeneration += 1
+        var states = promptPrefixCaches[key] ?? []
+        states.removeAll { state in
+            state.tokenIDs == cachedTokenIDs || state.cache.hasSameStorage(as: cache)
+        }
+        states.append(
+            PromptPrefixCacheState(
+                cache: cache,
+                tokenIDs: cachedTokenIDs,
+                lastAccessGeneration: promptPrefixCacheGeneration
+            )
+        )
+        states.sort { $0.lastAccessGeneration > $1.lastAccessGeneration }
+        promptPrefixCaches[key] = Array(states.prefix(8))
+
+        await persistDiskPromptCacheIfNeeded(
+            cache: cache,
+            key: key,
+            tokenIDs: cachedTokenIDs,
+            parameters: parameters
+        )
+    }
+
+    private func persistDiskPromptCacheIfNeeded(
+        cache: [KVCache],
+        key: PromptPrefixCacheKey,
+        tokenIDs: [Int],
+        parameters: GenerateParameters
+    ) async {
+        guard let diskKVCacheStore, cache.hasPromptState else {
+            return
+        }
+        let identity = MLXServerDiskKVCacheIdentity(
+            promptPrefixKey: key,
+            tokenIDs: tokenIDs,
+            parameters: parameters
+        )
+        guard let target = try? diskKVCacheStore.preparePersistenceTarget(for: identity) else {
             return
         }
 
         do {
-            // The generation gate is still held here, so this session can not
-            // be mutated by another request while ChatSession serializes the
-            // underlying KV cache read for persistence.
-            nonisolated(unsafe) let cacheSession = session
-            try await cacheSession.saveCache(to: target.temporaryURL)
+            try savePromptCache(url: target.temporaryURL, cache: cache)
             try diskKVCacheStore.commitPersistedCache(
                 identity: identity,
                 target: target
@@ -606,23 +894,6 @@ public actor MLXServerRuntime {
         } catch {
             diskKVCacheStore.discardPersistenceTarget(target)
         }
-    }
-
-    private func invalidateChatSession(key: ChatSessionKey, sessionID: ChatSessionID) {
-        guard var states = chatSessions[key],
-              let index = states.firstIndex(where: { $0.id == sessionID }) else {
-            return
-        }
-        states.remove(at: index)
-        chatSessions[key] = states.isEmpty ? nil : states
-    }
-
-    private func trimChatSessions(for key: ChatSessionKey) {
-        guard var states = chatSessions[key], states.count > 8 else {
-            return
-        }
-        states.sort { $0.lastAccessGeneration > $1.lastAccessGeneration }
-        chatSessions[key] = Array(states.prefix(8))
     }
 
 }
@@ -636,195 +907,212 @@ private struct LoadedModelKey: Hashable, Sendable {
     }
 }
 
-private struct ChatSessionID: Hashable, Sendable {
-    var rawValue: UInt64
-}
-
-private struct ChatSessionKey: Hashable, Sendable {
+private struct PromptPrefixCacheKey: Hashable, Sendable {
     var modelID: String
     var runtimeKind: MLXServerModelRuntimeKind
-    var systemSignature: String
-    var toolsSignature: String
-    var additionalContextSignature: String
-    var mediaResizeSignature: String
-    var retainsReasoningInHistory: Bool
+    var cacheLayoutSignature: String
 
     var signature: String {
         [
             modelID,
             runtimeKind.rawValue,
-            systemSignature,
-            toolsSignature,
-            additionalContextSignature,
-            mediaResizeSignature,
-            retainsReasoningInHistory ? "reasoning-history" : "visible-history"
+            cacheLayoutSignature
         ].joined(separator: "\u{1C}")
     }
 }
 
-private struct ChatSessionState {
-    var id: ChatSessionID
-    var session: ChatSession
-    var transcript: [ChatSessionMessageFingerprint]
+private struct PromptPrefixRenderingMessage: Sendable {
+    var role: String
+    var content: String
+}
+
+private struct PromptPrefixRenderingPayload: Sendable {
+    var messages: [PromptPrefixRenderingMessage]
+    var tools: [ToolSpec]?
+    var additionalContext: [String: any Sendable]?
+}
+
+private struct PromptPrefixRendering: Sendable {
+    var tokenIDs: [Int]
+    var tokenizer: any MLXLMCommon.Tokenizer
+    var toolCallFormat: ToolCallFormat
+}
+
+private struct PromptPrefixTokenGenerationPayload: @unchecked Sendable {
+    var cache: [KVCache]
+    var suffixTokenIDs: [Int]
+    var parameters: GenerateParameters
+}
+
+private struct PromptPrefixTokenGeneration: Sendable {
+    var stream: AsyncStream<TokenGeneration>
+    var task: Task<Void, Never>
+}
+
+private struct PromptPrefixCacheState {
+    var cache: [KVCache]
+    var tokenIDs: [Int]
     var lastAccessGeneration: UInt64
 }
 
-private struct ChatSessionDescriptor {
-    var key: ChatSessionKey
-    var history: [Chat.Message]
-    var priorTranscript: [ChatSessionMessageFingerprint]
-    var current: MLXServerChatMessage
-    var currentFingerprint: ChatSessionMessageFingerprint
+private struct PromptPrefixMemoryMatch {
+    var cache: [KVCache]
+    var prefixTokenCount: Int
+}
 
-    init?(request: MLXServerGenerationRequest) {
-        let systemMessages = request.messages.filter { $0.role == .system }
-        let nonSystemMessages = request.messages.filter { $0.role != .system }
-        guard let current = nonSystemMessages.last else {
-            return nil
+private struct MLXServerKVCacheTransfer: @unchecked Sendable {
+    var cache: [KVCache]
+}
+
+private struct MLXServerPromptTokenIdentity: Hashable, Sendable {
+    var tokenDigest: String
+    var tokenCount: Int
+    var tokenIDs: [Int]
+
+    init(tokenIDs: [Int]) {
+        self.tokenIDs = tokenIDs
+        tokenDigest = Self.digest(tokenIDs)
+        tokenCount = tokenIDs.count
+    }
+
+    private static func digest(_ tokenIDs: [Int]) -> String {
+        var hasher = SHA256()
+        append("mlx-server-prompt-token-identity-v1", to: &hasher)
+        for tokenID in tokenIDs {
+            var value = Int64(tokenID).littleEndian
+            withUnsafeBytes(of: &value) { buffer in
+                hasher.update(data: Data(buffer))
+            }
         }
+        return hexString(from: hasher.finalize())
+    }
 
-        let priorMessages = nonSystemMessages.dropLast()
-        let priorTranscript = priorMessages.map(ChatSessionMessageFingerprint.init(message:))
-        let systemSignature = systemMessages.map(ChatSessionMessageFingerprint.init(message:))
-            .map(\.signature)
-            .joined(separator: "\u{1E}")
+    private static func append(_ value: String, to hasher: inout SHA256) {
+        let data = Data(value.utf8)
+        var count = UInt64(data.count).littleEndian
+        withUnsafeBytes(of: &count) { buffer in
+            hasher.update(data: Data(buffer))
+        }
+        hasher.update(data: data)
+    }
 
-        key = ChatSessionKey(
-            modelID: request.model.id,
-            runtimeKind: request.runtimeKind,
-            systemSignature: systemSignature,
-            toolsSignature: ChatSessionSignature.tools(request.tools),
-            additionalContextSignature: ChatSessionSignature.additionalContext(request.additionalContext),
-            mediaResizeSignature: ChatSessionSignature.mediaResize(request.mediaResize),
-            retainsReasoningInHistory: request.retainsReasoningInHistory
+    private static func hexString<D: Sequence>(
+        from digest: D
+    ) -> String where D.Element == UInt8 {
+        digest.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+private struct PromptPrefixCacheProbe {
+    var cachedSessionCount: Int
+    var modelSessionCount: Int
+    var priorTranscriptCount: Int
+    var bestCommonPrefixCount: Int
+    var bestCachedTranscriptCount: Int
+    var bestModelCommonPrefixCount: Int
+    var bestModelCachedTranscriptCount: Int
+
+    func event(
+        status: MLXServerChatCacheEvent.Status,
+        restoredPromptPrefixTokenCount: Int? = nil,
+        cachedPromptTokenCount: Int? = nil
+    ) -> MLXServerChatCacheEvent {
+        MLXServerChatCacheEvent(
+            status: status,
+            cachedSessionCount: cachedSessionCount,
+            modelSessionCount: modelSessionCount,
+            priorTranscriptCount: priorTranscriptCount,
+            bestCommonPrefixCount: bestCommonPrefixCount,
+            bestCachedTranscriptCount: bestCachedTranscriptCount,
+            bestModelCommonPrefixCount: bestModelCommonPrefixCount,
+            bestModelCachedTranscriptCount: bestModelCachedTranscriptCount,
+            restoredPromptPrefixTokenCount: restoredPromptPrefixTokenCount,
+            cachedPromptTokenCount: cachedPromptTokenCount
         )
-        history = systemMessages.map(\.mlxChatMessage) + priorMessages.map(\.mlxChatMessage)
-        self.priorTranscript = priorTranscript
-        self.current = current
-        currentFingerprint = ChatSessionMessageFingerprint(message: current)
     }
 }
 
 extension MLXServerDiskKVCacheIdentity {
     fileprivate init(
-        key: ChatSessionKey,
-        transcript: [ChatSessionMessageFingerprint],
+        promptPrefixKey key: PromptPrefixCacheKey,
+        tokenIDs: [Int],
         parameters: GenerateParameters
     ) {
+        let tokenIdentity = MLXServerPromptTokenIdentity(tokenIDs: tokenIDs)
         self.init(
             modelID: key.modelID,
             runtimeKind: key.runtimeKind,
             chatKeySignature: key.signature,
-            transcriptSignature: ChatSessionSignature.transcript(transcript),
-            cacheLayoutSignature: ChatSessionSignature.cacheLayout(parameters)
-        )
-    }
-}
-
-private struct ChatSessionMessageFingerprint: Hashable, Sendable {
-    var role: MLXServerChatMessage.Role
-    var content: String
-    var imageURLs: [String]
-    var videoURLs: [String]
-    var toolCallCount: Int
-
-    init(
-        role: MLXServerChatMessage.Role,
-        content: String,
-        imageURLs: [String],
-        videoURLs: [String],
-        toolCallCount: Int = 0
-    ) {
-        self.role = role
-        self.content = content
-        self.imageURLs = imageURLs
-        self.videoURLs = videoURLs
-        self.toolCallCount = toolCallCount
-    }
-
-    init(message: MLXServerChatMessage) {
-        self.init(
-            role: message.role,
-            content: message.content.normalizedForChatSessionMatch,
-            imageURLs: message.imageURLs.map(\.absoluteString),
-            videoURLs: message.videoURLs.map(\.absoluteString)
+            transcriptSignature: tokenIdentity.tokenDigest,
+            cacheLayoutSignature: PromptPrefixSignature.cacheLayout(parameters),
+            promptTokenDigest: tokenIdentity.tokenDigest,
+            promptTokenCount: tokenIdentity.tokenCount,
+            promptTokenIDs: tokenIdentity.tokenIDs
         )
     }
 
-    var signature: String {
-        [
-            role.rawValue,
-            content,
-            imageURLs.joined(separator: "\u{1D}"),
-            videoURLs.joined(separator: "\u{1D}"),
-            String(toolCallCount)
-        ].joined(separator: "\u{1F}")
+}
+
+private extension Array where Element == Int {
+    func reusablePrefixCount(with promptTokenIDs: [Int]) -> Int {
+        let limit = Swift.min(count, promptTokenIDs.count - 1)
+        guard limit > 0 else {
+            return 0
+        }
+
+        var index = 0
+        while index < limit, self[index] == promptTokenIDs[index] {
+            index += 1
+        }
+        return index
     }
 }
 
-private extension String {
-    var normalizedForChatSessionMatch: String {
-        trimmingCharacters(in: .whitespacesAndNewlines)
+private extension Array where Element == KVCache {
+    var hasPromptState: Bool {
+        let state = flatMap(\.state)
+        return !state.isEmpty && state.allSatisfy { $0.size > 0 }
+    }
+
+    func hasSameStorage(as other: [KVCache]) -> Bool {
+        guard count == other.count else {
+            return false
+        }
+        return zip(self, other).allSatisfy { left, right in
+            guard let leftObject = left as AnyObject?,
+                  let rightObject = right as AnyObject? else {
+                return false
+            }
+            return ObjectIdentifier(leftObject) == ObjectIdentifier(rightObject)
+        }
     }
 }
 
-private enum ChatSessionSignature {
-    static func transcript(_ transcript: [ChatSessionMessageFingerprint]) -> String {
-        transcript.map(\.signature).joined(separator: "\u{1E}")
+@discardableResult
+private func trimPromptPrefixCache(_ cache: [KVCache], numTokens: Int) -> Int {
+    guard numTokens > 0 else {
+        return 0
     }
 
+    var didTrim = false
+    for entry in cache where !entry.state.isEmpty {
+        entry.trim(numTokens)
+        didTrim = true
+    }
+
+    guard didTrim else {
+        return 0
+    }
+    return numTokens
+}
+
+private enum PromptPrefixSignature {
     static func cacheLayout(_ parameters: GenerateParameters) -> String {
         [
             "kvBits=\(parameters.kvBits.map(String.init) ?? "nil")",
             "kvGroupSize=\(parameters.kvGroupSize)",
             "quantizedKVStart=\(parameters.quantizedKVStart)"
         ].joined(separator: "&")
-    }
-
-    static func tools(_ tools: [ToolSpec]?) -> String {
-        guard let tools else {
-            return ""
-        }
-        return tools.map(canonical).joined(separator: "\u{1E}")
-    }
-
-    static func additionalContext(_ context: [String: any Sendable]?) -> String {
-        guard let context else {
-            return ""
-        }
-        return canonical(context)
-    }
-
-    static func mediaResize(_ size: CGSize?) -> String {
-        guard let size else {
-            return ""
-        }
-        return "\(size.width)x\(size.height)"
-    }
-
-    private static func canonical(_ value: Any) -> String {
-        switch value {
-        case let value as String:
-            "s:\(value)"
-        case let value as Bool:
-            "b:\(value)"
-        case let value as Int:
-            "i:\(value)"
-        case let value as Double:
-            "d:\(value)"
-        case let value as Float:
-            "f:\(value)"
-        case let value as [String: any Sendable]:
-            value.keys.sorted()
-                .map { key in "\(key)=\(canonical(value[key] as Any))" }
-                .joined(separator: "&")
-        case let value as [any Sendable]:
-            value.map { canonical($0) }.joined(separator: ",")
-        case is NSNull:
-            "null"
-        default:
-            String(describing: value)
-        }
     }
 }
 

@@ -114,6 +114,86 @@ func anthropicMessagesEndpointMapsThinkingProtocol() async throws {
 }
 
 @Test
+func anthropicMessagesEndpointFiltersBillingHeaderFromSystemPrompt() async throws {
+    let runtime = RecordingRuntime(outputText: "Ciao.")
+    let server = try TestHTTPServer(runtime: runtime)
+    defer {
+        server.stop()
+    }
+
+    let body = """
+    {
+      "model": "mlx-community/test-model",
+      "max_tokens": 64,
+      "system": [
+        { "type": "text", "text": "Sei un assistente utile." },
+        { "type": "text", "text": "x-anthropic-billing-header: volatile-value" }
+      ],
+      "messages": [
+        { "role": "user", "content": "ciao" }
+      ]
+    }
+    """
+
+    _ = try await server.post(path: "/v1/messages", body: body)
+    let request = try await #require(runtime.lastRequest)
+
+    #expect(request.messages.map(\.role) == [.system, .user])
+    #expect(request.messages.first?.content == "Sei un assistente utile.")
+}
+
+@Test
+func anthropicMessagesEndpointMapsPreviousAssistantThinkingAndToolUse() async throws {
+    let runtime = RecordingRuntime(outputText: "Continuo.")
+    let server = try TestHTTPServer(runtime: runtime)
+    defer {
+        server.stop()
+    }
+
+    let body = """
+    {
+      "model": "mlx-community/test-model",
+      "max_tokens": 64,
+      "messages": [
+        { "role": "user", "content": "prima" },
+        {
+          "role": "assistant",
+          "content": [
+            { "type": "thinking", "thinking": "Analizzo." },
+            { "type": "text", "text": "Risposta." },
+            {
+              "type": "tool_use",
+              "id": "toolu_test",
+              "name": "lookup",
+              "input": { "city": "Roma" }
+            }
+          ]
+        },
+        { "role": "user", "content": "continua" }
+      ],
+      "thinking": {
+        "type": "enabled"
+      }
+    }
+    """
+
+    _ = try await server.post(path: "/v1/messages", body: body)
+    let request = try await #require(runtime.lastRequest)
+
+    #expect(request.messages.map(\.role) == [.user, .assistant, .assistant, .assistant, .user])
+    #expect(
+        request.messages.map(\.content) == [
+            "prima",
+            "reasoning_summary:\nAnalizzo.",
+            "Risposta.",
+            "function_call: lookup\narguments: {\"city\":\"Roma\"}",
+            "continua"
+        ]
+    )
+    #expect(request.retainsReasoningInHistory)
+}
+
+@Test
 func chatCompletionsStreamingEmitsThinkingTextAndToolCalls() async throws {
     let runtime = RecordingRuntime(
         streamEvents: [
@@ -245,19 +325,109 @@ func anthropicMessagesStreamingEmitsThinkingTextAndToolCalls() async throws {
     #expect(frames.contains { $0.event == "message_stop" })
 }
 
-private actor RecordingRuntime: MLXServerRuntimeGenerating {
+@Test
+func metricsLoggerRecordsChatCacheDiagnostics() async throws {
+    let metricsURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("mlx-server-metrics-\(UUID().uuidString).jsonl")
+    defer {
+        try? FileManager.default.removeItem(at: metricsURL)
+    }
+    let cacheEvent = MLXServerChatCacheEvent(
+        status: .memoryHit,
+        cachedSessionCount: 1,
+        modelSessionCount: 1,
+        priorTranscriptCount: 2,
+        bestCommonPrefixCount: 2,
+        bestCachedTranscriptCount: 2,
+        bestModelCommonPrefixCount: 2,
+        bestModelCachedTranscriptCount: 2,
+        bestModelSameSystemSignature: true,
+        bestModelSameToolsSignature: true,
+        bestModelSameAdditionalContextSignature: true,
+        bestModelSameMediaResizeSignature: true,
+        bestModelSameReasoningRetention: true,
+        cachedPromptTokenCount: 36
+    )
+    let runtime = RecordingRuntime(
+        outputText: "CACHEDUE",
+        completionInfo: GenerateCompletionInfo(
+            promptTokenCount: 24,
+            generationTokenCount: 3,
+            promptTime: 0.1,
+            generationTime: 0.03
+        ),
+        cacheEvent: cacheEvent
+    )
+    let logger = try MLXServerMetricsLogger(destination: .file(metricsURL))
+    let server = try TestHTTPServer(runtime: runtime, metricsLogger: logger)
+    defer {
+        server.stop()
+    }
+
+    let body = """
+    {
+      "model": "mlx-community/test-model",
+      "max_tokens": 8,
+      "messages": [
+        { "role": "user", "content": "ciao" }
+      ]
+    }
+    """
+
+    _ = try await server.post(path: "/v1/messages", body: body)
+    var line: String?
+    for _ in 0..<20 {
+        line = try? String(contentsOf: metricsURL, encoding: .utf8)
+            .split(separator: "\n")
+            .last
+            .map(String.init)
+        if line != nil {
+            break
+        }
+        try await Task.sleep(for: .milliseconds(25))
+    }
+    let data = try #require(line?.data(using: .utf8))
+    let object = try #require(
+        try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    )
+
+    #expect(object["chat_cache_status"] as? String == "memory_hit")
+    #expect(object["prompt_tokens"] as? Int == 60)
+    #expect(object["prompt_tokens_processed"] as? Int == 24)
+    #expect(object["prompt_tokens_cached"] as? Int == 36)
+    #expect(object["total_tokens"] as? Int == 63)
+}
+
+private actor RecordingRuntime: MLXServerRuntimeGenerating, MLXServerRuntimeCacheDiagnosing {
     private(set) var lastRequest: MLXServerGenerationRequest?
     private let outputText: String
     private let streamEvents: [RuntimeStreamEvent]?
+    private let completionInfo: GenerateCompletionInfo?
+    private var cacheEvent: MLXServerChatCacheEvent?
 
     init(outputText: String) {
         self.outputText = outputText
         streamEvents = nil
+        completionInfo = nil
+        cacheEvent = nil
+    }
+
+    init(
+        outputText: String,
+        completionInfo: GenerateCompletionInfo?,
+        cacheEvent: MLXServerChatCacheEvent? = nil
+    ) {
+        self.outputText = outputText
+        streamEvents = nil
+        self.completionInfo = completionInfo
+        self.cacheEvent = cacheEvent
     }
 
     init(streamEvents: [RuntimeStreamEvent]) {
         outputText = ""
         self.streamEvents = streamEvents
+        completionInfo = nil
+        cacheEvent = nil
     }
 
     func generateChatSession(
@@ -286,7 +456,14 @@ private actor RecordingRuntime: MLXServerRuntimeGenerating {
         request: MLXServerGenerationRequest
     ) async throws -> MLXServerGenerationOutput {
         lastRequest = request
-        return MLXServerGenerationOutput(text: outputText, info: nil)
+        return MLXServerGenerationOutput(text: outputText, info: completionInfo)
+    }
+
+    func consumeLastChatCacheEvent() async -> MLXServerChatCacheEvent? {
+        defer {
+            cacheEvent = nil
+        }
+        return cacheEvent
     }
 }
 
@@ -308,7 +485,7 @@ private final class TestHTTPServer {
     private let server: MLXServerHTTPServer
     private let baseURL: URL
 
-    init(runtime: RecordingRuntime) throws {
+    init(runtime: RecordingRuntime, metricsLogger: MLXServerMetricsLogger? = nil) throws {
         let catalog = try MLXServerModelCatalog(
             manifest: MLXServerModelsManifest(
                 defaultModelID: "mlx-community/test-model",
@@ -328,7 +505,8 @@ private final class TestHTTPServer {
         server = MLXServerHTTPServer(
             configuration: MLXServerConfiguration(host: "127.0.0.1", port: 0),
             runtime: runtime,
-            modelCatalog: catalog
+            modelCatalog: catalog,
+            metricsLogger: metricsLogger
         )
         try server.start()
         let port = try #require(server.boundPort)

@@ -48,15 +48,45 @@ struct MLXServerDiskKVCacheIdentity: Hashable {
     var chatKeySignature: String
     var transcriptSignature: String
     var cacheLayoutSignature: String
+    var promptTokenDigest: String?
+    var promptTokenCount: Int?
+    var promptTokenIDs: [Int]?
+
+    init(
+        modelID: String,
+        runtimeKind: MLXServerModelRuntimeKind,
+        chatKeySignature: String,
+        transcriptSignature: String,
+        cacheLayoutSignature: String,
+        promptTokenDigest: String? = nil,
+        promptTokenCount: Int? = nil,
+        promptTokenIDs: [Int]? = nil
+    ) {
+        self.modelID = modelID
+        self.runtimeKind = runtimeKind
+        self.chatKeySignature = chatKeySignature
+        self.transcriptSignature = transcriptSignature
+        self.cacheLayoutSignature = cacheLayoutSignature
+        self.promptTokenDigest = promptTokenDigest
+        self.promptTokenCount = promptTokenCount
+        self.promptTokenIDs = promptTokenIDs
+    }
 
     var entryKey: String {
         var hasher = SHA256()
-        append("mlx-server-disk-kv-cache-v1", to: &hasher)
+        append("mlx-server-disk-kv-cache-v3", to: &hasher)
         append(modelID, to: &hasher)
         append(runtimeKind.rawValue, to: &hasher)
-        append(chatKeySignature, to: &hasher)
-        append(transcriptSignature, to: &hasher)
         append(cacheLayoutSignature, to: &hasher)
+        if let promptTokenDigest, let promptTokenCount {
+            append("prompt-tokens", to: &hasher)
+            append(promptTokenDigest, to: &hasher)
+            append(String(promptTokenCount), to: &hasher)
+        } else {
+            append("legacy-transcript", to: &hasher)
+            append(chatKeySignature, to: &hasher)
+            append(transcriptSignature, to: &hasher)
+        }
         return Self.hexString(from: hasher.finalize())
     }
 
@@ -79,8 +109,21 @@ struct MLXServerDiskKVCacheIdentity: Hashable {
     }
 }
 
+struct MLXServerDiskKVCachePrefixQuery {
+    var modelID: String
+    var runtimeKind: MLXServerModelRuntimeKind
+    var cacheLayoutSignature: String
+    var promptTokenIDs: [Int]
+}
+
+struct MLXServerDiskKVCachePrefixMatch {
+    var cache: [KVCache]
+    var promptTokenCount: Int
+    var storedPromptTokenCount: Int
+}
+
 final class MLXServerDiskKVCacheStore {
-    fileprivate static let metadataVersion = 1
+    fileprivate static let metadataVersion = 3
     private let configuration: MLXServerDiskKVCacheConfiguration
     private let fileManager: FileManager
 
@@ -114,6 +157,10 @@ final class MLXServerDiskKVCacheStore {
 
         do {
             let (cache, _) = try loadPromptCache(url: urls.cacheURL)
+            guard cache.hasPromptState else {
+                removeEntry(cacheURL: urls.cacheURL, metadataURL: urls.metadataURL)
+                return nil
+            }
             metadata.lastAccessedAt = Date()
             metadata.byteCount = byteCount(of: urls.cacheURL)
             saveMetadata(metadata, to: urls.metadataURL)
@@ -122,6 +169,63 @@ final class MLXServerDiskKVCacheStore {
             removeEntry(cacheURL: urls.cacheURL, metadataURL: urls.metadataURL)
             return nil
         }
+    }
+
+    func loadLongestPromptPrefix(
+        for query: MLXServerDiskKVCachePrefixQuery
+    ) -> MLXServerDiskKVCachePrefixMatch? {
+        guard configuration.isEnabled, !query.promptTokenIDs.isEmpty else {
+            return nil
+        }
+
+        let candidates = persistedEntries()
+            .compactMap { entry -> MLXServerDiskKVCachePrefixCandidate? in
+                entry.metadata.reusablePromptPrefixCandidate(
+                    for: query,
+                    cacheURL: entry.cacheURL,
+                    metadataURL: entry.metadataURL
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.reusablePromptTokenCount != rhs.reusablePromptTokenCount {
+                    return lhs.reusablePromptTokenCount > rhs.reusablePromptTokenCount
+                }
+                return lhs.metadata.lastAccessedAt > rhs.metadata.lastAccessedAt
+            }
+
+        for candidate in candidates {
+            do {
+                let (cache, _) = try loadPromptCache(url: candidate.cacheURL)
+                guard cache.hasPromptState else {
+                    removeEntry(cacheURL: candidate.cacheURL, metadataURL: candidate.metadataURL)
+                    continue
+                }
+                let tokensToTrim = candidate.storedPromptTokenCount - candidate.reusablePromptTokenCount
+                if tokensToTrim > 0 {
+                    let trimmedTokenCount = trimPromptPrefixCache(cache, numTokens: tokensToTrim)
+                    guard trimmedTokenCount == tokensToTrim else {
+                        continue
+                    }
+                }
+                guard cache.hasPromptState else {
+                    continue
+                }
+
+                var metadata = candidate.metadata
+                metadata.lastAccessedAt = Date()
+                metadata.byteCount = byteCount(of: candidate.cacheURL)
+                saveMetadata(metadata, to: candidate.metadataURL)
+                return MLXServerDiskKVCachePrefixMatch(
+                    cache: cache,
+                    promptTokenCount: candidate.reusablePromptTokenCount,
+                    storedPromptTokenCount: candidate.storedPromptTokenCount
+                )
+            } catch {
+                removeEntry(cacheURL: candidate.cacheURL, metadataURL: candidate.metadataURL)
+            }
+        }
+
+        return nil
     }
 
     func preparePersistenceTarget(
@@ -164,6 +268,9 @@ final class MLXServerDiskKVCacheStore {
             chatKeySignature: identity.chatKeySignature,
             transcriptSignature: identity.transcriptSignature,
             cacheLayoutSignature: identity.cacheLayoutSignature,
+            promptTokenDigest: identity.promptTokenDigest,
+            promptTokenCount: identity.promptTokenCount,
+            promptTokenIDs: identity.promptTokenIDs,
             entryKey: identity.entryKey,
             byteCount: byteCount(of: target.cacheURL),
             createdAt: existingMetadata?.createdAt ?? now,
@@ -280,12 +387,16 @@ final class MLXServerDiskKVCacheStore {
         var entries: [MLXServerPersistedDiskKVCacheEntry] = []
         while let url = enumerator.nextObject() as? URL {
             guard url.pathExtension == "json",
-                  var metadata = loadMetadata(from: url),
-                  metadata.version == Self.metadataVersion else {
+                  var metadata = loadMetadata(from: url) else {
                 continue
             }
 
             let cacheURL = url.deletingPathExtension().appendingPathExtension("safetensors")
+            guard metadata.version == Self.metadataVersion else {
+                removeEntry(cacheURL: cacheURL, metadataURL: url)
+                continue
+            }
+
             guard fileManager.fileExists(atPath: cacheURL.path) else {
                 try? fileManager.removeItem(at: url)
                 continue
@@ -329,10 +440,43 @@ private enum SHA256Digest {
     }
 }
 
+private extension Array where Element == KVCache {
+    var hasPromptState: Bool {
+        let state = flatMap(\.state)
+        return !state.isEmpty && state.allSatisfy { $0.size > 0 }
+    }
+}
+
+@discardableResult
+private func trimPromptPrefixCache(_ cache: [KVCache], numTokens: Int) -> Int {
+    guard numTokens > 0 else {
+        return 0
+    }
+
+    var didTrim = false
+    for entry in cache where !entry.state.isEmpty {
+        entry.trim(numTokens)
+        didTrim = true
+    }
+
+    guard didTrim else {
+        return 0
+    }
+    return numTokens
+}
+
 private struct MLXServerPersistedDiskKVCacheEntry {
     var metadataURL: URL
     var cacheURL: URL
     var metadata: MLXServerPersistedDiskKVCacheMetadata
+}
+
+private struct MLXServerDiskKVCachePrefixCandidate {
+    var cacheURL: URL
+    var metadataURL: URL
+    var metadata: MLXServerPersistedDiskKVCacheMetadata
+    var reusablePromptTokenCount: Int
+    var storedPromptTokenCount: Int
 }
 
 struct MLXServerDiskKVCachePersistenceTarget {
@@ -342,12 +486,17 @@ struct MLXServerDiskKVCachePersistenceTarget {
 }
 
 private struct MLXServerPersistedDiskKVCacheMetadata: Codable {
+    private static let minimumReusablePromptPrefixTokenCount = 256
+
     var version: Int
     var modelID: String
     var runtimeKind: String
     var chatKeySignature: String
     var transcriptSignature: String
     var cacheLayoutSignature: String
+    var promptTokenDigest: String?
+    var promptTokenCount: Int?
+    var promptTokenIDs: [Int]?
     var entryKey: String
     var byteCount: Int64
     var createdAt: Date
@@ -355,12 +504,69 @@ private struct MLXServerPersistedDiskKVCacheMetadata: Codable {
     var lastAccessedAt: Date
 
     func matches(_ identity: MLXServerDiskKVCacheIdentity) -> Bool {
-        version == MLXServerDiskKVCacheStore.metadataVersion
-            && modelID == identity.modelID
-            && runtimeKind == identity.runtimeKind.rawValue
-            && chatKeySignature == identity.chatKeySignature
+        guard version == MLXServerDiskKVCacheStore.metadataVersion,
+              modelID == identity.modelID,
+              runtimeKind == identity.runtimeKind.rawValue,
+              cacheLayoutSignature == identity.cacheLayoutSignature,
+              entryKey == identity.entryKey else {
+            return false
+        }
+
+        if let promptTokenDigest = identity.promptTokenDigest,
+           let promptTokenCount = identity.promptTokenCount {
+            return self.promptTokenDigest == promptTokenDigest
+                && self.promptTokenCount == promptTokenCount
+        }
+
+        return chatKeySignature == identity.chatKeySignature
             && transcriptSignature == identity.transcriptSignature
-            && cacheLayoutSignature == identity.cacheLayoutSignature
-            && entryKey == identity.entryKey
+    }
+
+    func reusablePromptPrefixCandidate(
+        for query: MLXServerDiskKVCachePrefixQuery,
+        cacheURL: URL,
+        metadataURL: URL
+    ) -> MLXServerDiskKVCachePrefixCandidate? {
+        guard version == MLXServerDiskKVCacheStore.metadataVersion,
+              modelID == query.modelID,
+              runtimeKind == query.runtimeKind.rawValue,
+              cacheLayoutSignature == query.cacheLayoutSignature,
+              let promptTokenIDs,
+              let promptTokenCount,
+              promptTokenCount == promptTokenIDs.count,
+              promptTokenCount > 0,
+              query.promptTokenIDs.count > 1 else {
+            return nil
+        }
+
+        let commonPrefixTokenCount = promptTokenIDs.commonPrefixCount(
+            with: query.promptTokenIDs
+        )
+        let reusablePromptTokenCount = min(
+            commonPrefixTokenCount,
+            query.promptTokenIDs.count - 1
+        )
+        guard reusablePromptTokenCount >= Self.minimumReusablePromptPrefixTokenCount else {
+            return nil
+        }
+
+        return MLXServerDiskKVCachePrefixCandidate(
+            cacheURL: cacheURL,
+            metadataURL: metadataURL,
+            metadata: self,
+            reusablePromptTokenCount: reusablePromptTokenCount,
+            storedPromptTokenCount: promptTokenCount
+        )
+    }
+}
+
+private extension Array where Element == Int {
+    func commonPrefixCount(with other: [Int]) -> Int {
+        let limit = Swift.min(count, other.count)
+        var index = 0
+        while index < limit, self[index] == other[index] {
+            index += 1
+        }
+        return index
     }
 }

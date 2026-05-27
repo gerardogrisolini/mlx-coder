@@ -13,17 +13,63 @@ enum MLXMetalLibraryBootstrap {
         #if os(macOS)
         setenv("MLX_METAL_FAST_SYNCH", "1", 0)
 
-        let outputURL = try executableDirectory().appendingPathComponent("mlx.metallib")
-        if FileManager.default.fileExists(atPath: outputURL.path) {
+        let executableDirectory = try executableDirectory()
+        let outputURL = executableDirectory.appendingPathComponent("mlx.metallib")
+        let manifestURL = executableDirectory.appendingPathComponent("mlx.metallib.manifest.json")
+        let source = try findMetalKernelSource()
+        let manifest = try MLXMetalLibraryManifest(sourceFiles: source.metalFiles)
+
+        if FileManager.default.fileExists(atPath: outputURL.path),
+           (try? MLXMetalLibraryManifest.load(from: manifestURL)) == manifest {
             return
         }
 
-        let sourceURL = try findGeneratedMetalDirectory()
-        try compileGeneratedMetalKernels(from: sourceURL, to: outputURL)
+        try compileMetalKernels(from: source, to: outputURL)
+        try manifest.save(to: manifestURL)
         #endif
     }
 
     #if os(macOS)
+    private struct MLXMetalKernelSource {
+        var sourceRootURL: URL
+        var kernelsURL: URL
+        var metalFiles: [URL]
+    }
+
+    private struct MLXMetalLibraryManifest: Codable, Equatable {
+        struct SourceFile: Codable, Equatable {
+            var path: String
+            var byteCount: UInt64
+            var modificationTime: TimeInterval
+        }
+
+        var version: Int
+        var sourceFiles: [SourceFile]
+
+        init(sourceFiles: [URL]) throws {
+            self.version = 1
+            self.sourceFiles = try sourceFiles.map { url in
+                let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+                return SourceFile(
+                    path: url.path,
+                    byteCount: UInt64(values.fileSize ?? 0),
+                    modificationTime: values.contentModificationDate?.timeIntervalSince1970 ?? 0
+                )
+            }
+        }
+
+        static func load(from url: URL) throws -> Self {
+            let data = try Data(contentsOf: url)
+            return try JSONDecoder().decode(Self.self, from: data)
+        }
+
+        func save(to url: URL) throws {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            try encoder.encode(self).write(to: url, options: .atomic)
+        }
+    }
+
     private static func executableDirectory() throws -> URL {
         var size: UInt32 = 0
         _NSGetExecutablePath(nil, &size)
@@ -41,7 +87,7 @@ enum MLXMetalLibraryBootstrap {
             .deletingLastPathComponent()
     }
 
-    private static func findGeneratedMetalDirectory() throws -> URL {
+    private static func findMetalKernelSource() throws -> MLXMetalKernelSource {
         let fileManager = FileManager.default
         let currentDirectory = URL(fileURLWithPath: fileManager.currentDirectoryPath)
         let executableDirectory = try executableDirectory()
@@ -50,14 +96,40 @@ enum MLXMetalLibraryBootstrap {
             + ancestorURLs(startingAt: executableDirectory)
 
         for root in roots {
-            let candidate = root
-                .appendingPathComponent(".build/checkouts/mlx-swift/Source/Cmlx/mlx-generated/metal")
-            if fileManager.fileExists(atPath: candidate.path) {
-                return candidate
+            let sourceRootURL = root
+                .appendingPathComponent(".build/checkouts/mlx-swift/Source/Cmlx/mlx", isDirectory: true)
+            let kernelsURL = sourceRootURL
+                .appendingPathComponent("mlx/backend/metal/kernels", isDirectory: true)
+            if fileManager.fileExists(atPath: kernelsURL.path) {
+                return MLXMetalKernelSource(
+                    sourceRootURL: sourceRootURL,
+                    kernelsURL: kernelsURL,
+                    metalFiles: try metalFiles(in: kernelsURL)
+                )
             }
         }
 
-        throw MLXMetalLibraryBootstrapError.missingGeneratedMetalDirectory
+        throw MLXMetalLibraryBootstrapError.missingMetalKernelDirectory
+    }
+
+    private static func metalFiles(in kernelsURL: URL) throws -> [URL] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: kernelsURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        var files: [URL] = []
+        while let url = enumerator.nextObject() as? URL {
+            guard url.pathExtension == "metal",
+                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+                continue
+            }
+            files.append(url)
+        }
+        return files.sorted { $0.path < $1.path }
     }
 
     private static func ancestorURLs(startingAt url: URL) -> [URL] {
@@ -74,7 +146,7 @@ enum MLXMetalLibraryBootstrap {
         }
     }
 
-    private static func compileGeneratedMetalKernels(from sourceURL: URL, to outputURL: URL) throws {
+    private static func compileMetalKernels(from source: MLXMetalKernelSource, to outputURL: URL) throws {
         let fileManager = FileManager.default
         let temporaryDirectory = fileManager.temporaryDirectory
             .appendingPathComponent("mlx-server-metal-\(UUID().uuidString)", isDirectory: true)
@@ -83,21 +155,14 @@ enum MLXMetalLibraryBootstrap {
             try? fileManager.removeItem(at: temporaryDirectory)
         }
 
-        let metalFiles = try fileManager.contentsOfDirectory(
-            at: sourceURL,
-            includingPropertiesForKeys: nil
-        )
-        .filter { $0.pathExtension == "metal" }
-        .sorted { $0.lastPathComponent < $1.lastPathComponent }
-
-        guard !metalFiles.isEmpty else {
-            throw MLXMetalLibraryBootstrapError.noMetalSources(sourceURL.path)
+        guard !source.metalFiles.isEmpty else {
+            throw MLXMetalLibraryBootstrapError.noMetalSources(source.kernelsURL.path)
         }
 
         var airFiles: [URL] = []
-        for metalFile in metalFiles {
+        for (index, metalFile) in source.metalFiles.enumerated() {
             let airFile = temporaryDirectory
-                .appendingPathComponent(metalFile.deletingPathExtension().lastPathComponent)
+                .appendingPathComponent("\(index)-\(metalFile.deletingPathExtension().lastPathComponent)")
                 .appendingPathExtension("air")
             try runXcrun([
                 "-sdk", "macosx",
@@ -109,7 +174,8 @@ enum MLXMetalLibraryBootstrap {
                 "-Wno-c++17-extensions",
                 "-Wno-c++20-extensions",
                 "-c", metalFile.path,
-                "-I", sourceURL.path,
+                "-I", source.kernelsURL.path,
+                "-I", source.sourceRootURL.path,
                 "-o", airFile.path
             ])
             airFiles.append(airFile)
@@ -145,7 +211,7 @@ enum MLXMetalLibraryBootstrap {
 
 enum MLXMetalLibraryBootstrapError: LocalizedError {
     case missingExecutableURL
-    case missingGeneratedMetalDirectory
+    case missingMetalKernelDirectory
     case noMetalSources(String)
     case xcrunFailed(String, String)
 
@@ -153,8 +219,8 @@ enum MLXMetalLibraryBootstrapError: LocalizedError {
         switch self {
         case .missingExecutableURL:
             "Unable to resolve mlx-server executable path."
-        case .missingGeneratedMetalDirectory:
-            "Unable to find mlx-swift generated Metal sources under .build/checkouts."
+        case .missingMetalKernelDirectory:
+            "Unable to find mlx-swift Metal kernels under .build/checkouts."
         case .noMetalSources(let path):
             "No Metal source files found in \(path)."
         case .xcrunFailed(let command, let output):

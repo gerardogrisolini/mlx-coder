@@ -439,6 +439,8 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
         startedAt: Date,
         info: GenerateCompletionInfo?
     ) async {
+        let cacheEvent = await (runtime as? any MLXServerRuntimeCacheDiagnosing)?
+            .consumeLastChatCacheEvent()
         guard let metricsLogger, let info else {
             return
         }
@@ -456,7 +458,8 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
                 promptTime: info.promptTime,
                 generationTime: info.generateTime,
                 promptTokensPerSecond: info.promptTokensPerSecond,
-                generationTokensPerSecond: info.tokensPerSecond
+                generationTokensPerSecond: info.tokensPerSecond,
+                cacheEvent: cacheEvent
             )
         )
     }
@@ -799,32 +802,54 @@ private extension JSONValue {
 
 private struct FlexibleMessageContent: Decodable, Sendable {
     var text: String
+    var thinkingText: String
     var imageURLs: [URL]
     var videoURLs: [URL]
     var toolResults: [String]
+    var toolUses: [String]
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if let string = try? container.decode(String.self) {
             text = string
+            thinkingText = ""
             imageURLs = []
             videoURLs = []
             toolResults = []
+            toolUses = []
             return
         }
 
         let parts = try container.decode([ContentPart].self)
         text = parts.compactMap(\.resolvedText).joined(separator: "\n")
+        thinkingText = parts.compactMap(\.resolvedThinking).joined(separator: "\n")
         imageURLs = parts.compactMap(\.resolvedImageURL)
         videoURLs = parts.compactMap(\.resolvedVideoURL)
         toolResults = parts.compactMap(\.resolvedToolResult)
+        toolUses = parts.compactMap(\.resolvedToolUse)
+    }
+
+    var anthropicSystemText: String {
+        text
+            .components(separatedBy: "\n")
+            .filter { line in
+                !line.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                    .hasPrefix("x-anthropic-billing-header:")
+            }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
 private struct ContentPart: Decodable, Sendable {
     var type: String?
+    var id: String?
+    var name: String?
     var text: String?
+    var thinking: String?
     var content: FlexibleNestedTextContent?
+    var input: JSONValue?
     var imageURL: FlexibleURLValue?
     var videoURL: FlexibleURLValue?
     var source: AnthropicMediaSource?
@@ -832,8 +857,12 @@ private struct ContentPart: Decodable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case type
+        case id
+        case name
         case text
+        case thinking
         case content
+        case input
         case imageURL = "image_url"
         case videoURL = "video_url"
         case source
@@ -842,13 +871,30 @@ private struct ContentPart: Decodable, Sendable {
 
     var resolvedText: String? {
         switch type {
-        case "tool_result", "tool_use":
+        case "thinking", "tool_result", "tool_use":
             nil
         case "text", "input_text", nil:
             text
         default:
             text
         }
+    }
+
+    var resolvedThinking: String? {
+        guard type == "thinking" else {
+            return nil
+        }
+        return thinking ?? text
+    }
+
+    var resolvedToolUse: String? {
+        guard type == "tool_use" else {
+            return nil
+        }
+        let arguments = input
+            .flatMap { try? ResponsesOutputBuilder.encodedJSONString($0) }
+            ?? "{}"
+        return MLXServerToolTranscript.toolCall(name: name ?? "", arguments: arguments)
     }
 
     var resolvedImageURL: URL? {
@@ -2370,8 +2416,8 @@ private struct AnthropicMessagesRequest: Decodable, Sendable {
 
     var serverMessages: [MLXServerChatMessage] {
         var result: [MLXServerChatMessage] = []
-        if let system, !system.text.isEmpty {
-            result.append(.system(system.text))
+        if let systemText = system?.anthropicSystemText, !systemText.isEmpty {
+            result.append(.system(systemText))
         }
         result.append(contentsOf: messages.flatMap(\.serverMessages))
         return result
@@ -2412,6 +2458,18 @@ private struct AnthropicInputMessage: Decodable, Sendable {
     }
 
     var serverMessages: [MLXServerChatMessage] {
+        if role == "assistant" {
+            var result: [MLXServerChatMessage] = []
+            if !content.thinkingText.isEmpty {
+                result.append(.assistant(MLXServerReasoningTranscript.reasoningSummary(content.thinkingText)))
+            }
+            if !content.text.isEmpty {
+                result.append(serverMessage)
+            }
+            result.append(contentsOf: content.toolUses.map(MLXServerChatMessage.assistant))
+            return result.isEmpty ? [serverMessage] : result
+        }
+
         if role == "user", !content.toolResults.isEmpty {
             var result: [MLXServerChatMessage] = []
             if !content.text.isEmpty {

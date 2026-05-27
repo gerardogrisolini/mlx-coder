@@ -54,7 +54,9 @@ public enum SwiftPMResourceBundleDirectory {
         guard realpath(path, &buffer) != nil else {
             return nil
         }
-        return String(cString: buffer)
+        let length = buffer.firstIndex(of: 0) ?? buffer.count
+        let bytes = buffer[..<length].map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
     }
 }
 

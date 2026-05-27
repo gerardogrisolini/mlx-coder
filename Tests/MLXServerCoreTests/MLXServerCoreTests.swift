@@ -41,6 +41,40 @@ func diskKVCacheDefaultsToBalancedLimit() {
 }
 
 @Test
+func diskKVCachePromptTokenIdentityWinsOverChatSignature() {
+    let firstIdentity = MLXServerDiskKVCacheIdentity(
+        modelID: "mlx-community/test-a",
+        runtimeKind: .llm,
+        chatKeySignature: "chat-a",
+        transcriptSignature: "transcript-a",
+        cacheLayoutSignature: "standard",
+        promptTokenDigest: "same-rendered-prompt",
+        promptTokenCount: 42
+    )
+    let secondIdentity = MLXServerDiskKVCacheIdentity(
+        modelID: "mlx-community/test-a",
+        runtimeKind: .llm,
+        chatKeySignature: "chat-b",
+        transcriptSignature: "transcript-b",
+        cacheLayoutSignature: "standard",
+        promptTokenDigest: "same-rendered-prompt",
+        promptTokenCount: 42
+    )
+    let thirdIdentity = MLXServerDiskKVCacheIdentity(
+        modelID: "mlx-community/test-a",
+        runtimeKind: .llm,
+        chatKeySignature: "chat-b",
+        transcriptSignature: "transcript-b",
+        cacheLayoutSignature: "standard",
+        promptTokenDigest: "same-rendered-prompt",
+        promptTokenCount: 43
+    )
+
+    #expect(firstIdentity.entryKey == secondIdentity.entryKey)
+    #expect(firstIdentity.entryKey != thirdIdentity.entryKey)
+}
+
+@Test
 func savesAndLoadsServerSettingsJSON() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("mlx-server-settings-\(UUID().uuidString)", isDirectory: true)
