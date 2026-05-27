@@ -14,6 +14,7 @@ import Glibc
 
 public enum MLXServerModelSetupRunner {
     public static let option = "--setup-models"
+    private static let recommendedContextWindow = 65_536
 
     public static func shouldRunSetup(arguments: [String]) -> Bool {
         arguments.contains(option)
@@ -251,9 +252,14 @@ public enum MLXServerModelSetupRunner {
         let importedDefaults = cachedCandidate.map {
             MLXServerModelParameterImporter.importDefaults(from: $0.snapshotURL)
         } ?? .init()
+        let modelContextLimit = importedDefaults.contextWindow
+        let fallbackDefaults = setupDefaults(
+            from: importedDefaults,
+            modelContextLimit: modelContextLimit
+        )
         let effectiveDefaults = generationDefaults(
             model.generationDefaults,
-            fallingBackTo: importedDefaults
+            fallingBackTo: fallbackDefaults
         )
         let detectedThinking = cachedCandidate.map {
             MLXServerModelParameterImporter.importThinking(
@@ -269,6 +275,7 @@ public enum MLXServerModelSetupRunner {
 
             Modello configurato: \(model.id)
             Repository: \(model.repositoryID)
+            Limite contesto modello: \(contextLimitSummary(modelContextLimit))
             Parametri correnti: \(generationDefaultsSummary(effectiveDefaults))
             \(thinkingLabel): \(thinkingSummary(detectedThinking))
 
@@ -287,7 +294,10 @@ public enum MLXServerModelSetupRunner {
             defaultValue: model.id,
             allowEmpty: false
         )
-        let generationDefaults = try configureGenerationDefaults(effectiveDefaults)
+        let generationDefaults = try configureGenerationDefaults(
+            effectiveDefaults,
+            modelContextLimit: modelContextLimit
+        )
 
         return try MLXServerModelRecord(
             id: id,
@@ -308,6 +318,11 @@ public enum MLXServerModelSetupRunner {
         defaultRuntimeKind: MLXServerModelRuntimeKind
     ) throws -> ConfiguredModelRecord {
         let importedDefaults = MLXServerModelParameterImporter.importDefaults(from: snapshotURL)
+        let modelContextLimit = importedDefaults.contextWindow
+        let proposedDefaults = setupDefaults(
+            from: importedDefaults,
+            modelContextLimit: modelContextLimit
+        )
         let importedThinking = MLXServerModelParameterImporter.importThinking(
             from: snapshotURL,
             repositoryID: repositoryID
@@ -317,7 +332,8 @@ public enum MLXServerModelSetupRunner {
             """
 
             Modello: \(repositoryID)
-            Parametri rilevati: \(generationDefaultsSummary(importedDefaults))
+            Limite contesto modello: \(contextLimitSummary(modelContextLimit))
+            Parametri proposti: \(generationDefaultsSummary(proposedDefaults))
             Thinking rilevato: \(thinkingSummary(importedThinking))
 
             """
@@ -336,10 +352,13 @@ public enum MLXServerModelSetupRunner {
                 defaultValue: repositoryID,
                 allowEmpty: false
             )
-            generationDefaults = try configureGenerationDefaults(importedDefaults)
+            generationDefaults = try configureGenerationDefaults(
+                proposedDefaults,
+                modelContextLimit: modelContextLimit
+            )
         } else {
             id = repositoryID
-            generationDefaults = importedDefaults.validated()
+            generationDefaults = proposedDefaults.validated()
         }
 
         let record = try MLXServerModelRecord(
@@ -360,12 +379,17 @@ public enum MLXServerModelSetupRunner {
     }
 
     private static func configureGenerationDefaults(
-        _ defaults: MLXServerModelGenerationDefaults
+        _ defaults: MLXServerModelGenerationDefaults,
+        modelContextLimit: Int?
     ) throws -> MLXServerModelGenerationDefaults {
-        let contextWindow = try promptInt(
+        let contextPrompt = [
             "Finestra di contesto",
-            defaultValue: defaults.contextWindow ?? 32_768,
-            allowedRange: 1...Int.max
+            "(limite modello: \(contextLimitSummary(modelContextLimit)); consigliato: \(recommendedContextWindow))"
+        ].joined(separator: " ")
+        let contextWindow = try promptInt(
+            contextPrompt,
+            defaultValue: defaults.contextWindow ?? defaultContextWindow(modelContextLimit: modelContextLimit),
+            allowedRange: contextWindowAllowedRange(modelContextLimit: modelContextLimit)
         )
         let maxOutputTokens = try promptInt(
             "max_output_tokens",
@@ -413,6 +437,38 @@ public enum MLXServerModelSetupRunner {
             presencePenalty: presencePenalty,
             frequencyPenalty: frequencyPenalty
         )
+    }
+
+    private static func setupDefaults(
+        from importedDefaults: MLXServerModelGenerationDefaults,
+        modelContextLimit: Int?
+    ) -> MLXServerModelGenerationDefaults {
+        MLXServerModelGenerationDefaults(
+            contextWindow: defaultContextWindow(modelContextLimit: modelContextLimit),
+            maxOutputTokens: importedDefaults.maxOutputTokens,
+            temperature: importedDefaults.temperature,
+            topP: importedDefaults.topP,
+            topK: importedDefaults.topK,
+            repetitionPenalty: importedDefaults.repetitionPenalty,
+            presencePenalty: importedDefaults.presencePenalty,
+            frequencyPenalty: importedDefaults.frequencyPenalty
+        ).validated()
+    }
+
+    private static func defaultContextWindow(modelContextLimit: Int?) -> Int {
+        guard let modelContextLimit else {
+            return recommendedContextWindow
+        }
+        return min(recommendedContextWindow, max(1, modelContextLimit))
+    }
+
+    private static func contextLimitSummary(_ modelContextLimit: Int?) -> String {
+        modelContextLimit.map(String.init) ?? "non rilevato"
+    }
+
+    private static func contextWindowAllowedRange(modelContextLimit: Int?) -> ClosedRange<Int> {
+        let upperBound = modelContextLimit.map { max(1, $0) } ?? Int.max
+        return 1...upperBound
     }
 
     private static func generationDefaults(
