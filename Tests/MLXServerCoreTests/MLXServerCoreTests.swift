@@ -86,6 +86,7 @@ func savesAndLoadsServerSettingsJSON() throws {
     let settings = MLXServerSettings(
         host: " 127.0.0.1 ",
         port: 9090,
+        webServerThreadCount: 4,
         loadOneModelAtATime: true,
         http2PriorKnowledge: true,
         metricsLogPath: " /tmp/mlx-server.metrics.jsonl ",
@@ -105,6 +106,7 @@ func savesAndLoadsServerSettingsJSON() throws {
 
     #expect(loaded.host == "127.0.0.1")
     #expect(loaded.port == 9090)
+    #expect(loaded.webServerThreadCount == 4)
     #expect(loaded.loadOneModelAtATime)
     #expect(loaded.http2PriorKnowledge)
     #expect(loaded.metricsLogPath == "/tmp/mlx-server.metrics.jsonl")
@@ -135,6 +137,16 @@ func serverSettingsLoadsOlderJSONWithoutHuggingFaceCache() throws {
 
     #expect(settings.huggingFaceCache.directoryPath == nil)
     #expect(settings.huggingFaceCache.bookmark == nil)
+    #expect(settings.webServerThreadCount == MLXServerSettings.defaultWebServerThreadCount)
+}
+
+@Test
+func serverSettingsRejectInvalidWebServerThreadCount() {
+    let settings = MLXServerSettings(webServerThreadCount: 0)
+
+    #expect(throws: MLXServerSettingsError.invalidWebServerThreadCount(0)) {
+        try settings.validated()
+    }
 }
 
 @Test

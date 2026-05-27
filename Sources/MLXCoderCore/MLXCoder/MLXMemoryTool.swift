@@ -57,7 +57,7 @@ public enum MLXMemoryTool {
         ToolDescriptor(
             name: "memory.write",
             title: "Memory Write",
-            description: "Appends one durable note to global or project MEMORY.md.",
+            description: "Appends one durable note to the right MEMORY.md scope. Global is for reusable user-level guidance; project is for architecture decisions, lessons learned, important implementation details, significant completed features, and workspace-specific constraints.",
             inputSchema: """
             {
               "type": "object",
@@ -66,7 +66,7 @@ public enum MLXMemoryTool {
                 "scope": {
                   "type": "string",
                   "enum": ["global", "project"],
-                  "description": "Use project for repository-specific memory and global for user-level preferences or reusable context."
+                  "description": "Use global only for general preferences, tendencies, reusable recommendations, or cross-project guidance. Use project for workspace-specific decisions, learnings, implementation details, completed features, constraints, caveats, or workflows."
                 }
               },
               "required": ["content"]
@@ -207,12 +207,7 @@ public enum MLXMemoryTool {
             )
         }
 
-        let entries: [MLXMemoryEntry]
-        if let scope {
-            entries = searchEntries(for: scope)
-        } else {
-            entries = searchEntries(for: .global) + searchEntries(for: .project)
-        }
+        let entries = searchEntries(for: scope)
 
         return ToolExecutionOutput(
             text: """

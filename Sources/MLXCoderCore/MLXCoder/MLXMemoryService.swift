@@ -13,6 +13,40 @@ public final class MLXMemoryService: @unchecked Sendable {
     public static let defaultGlobalMemoryContent: String = """
     # MEMORY.md
 
+    Durable global memory for user-level guidance that should apply across projects.
+
+    Use this file for:
+    - general preferences
+    - recurring working style
+    - reusable recommendations
+    - cross-project guidance, warnings, or tendencies
+
+    Do not use this file for:
+    - project-specific implementation history
+    - temporary task notes
+
+    ## Active
+
+    ## Archived
+    """
+
+    public static let defaultProjectMemoryContent: String = """
+    # MEMORY.md
+
+    Durable project memory for this workspace.
+
+    Use this file for:
+    - architecture decisions
+    - important implementation details
+    - lessons learned while working in this project
+    - significant completed features
+    - constraints, caveats, or project-specific workflows
+
+    Do not use this file for:
+    - general user preferences
+    - temporary task notes
+    - information that is already obvious from current files
+
     ## Active
 
     ## Archived
@@ -36,10 +70,16 @@ public final class MLXMemoryService: @unchecked Sendable {
     public static func toolUsagePromptSection() -> String {
         return """
         Memory tools:
-        Durable memory is stored in global and project MEMORY.md files, but its contents are not preloaded into this prompt.
-        Use `memory.search` with a targeted query when remembered preferences, repo conventions, prior decisions, or durable warnings could help the current task.
+        Treat MEMORY.md as first-class durable context, but remember that its contents are not preloaded into this prompt.
+        When entering or reopening a project, use `memory.search` or `memory.read` to understand important project context and where previous work should resume.
+        Use `memory.search` with a targeted query before non-trivial project work when prior decisions, repo conventions, durable warnings, or user preferences could affect the task.
         Use `memory.read` only when you need to inspect current notes; scope can be `global`, `project`, or `all`.
-        Use `memory.write` only for stable facts worth keeping across turns. Use `scope: project` for repository-specific notes and `scope: global` for user-level preferences or reusable context.
+        Use `memory.write` after learning something stable that should survive future turns.
+        Write to `scope: global` only for general user preferences, tendencies, reusable recommendations, or cross-project guidance.
+        Write to `scope: project` for project-specific architecture decisions, important implementation details, lessons learned, significant completed features, constraints, caveats, or workflows.
+        Write project resume points only when they describe durable context for the next session, such as an incomplete migration, a known blocker, or the next validated step after significant work.
+        Prefer project memory when the note mentions files, modules, tools, APIs, build behavior, setup, or decisions specific to the current workspace.
+        Do not write temporary task state, obvious facts already clear from files, guesses, or one-off observations.
         Use `memory.archive` when a note is stale, superseded, incorrect, or no longer useful.
         Prefer fresh evidence from files, tools, builds, tests, or current user messages when it conflicts with memory.
         """
@@ -394,17 +434,22 @@ public final class MLXMemoryService: @unchecked Sendable {
         }
 
         var entries: [MLXMemoryEntry] = []
+        var sectionIsActive = false
         var sectionIsArchived = false
         for rawLine in content.components(separatedBy: .newlines) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.hasPrefix("## ") {
-                sectionIsArchived = line
+                let sectionTitle = line
                     .dropFirst(3)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .localizedCaseInsensitiveContains("archived")
+                sectionIsActive = sectionTitle.localizedCaseInsensitiveContains("active")
+                sectionIsArchived = sectionTitle.localizedCaseInsensitiveContains("archived")
                 continue
             }
 
+            guard sectionIsActive || sectionIsArchived else {
+                continue
+            }
             guard line.hasPrefix("- ") else {
                 continue
             }
@@ -467,21 +512,35 @@ public final class MLXMemoryService: @unchecked Sendable {
 
         let activeEntries = entries.filter { !$0.isArchived }
         let archivedEntries = entries.filter(\.isArchived)
-        let content = """
-        # MEMORY.md
-
-        ## Active
-
-        \(Self.render(entries: activeEntries))
-
-        ## Archived
-
-        \(Self.render(entries: archivedEntries))
-        """
+        let content = Self.documentContent(
+            scope: document.scope,
+            activeEntries: activeEntries,
+            archivedEntries: archivedEntries
+        )
         try content
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .appending("\n")
             .write(to: document.fileURL, atomically: true, encoding: .utf8)
+    }
+
+    private static func documentContent(
+        scope: MLXMemoryScope,
+        activeEntries: [MLXMemoryEntry],
+        archivedEntries: [MLXMemoryEntry]
+    ) -> String {
+        let template: String
+        switch scope {
+        case .global:
+            template = defaultGlobalMemoryContent
+        case .project:
+            template = defaultProjectMemoryContent
+        }
+
+        let active = render(entries: activeEntries)
+        let archived = render(entries: archivedEntries)
+        return template
+            .replacingOccurrences(of: "## Active\n\n## Archived", with: "## Active\n\n\(active)\n\n## Archived")
+            .replacingOccurrences(of: "## Archived", with: "## Archived\n\n\(archived)")
     }
 
     private static func render(entries: [MLXMemoryEntry]) -> String {

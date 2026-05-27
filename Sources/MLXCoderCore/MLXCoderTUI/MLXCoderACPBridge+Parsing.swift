@@ -88,7 +88,8 @@ extension MLXCoderACPBridge {
         cwd: String,
         allowedToolNames: Set<String>?
     ) -> String {
-        let selectedAgentSection = configuration.selectedAgent?.promptSection
+        let memoryToolEnabled = Self.memoryToolEnabled(allowedToolNames)
+        let selectedAgentSection = configuration.selectedAgent?.promptSection(memoryToolEnabled: memoryToolEnabled)
         let selectedSkillSection = selectedAgentSkillSection()
         let providedSystemPrompt = providedSystemPrompt?.nilIfBlank
 
@@ -100,7 +101,7 @@ extension MLXCoderACPBridge {
 
         return AgentStandaloneSystemPrompt.prompt(
             cwd: cwd,
-            memoryToolEnabled: Self.memoryToolEnabled(allowedToolNames),
+            memoryToolEnabled: memoryToolEnabled,
             selectedAgentSection: selectedAgentSection,
             selectedSkillSection: selectedSkillSection
         )

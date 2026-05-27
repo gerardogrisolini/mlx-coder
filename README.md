@@ -86,12 +86,35 @@ When run directly, model setup also asks whether the server should keep only one
 
 `models.json` is the only source used by `/v1/models` and by request model resolution. The server does not scan cache folders or keep a hardcoded fallback model list.
 
-## Agent Integrations
+## Agent Profiles
 
-Agent integrations are configured through a dedicated setup:
+`mlx-coder` agent profiles are configured through `agents.json`:
 
 ```bash
 swift run -c release mlx-server --setup-agents
+```
+
+The setup can create the six recommended profiles (`Default`, `Bugfix`, `Feature`, `Review`, `Research`, `Refactor`) or a custom list. It also lets you edit tools, skills, model overrides, symbols, and instructions before saving.
+
+## Reset
+
+Two maintenance commands are available when you want to start over:
+
+```bash
+swift run -c release mlx-server --reset
+swift run -c release mlx-server --reset-disk-cache
+```
+
+`--reset` deletes the local `mlx-server`/`mlx-coder` configuration files managed by the package: `settings.json`, `models.json`, `agents.json`, `AGENTS.md`, and `MEMORY.md`.
+
+`--reset-disk-cache` empties the configured disk KV cache directory. If `settings.json` is missing, it uses the default disk cache location.
+
+## Agent Integrations
+
+External agent integrations are configured through a dedicated setup:
+
+```bash
+swift run -c release mlx-server --join-agents
 ```
 
 The setup reads the current external configuration files as the source of truth, shows what is already active, then lets you enable or disable:
@@ -218,6 +241,9 @@ swift run -c release mlx-server --help
 swift run -c release mlx-server --setup
 swift run -c release mlx-server --setup-models
 swift run -c release mlx-server --setup-agents
+swift run -c release mlx-server --join-agents
+swift run -c release mlx-server --reset
+swift run -c release mlx-server --reset-disk-cache
 swift run -c release mlx-coder --setup
 swift run -c release mlx-server --chat
 swift run -c release mlx-server --coder --cwd /path/to/project

@@ -169,7 +169,7 @@ public struct MLXProjectContextFileService {
                 fileManager: fileManager
             )
         case .memory:
-            return MLXMemoryService.defaultGlobalMemoryContent
+            return MLXMemoryService.defaultProjectMemoryContent
         }
     }
 
@@ -225,6 +225,10 @@ public struct MLXProjectContextFileService {
             ? rootURL.lastPathComponent
             : normalizedProjectName
         let inventory = projectInventory(at: rootURL, fileManager: fileManager)
+        let verificationGuidance = projectVerificationGuidance(
+            projectName: displayName,
+            inventory: inventory
+        )
 
         return """
         # AGENTS.md
@@ -245,14 +249,16 @@ public struct MLXProjectContextFileService {
 
         ## Project Guidance
 
-        - This file complements the global AGENTS.md file; keep only project-specific facts here.
-        - Do not duplicate global operating rules, user preferences, or generic coding workflow instructions.
-        - Use the shared schemes listed above for \(displayName) build and test verification.
+        - Keep only durable project-specific facts, conventions, commands, caveats, and constraints here.
+        - Record architecture boundaries, important setup details, module ownership, and confirmed build or test workflows.
+        - Do not duplicate global operating rules, user preferences, generic coding workflow instructions, or temporary task status.
+        \(verificationGuidance)
 
         ## Context Strategy
 
-        - Keep this file focused on durable project layout, commands, caveats, and conventions confirmed by the workspace.
-        - Put cross-project behavior in the global AGENTS.md file.
+        - Use this file to quickly re-enter the project after reopening the folder.
+        - Prefer facts confirmed by files, project metadata, Git history, build output, tests, or explicit user instructions.
+        - Keep cross-project behavior in the global AGENTS.md file.
         """
     }
 
@@ -465,6 +471,19 @@ public struct MLXProjectContextFileService {
             lines.append("- Inspect the module-local `Package.swift`, `Sources`, and `Tests` before changing shared contracts.")
         }
         return lines.joined(separator: "\n")
+    }
+
+    private static func projectVerificationGuidance(
+        projectName: String,
+        inventory: ProjectInventory
+    ) -> String {
+        if !inventory.sharedSchemes.isEmpty {
+            return "- Use the shared schemes listed above for \(projectName) build and test verification."
+        }
+        if !inventory.packageManifests.isEmpty {
+            return "- Use the package manifests listed above to choose the right SwiftPM build and test command."
+        }
+        return "- Add confirmed project-specific build and test commands here when they are discovered."
     }
 
     private static func limitedListLine(

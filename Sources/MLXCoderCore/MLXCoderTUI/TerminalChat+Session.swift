@@ -50,10 +50,11 @@ extension TerminalChat {
     }
 
     public func currentSystemPrompt(allowedToolNames: Set<String>) -> String {
-        AgentStandaloneSystemPrompt.prompt(
+        let memoryToolEnabled = Self.memoryToolEnabled(allowedToolNames)
+        return AgentStandaloneSystemPrompt.prompt(
             cwd: configuration.workingDirectory.path,
-            memoryToolEnabled: Self.memoryToolEnabled(allowedToolNames),
-            selectedAgentSection: selectedAgent?.promptSection,
+            memoryToolEnabled: memoryToolEnabled,
+            selectedAgentSection: selectedAgent?.promptSection(memoryToolEnabled: memoryToolEnabled),
             selectedSkillSection: MLXSystemPromptBuilder.selectedSkillSection(
                 skills: selectedPromptSkills()
             )

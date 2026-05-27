@@ -80,12 +80,28 @@ public struct AgentProfile: Codable, Hashable, Sendable {
     }
 
     public var promptSection: String? {
+        promptSection(memoryToolEnabled: true)
+    }
+
+    public func promptSection(memoryToolEnabled: Bool) -> String? {
         var lines = ["Selected agent: \(displayName)"]
-        if let instructions {
+        if instructions != nil {
             lines.append("Agent instructions:")
-            lines.append(instructions)
+            lines.append(resolvedInstructions(memoryToolEnabled: memoryToolEnabled))
         }
         return lines.joined(separator: "\n").nilIfBlank
+    }
+
+    private func resolvedInstructions(memoryToolEnabled: Bool) -> String {
+        guard let instructions else {
+            return ""
+        }
+        let defaultInstructionsWithMemory = MLXSystemPromptBuilder.defaultAgentInstructions(memoryToolEnabled: true)
+        let defaultInstructionsWithoutMemory = MLXSystemPromptBuilder.defaultAgentInstructions(memoryToolEnabled: false)
+        guard instructions == defaultInstructionsWithMemory || instructions == defaultInstructionsWithoutMemory else {
+            return instructions
+        }
+        return MLXSystemPromptBuilder.defaultAgentInstructions(memoryToolEnabled: memoryToolEnabled)
     }
 
     public func allowedToolNames() -> Set<String> {
@@ -213,6 +229,11 @@ public struct AgentProfileSkill: Codable, Hashable, Sendable {
 public enum AgentProfileStore {
     public static let defaultAgentName = "Default"
     public static let defaultAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+    public static let bugfixAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+    public static let featureAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
+    public static let reviewAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000004")!
+    public static let researchAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000005")!
+    public static let refactorAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000006")!
     public static let manifestFilename = "agents.json"
     public static let defaultToolNames: [String] = [
         "xcode",
@@ -222,6 +243,34 @@ public enum AgentProfileStore {
         "web",
         "orchestration",
         "figma"
+    ]
+    public static let implementationToolNames: [String] = [
+        "xcode",
+        "bash",
+        "git",
+        "memory",
+        "orchestration"
+    ]
+    public static let featureToolNames: [String] = [
+        "xcode",
+        "bash",
+        "git",
+        "memory",
+        "web",
+        "orchestration",
+        "figma"
+    ]
+    public static let reviewToolNames: [String] = [
+        "bash",
+        "git",
+        "memory",
+        "web"
+    ]
+    public static let researchToolNames: [String] = [
+        "bash",
+        "memory",
+        "web",
+        "orchestration"
     ]
 
     public static func loadRequired(fileManager: FileManager = .default) throws -> [AgentProfile] {
@@ -301,6 +350,51 @@ public enum AgentProfileStore {
                 instructions: MLXSystemPromptBuilder.defaultAgentInstructions(),
                 symbolName: "person.crop.circle",
                 tools: defaultToolNames
+            ),
+            AgentProfile(
+                id: bugfixAgentID.uuidString,
+                name: "Bugfix",
+                instructions: """
+                Work as a focused bug-fixing agent. Reproduce or narrow the defect before changing code when practical. Keep edits minimal, preserve existing behavior outside the bug, and verify the fix with the smallest meaningful build or test. Use memory to understand project context before touching code.
+                """,
+                symbolName: "bandage",
+                tools: implementationToolNames
+            ),
+            AgentProfile(
+                id: featureAgentID.uuidString,
+                name: "Feature",
+                instructions: """
+                Work as a feature implementation agent. Clarify ambiguous product or API behavior before committing to a broad design. Match existing architecture and UI patterns, keep the feature complete for the requested workflow, and verify the main path. Use memory to resume project context and record durable decisions when the work is significant.
+                """,
+                symbolName: "sparkles",
+                tools: featureToolNames
+            ),
+            AgentProfile(
+                id: reviewAgentID.uuidString,
+                name: "Review",
+                instructions: """
+                Work as a code review agent. Do not modify files unless explicitly asked. Prioritize correctness bugs, regressions, security risks, performance issues, and missing tests. Report findings first, ordered by severity, with precise file and line references. Keep summaries brief.
+                """,
+                symbolName: "checklist",
+                tools: reviewToolNames
+            ),
+            AgentProfile(
+                id: researchAgentID.uuidString,
+                name: "Research",
+                instructions: """
+                Work as a research agent. Gather facts, inspect relevant sources, and separate confirmed information from inference. Do not make code changes unless explicitly requested. When current or external information matters, prefer primary sources and cite what you used.
+                """,
+                symbolName: "magnifyingglass",
+                tools: researchToolNames
+            ),
+            AgentProfile(
+                id: refactorAgentID.uuidString,
+                name: "Refactor",
+                instructions: """
+                Work as a refactoring agent. Preserve observable behavior unless the user explicitly requests a behavior change. Keep the scope tight, prefer existing abstractions, avoid churn, and verify equivalence with targeted tests or builds. Explain risky moves before making them.
+                """,
+                symbolName: "arrow.triangle.2.circlepath",
+                tools: implementationToolNames
             )
         ]
     }

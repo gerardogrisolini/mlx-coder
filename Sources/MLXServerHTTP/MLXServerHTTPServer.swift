@@ -38,7 +38,7 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
     private let modelCatalog: MLXServerModelCatalog
     private let transport: MLXServerHTTPTransportConfiguration
     private let metricsLogger: MLXServerMetricsLogger?
-    private let group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
+    private let group: MultiThreadedEventLoopGroup
     private var channel: Channel?
 
     public init(
@@ -46,13 +46,17 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
         runtime: any MLXServerRuntimeGenerating,
         modelCatalog: MLXServerModelCatalog,
         transport: MLXServerHTTPTransportConfiguration = .init(),
-        metricsLogger: MLXServerMetricsLogger? = nil
+        metricsLogger: MLXServerMetricsLogger? = nil,
+        eventLoopThreadCount: Int = MLXServerSettings.defaultWebServerThreadCount
     ) {
         self.configuration = configuration
         self.runtime = runtime
         self.modelCatalog = modelCatalog
         self.transport = transport
         self.metricsLogger = metricsLogger
+        self.group = MultiThreadedEventLoopGroup(
+            numberOfThreads: max(1, eventLoopThreadCount)
+        )
     }
 
     public func start() throws {

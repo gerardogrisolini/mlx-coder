@@ -36,6 +36,20 @@ struct MLXServerMain {
             return
         }
 
+        let didResetDiskCache = MLXServerResetDiskCacheCommand.shouldRun(arguments: arguments)
+        let didResetConfiguration = MLXServerResetConfigurationCommand.shouldRun(arguments: arguments)
+        if didResetDiskCache {
+            try MLXServerResetDiskCacheCommand.run()
+            arguments = MLXServerResetDiskCacheCommand.argumentsAfterRemovingOption(arguments: arguments)
+        }
+        if didResetConfiguration {
+            try MLXServerResetConfigurationCommand.run()
+            arguments = MLXServerResetConfigurationCommand.argumentsAfterRemovingOption(arguments: arguments)
+        }
+        if didResetDiskCache || didResetConfiguration, arguments.isEmpty {
+            return
+        }
+
         var shouldRunModelSetup = false
         if MLXServerSetupRunner.shouldRunSetup(arguments: arguments) {
             shouldRunModelSetup = try MLXServerSetupRunner.run(arguments: arguments)
@@ -48,6 +62,11 @@ struct MLXServerMain {
                 configureRetentionPolicy: !shouldRunModelSetup
             )
             arguments = MLXServerModelSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
+        }
+
+        if MLXServerAgentProfileSetupRunner.shouldRunSetup(arguments: arguments) {
+            try MLXServerAgentProfileSetupRunner.run(arguments: arguments)
+            arguments = MLXServerAgentProfileSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
         }
 
         if MLXServerAgentSetupRunner.shouldRunSetup(arguments: arguments) {
@@ -99,7 +118,8 @@ struct MLXServerMain {
             runtime: runtime,
             modelCatalog: modelCatalog,
             transport: transport,
-            metricsLogger: metricsLogger
+            metricsLogger: metricsLogger,
+            eventLoopThreadCount: settings.webServerThreadCount
         )
         try server.start()
         dispatchMain()
@@ -587,6 +607,9 @@ private enum MLXServerHelp {
       mlx-server --setup
       mlx-server --setup-models
       mlx-server --setup-agents
+      mlx-server --join-agents
+      mlx-server --reset
+      mlx-server --reset-disk-cache
       mlx-server
       mlx-server --coder [--cwd <path>] [--model <id>] [--agent <name>] [--skills <list>]
                  [--max-output-tokens <count>] [--max-tool-rounds <count>] [--verbose]
@@ -595,7 +618,10 @@ private enum MLXServerHelp {
 
     Run mlx-server --setup once to create settings.json. At the end it can launch model setup too.
     Run mlx-server --setup-models directly to create or update models.json and download MLX models.
-    Run mlx-server --setup-agents to configure Codex CLI, Codex App, Xcode Codex App, and Xcode Claude Code integrations.
+    Run mlx-server --setup-agents to create or update mlx-coder agents.json profiles.
+    Run mlx-server --join-agents to configure Codex CLI, Codex App, Xcode Codex App, and Xcode Claude Code integrations.
+    Run mlx-server --reset to delete local mlx-server/mlx-coder configuration files.
+    Run mlx-server --reset-disk-cache to empty the configured disk KV cache directory.
     Run mlx-server --coder to start the mlx-coder TUI with the local MLXServerRuntime directly, without HTTP or ACP.
     Run mlx-server --chat to start an interactive terminal chat. Press Ctrl+D to exit.
     The server reads runtime settings from settings.json and models only from models.json.

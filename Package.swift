@@ -125,6 +125,10 @@ let package = Package(
                 "MLXServerCore",
                 "MLXServerHTTP"
             ]
+        ),
+        .testTarget(
+            name: "MLXCoderCoreTests",
+            dependencies: ["MLXCoderCore"]
         )
     ]
 )

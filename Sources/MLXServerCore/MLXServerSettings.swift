@@ -6,8 +6,12 @@
 import Foundation
 
 public struct MLXServerSettings: Codable, Equatable, Sendable {
+    public static let defaultWebServerThreadCount = 2
+    public static let maximumWebServerThreadCount = 256
+
     public var host: String
     public var port: Int
+    public var webServerThreadCount: Int
     public var loadOneModelAtATime: Bool
     public var http2PriorKnowledge: Bool
     public var tlsCertificatePath: String?
@@ -19,6 +23,7 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case host
         case port
+        case webServerThreadCount = "web_server_threads"
         case loadOneModelAtATime = "load_one_model_at_a_time"
         case http2PriorKnowledge = "http2_prior_knowledge"
         case tlsCertificatePath = "tls_certificate_path"
@@ -31,6 +36,7 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
     public init(
         host: String = "127.0.0.1",
         port: Int = 8080,
+        webServerThreadCount: Int = Self.defaultWebServerThreadCount,
         loadOneModelAtATime: Bool = true,
         http2PriorKnowledge: Bool = false,
         tlsCertificatePath: String? = nil,
@@ -41,6 +47,7 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
     ) {
         self.host = host
         self.port = port
+        self.webServerThreadCount = webServerThreadCount
         self.loadOneModelAtATime = loadOneModelAtATime
         self.http2PriorKnowledge = http2PriorKnowledge
         self.tlsCertificatePath = tlsCertificatePath
@@ -54,6 +61,10 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         host = try container.decodeIfPresent(String.self, forKey: .host) ?? "127.0.0.1"
         port = try container.decodeIfPresent(Int.self, forKey: .port) ?? 8080
+        webServerThreadCount = try container.decodeIfPresent(
+            Int.self,
+            forKey: .webServerThreadCount
+        ) ?? Self.defaultWebServerThreadCount
         loadOneModelAtATime = try container.decodeIfPresent(
             Bool.self,
             forKey: .loadOneModelAtATime
@@ -77,6 +88,9 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
 
     public func validated() throws -> Self {
         let configuration = try MLXServerConfiguration(host: host, port: port).validated()
+        guard (1...Self.maximumWebServerThreadCount).contains(webServerThreadCount) else {
+            throw MLXServerSettingsError.invalidWebServerThreadCount(webServerThreadCount)
+        }
         let normalizedTLSCertificatePath = tlsCertificatePath?.trimmedNonEmpty
         let normalizedTLSPrivateKeyPath = tlsPrivateKeyPath?.trimmedNonEmpty
         if (normalizedTLSCertificatePath == nil) != (normalizedTLSPrivateKeyPath == nil) {
@@ -86,6 +100,7 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
         return Self(
             host: configuration.host,
             port: configuration.port,
+            webServerThreadCount: webServerThreadCount,
             loadOneModelAtATime: loadOneModelAtATime,
             http2PriorKnowledge: http2PriorKnowledge,
             tlsCertificatePath: normalizedTLSCertificatePath,
@@ -321,6 +336,7 @@ public enum MLXServerSettingsError: LocalizedError, Equatable, Sendable {
     case missingSettings(URL)
     case incompleteTLSConfiguration
     case invalidDiskKVCacheLimit
+    case invalidWebServerThreadCount(Int)
 
     public var errorDescription: String? {
         switch self {
@@ -330,6 +346,8 @@ public enum MLXServerSettingsError: LocalizedError, Equatable, Sendable {
             return "TLS requires both certificate and private key paths."
         case .invalidDiskKVCacheLimit:
             return "Disk KV cache limit must be greater than or equal to 0 GB."
+        case .invalidWebServerThreadCount(let value):
+            return "Web server thread count \(value) is outside the supported range."
         }
     }
 }

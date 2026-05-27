@@ -87,6 +87,14 @@ public enum MLXServerSetupRunner {
             defaultValue: defaultSettings.port,
             allowedRange: 1...Int(UInt16.max)
         )
+        FileHandle.standardError.writeString(
+            "Suggerimento thread web server: 2 per lavoro locale, almeno 4 se lo usi come server.\n"
+        )
+        let webServerThreadCount = try promptInt(
+            "Thread web server",
+            defaultValue: defaultSettings.webServerThreadCount,
+            allowedRange: 1...MLXServerSettings.maximumWebServerThreadCount
+        )
         let loadOneModelAtATime = try promptYesNo(
             "Caricare un solo modello alla volta?",
             defaultValue: defaultSettings.loadOneModelAtATime
@@ -173,6 +181,7 @@ public enum MLXServerSetupRunner {
         return try MLXServerSettings(
             host: host,
             port: port,
+            webServerThreadCount: webServerThreadCount,
             loadOneModelAtATime: loadOneModelAtATime,
             http2PriorKnowledge: http2PriorKnowledge,
             tlsCertificatePath: tlsCertificatePath,

@@ -15,6 +15,7 @@ public struct AgentCoreAppSessionRequest: Sendable {
     public let cacheKey: String?
     public let history: [AgentRuntimeMessage]
     public let allowedToolNames: Set<String>?
+    public let selectedSkillIDs: Set<String>
     public let maxToolRounds: Int
     public let maxOutputTokens: Int?
     public let verboseLogging: Bool
@@ -31,6 +32,7 @@ public struct AgentCoreAppSessionRequest: Sendable {
         cacheKey: String? = nil,
         history: [AgentRuntimeMessage] = [],
         allowedToolNames: Set<String>? = nil,
+        selectedSkillIDs: Set<String> = [],
         maxToolRounds: Int = 100,
         maxOutputTokens: Int? = nil,
         verboseLogging: Bool = false,
@@ -46,6 +48,7 @@ public struct AgentCoreAppSessionRequest: Sendable {
         self.cacheKey = cacheKey
         self.history = history
         self.allowedToolNames = allowedToolNames
+        self.selectedSkillIDs = selectedSkillIDs
         self.maxToolRounds = maxToolRounds
         self.maxOutputTokens = maxOutputTokens
         self.verboseLogging = verboseLogging
@@ -66,7 +69,8 @@ public enum AgentCoreAppSessionFactory {
             providedSystemPrompt: request.systemPrompt,
             cwd: request.workingDirectory.path,
             selectedAgent: agentConfiguration.selectedAgent,
-            allowedToolNames: allowedToolNames
+            allowedToolNames: allowedToolNames,
+            selectedSkillIDs: request.selectedSkillIDs
         )
         let thinkingSelection = request.thinkingSelection
             ?? AgentSettingsStore.defaultSelection(
@@ -95,10 +99,15 @@ public enum AgentCoreAppSessionFactory {
         providedSystemPrompt: String?,
         cwd: String,
         selectedAgent: AgentProfile?,
-        allowedToolNames: Set<String>?
+        allowedToolNames: Set<String>?,
+        selectedSkillIDs: Set<String> = []
     ) -> String {
-        let selectedAgentSection = selectedAgent?.promptSection
-        let selectedSkillSection = selectedAgentSkillSection(for: selectedAgent)
+        let memoryToolEnabled = memoryToolEnabled(allowedToolNames)
+        let selectedAgentSection = selectedAgent?.promptSection(memoryToolEnabled: memoryToolEnabled)
+        let selectedSkillSection = selectedSkillSection(
+            for: selectedAgent,
+            selectedSkillIDs: selectedSkillIDs
+        )
         let providedSystemPrompt = providedSystemPrompt?.nilIfBlank
 
         if let providedSystemPrompt {
@@ -109,7 +118,7 @@ public enum AgentCoreAppSessionFactory {
 
         return AgentStandaloneSystemPrompt.prompt(
             cwd: cwd,
-            memoryToolEnabled: memoryToolEnabled(allowedToolNames),
+            memoryToolEnabled: memoryToolEnabled,
             selectedAgentSection: selectedAgentSection,
             selectedSkillSection: selectedSkillSection
         )
@@ -153,18 +162,23 @@ public enum AgentCoreAppSessionFactory {
         return try AgentConfiguration(arguments: arguments)
     }
 
-    private static func selectedAgentSkillSection(for selectedAgent: AgentProfile?) -> String? {
-        guard let selectedAgent,
-              !selectedAgent.skills.isEmpty else {
+    private static func selectedSkillSection(
+        for selectedAgent: AgentProfile?,
+        selectedSkillIDs explicitSelectedSkillIDs: Set<String>
+    ) -> String? {
+        guard !explicitSelectedSkillIDs.isEmpty || selectedAgent?.skills.isEmpty == false else {
             return nil
         }
 
         let availableSkills = MLXPromptSkillCatalog.discoverSkills(
             searchRoots: MLXPromptSkillCatalog.appCatalogSearchRoots()
         )
-        let selectedSkillIDs = selectedAgent.selectedSkillIDs(
-            availableSkills: availableSkills
-        )
+        var selectedSkillIDs = explicitSelectedSkillIDs
+        if let selectedAgent {
+            selectedSkillIDs.formUnion(
+                selectedAgent.selectedSkillIDs(availableSkills: availableSkills)
+            )
+        }
         let selectedSkills = availableSkills.filter { selectedSkillIDs.contains($0.id) }
         return MLXSystemPromptBuilder.selectedSkillSection(skills: selectedSkills)
     }
