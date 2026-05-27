@@ -191,6 +191,9 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
         var accumulatedText = ""
         var generationStats: [RemoteGenerationStats] = []
         for round in 0..<configuration.maxToolRounds {
+            if let result = compactSessionIfNeeded(&session) {
+                await onEvent(.diagnostic(Self.compactionDiagnostic(from: result)))
+            }
             let streamResult: RemoteStreamResult
             switch provider.chatEndpoint {
             case .chatCompletions:
@@ -284,12 +287,87 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
         throw RemoteGenerationClientError.tooManyToolRounds(configuration.maxToolRounds)
     }
 
+    private func compactSessionIfNeeded(
+        _ session: inout AgentSession
+    ) -> AgentConversationCompactionResult? {
+        let result = AgentConversationCompactionSupport.compactedMessagesIfNeeded(
+            Self.agentRuntimeMessages(from: session.messages),
+            maxTokens: configuration.configuredContextWindowLimit
+        )
+        guard result.wasCompacted else {
+            return nil
+        }
+
+        session.messages = Self.remoteMessages(
+            compactionResult: result,
+            preservingRecentFrom: session.messages
+        )
+        return result
+    }
+
+    private static func compactionDiagnostic(
+        from result: AgentConversationCompactionResult
+    ) -> String {
+        "Compacted conversation history from \(result.originalEstimatedTokenCount) to \(result.estimatedTokenCount) estimated tokens."
+    }
+
     public static func shouldStopGenerationLoop(afterDirectAnswer text: String) -> Bool {
         guard let finalCharacter = text.lastSignificantGenerationCharacter else {
             return false
         }
 
         return finalCharacter == "?" || finalCharacter.isEmojiSymbol
+    }
+
+    private static func agentRuntimeMessages(
+        from messages: [[String: Any]]
+    ) -> [AgentRuntimeMessage] {
+        messages.map { message in
+            let rawRole = (message["role"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let role = AgentRuntimeMessage.Role(rawValue: rawRole) ?? .user
+            let content = contentString(from: message["content"]) ?? ""
+            let imageAttachments = chatCompletionsImageContentItems(from: message["content"])
+                .enumerated()
+                .map { index, _ in
+                    AgentRuntimeAttachment(
+                        kind: .image,
+                        originalFilename: "image-\(index + 1)"
+                    )
+                }
+            return AgentRuntimeMessage(
+                role: role,
+                content: content,
+                attachments: imageAttachments
+            )
+        }
+    }
+
+    private static func remoteMessages(
+        compactionResult: AgentConversationCompactionResult,
+        preservingRecentFrom messages: [[String: Any]]
+    ) -> [[String: Any]] {
+        let conversationMessages: ArraySlice<[String: Any]>
+        if let firstRole = messages.first?["role"] as? String,
+           firstRole.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "system" {
+            conversationMessages = messages.dropFirst()
+        } else {
+            conversationMessages = messages[...]
+        }
+
+        var compactedMessages: [[String: Any]] = []
+        if let compactedSystemPrompt = compactionResult.compactedSystemPrompt?.nilIfBlank {
+            compactedMessages.append([
+                "role": "system",
+                "content": compactedSystemPrompt
+            ])
+        }
+
+        compactedMessages.append(
+            contentsOf: conversationMessages.suffix(compactionResult.keptRecentMessageCount)
+        )
+        return compactedMessages
     }
 }
 

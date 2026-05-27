@@ -201,6 +201,9 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
 
         var accumulatedVisibleText = ""
         for _ in 0..<configuration.maxToolRounds {
+            if let result = compactSessionIfNeeded(&session) {
+                await onEvent(.diagnostic(Self.compactionDiagnostic(from: result)))
+            }
             let request = await generationRequest(for: session)
             let turn = try await runGenerationTurn(
                 request: request,
@@ -450,6 +453,29 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         }
     }
 
+    private func compactSessionIfNeeded(
+        _ session: inout SessionState
+    ) -> AgentConversationCompactionResult? {
+        let maxTokens = configuration.configuredContextWindowLimit
+            ?? model.generationDefaults.contextWindow
+        let result = AgentConversationCompactionSupport.compactedMessagesIfNeeded(
+            session.messages.map(Self.agentRuntimeMessage(from:)),
+            maxTokens: maxTokens
+        )
+        guard result.wasCompacted else {
+            return nil
+        }
+
+        session.messages = result.messages.map(Self.serverMessage(from:))
+        return result
+    }
+
+    private static func compactionDiagnostic(
+        from result: AgentConversationCompactionResult
+    ) -> String {
+        "Compacted conversation history from \(result.originalEstimatedTokenCount) to \(result.estimatedTokenCount) estimated tokens."
+    }
+
     private static func initialMessages(
         systemPrompt: String?,
         history: [AgentRuntimeMessage]
@@ -468,6 +494,41 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
             }
         )
         return messages
+    }
+
+    private static func agentRuntimeMessage(
+        from message: MLXServerChatMessage
+    ) -> AgentRuntimeMessage {
+        let attachments =
+            message.imageURLs.map {
+                AgentRuntimeAttachment(
+                    kind: .image,
+                    fileURL: $0,
+                    originalFilename: $0.lastPathComponent
+                )
+            }
+            + message.videoURLs.map {
+                AgentRuntimeAttachment(
+                    kind: .video,
+                    fileURL: $0,
+                    originalFilename: $0.lastPathComponent
+                )
+            }
+        return AgentRuntimeMessage(
+            role: AgentRuntimeMessage.Role(rawValue: message.role.rawValue) ?? .user,
+            content: message.content,
+            attachments: attachments
+        )
+    }
+
+    private static func serverMessage(
+        from message: AgentRuntimeMessage
+    ) -> MLXServerChatMessage {
+        serverMessage(
+            role: message.role,
+            content: message.content,
+            attachments: message.attachments
+        )
     }
 
     private static func serverMessage(
