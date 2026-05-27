@@ -87,8 +87,13 @@ private struct MLXServerMetricsRecord: Encodable {
     var totalTokens: Int
     var promptTime: Double
     var generationTime: Double
+    var ttftMilliseconds: Double
+    var tpotMilliseconds: Double
+    var e2eLatencySeconds: Double
     var promptTokensPerSecond: Double
     var generationTokensPerSecond: Double
+    var totalThroughputTokensPerSecond: Double
+    var processedThroughputTokensPerSecond: Double
     var cacheStatus: String?
     var processedPromptTokens: Int
     var cachedPromptTokens: Int?
@@ -121,8 +126,13 @@ private struct MLXServerMetricsRecord: Encodable {
         totalTokens = promptTokens + sample.generationTokens
         promptTime = sample.promptTime
         generationTime = sample.generationTime
+        ttftMilliseconds = sample.promptTime * 1000
+        tpotMilliseconds = sample.generationTime / Double(max(sample.generationTokens - 1, 1)) * 1000
+        e2eLatencySeconds = sample.wallTime
         promptTokensPerSecond = sample.promptTokensPerSecond
         generationTokensPerSecond = sample.generationTokensPerSecond
+        totalThroughputTokensPerSecond = Double(totalTokens) / max(sample.wallTime, 1e-9)
+        processedThroughputTokensPerSecond = Double(processedPromptTokens + sample.generationTokens) / max(sample.wallTime, 1e-9)
         cacheStatus = sample.cacheEvent?.status.rawValue
         cacheCachedSessionCount = sample.cacheEvent?.cachedSessionCount
         cacheModelSessionCount = sample.cacheEvent?.modelSessionCount
@@ -154,8 +164,13 @@ private struct MLXServerMetricsRecord: Encodable {
         case totalTokens = "total_tokens"
         case promptTime = "prompt_time"
         case generationTime = "generation_time"
+        case ttftMilliseconds = "ttft_ms"
+        case tpotMilliseconds = "tpot_ms"
+        case e2eLatencySeconds = "e2e_latency_s"
         case promptTokensPerSecond = "prompt_tokens_per_second"
         case generationTokensPerSecond = "generation_tokens_per_second"
+        case totalThroughputTokensPerSecond = "total_throughput_tokens_per_second"
+        case processedThroughputTokensPerSecond = "processed_throughput_tokens_per_second"
         case cacheStatus = "chat_cache_status"
         case cacheCachedSessionCount = "chat_cache_cached_sessions"
         case cacheModelSessionCount = "chat_cache_model_sessions"

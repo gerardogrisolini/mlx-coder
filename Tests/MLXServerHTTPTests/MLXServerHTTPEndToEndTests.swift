@@ -396,6 +396,11 @@ func metricsLoggerRecordsChatCacheDiagnostics() async throws {
     #expect(object["prompt_tokens_processed"] as? Int == 24)
     #expect(object["prompt_tokens_cached"] as? Int == 36)
     #expect(object["total_tokens"] as? Int == 63)
+    #expect(object["ttft_ms"] as? Double == 100)
+    #expect(object["tpot_ms"] as? Double == 15)
+    #expect((object["e2e_latency_s"] as? Double ?? 0) > 0)
+    #expect((object["total_throughput_tokens_per_second"] as? Double ?? 0) > 0)
+    #expect((object["processed_throughput_tokens_per_second"] as? Double ?? 0) > 0)
 }
 
 private actor RecordingRuntime: MLXServerRuntimeGenerating, MLXServerRuntimeCacheDiagnosing {
