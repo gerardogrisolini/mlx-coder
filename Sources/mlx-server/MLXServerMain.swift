@@ -50,13 +50,16 @@ struct MLXServerMain {
             return
         }
 
+        var didRunSetup = false
         var shouldRunModelSetup = false
         if MLXServerSetupRunner.shouldRunSetup(arguments: arguments) {
+            didRunSetup = true
             shouldRunModelSetup = try MLXServerSetupRunner.run(arguments: arguments)
             arguments = MLXServerSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
         }
 
         if shouldRunModelSetup || MLXServerModelSetupRunner.shouldRunSetup(arguments: arguments) {
+            didRunSetup = true
             try await MLXServerModelSetupRunner.run(
                 arguments: arguments,
                 configureRetentionPolicy: !shouldRunModelSetup
@@ -65,13 +68,19 @@ struct MLXServerMain {
         }
 
         if MLXServerAgentProfileSetupRunner.shouldRunSetup(arguments: arguments) {
+            didRunSetup = true
             try MLXServerAgentProfileSetupRunner.run(arguments: arguments)
             arguments = MLXServerAgentProfileSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
         }
 
         if MLXServerAgentSetupRunner.shouldRunSetup(arguments: arguments) {
+            didRunSetup = true
             try MLXServerAgentSetupRunner.run(arguments: arguments)
             arguments = MLXServerAgentSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
+        }
+
+        if didRunSetup, arguments.isEmpty {
+            return
         }
 
         if arguments.contains("--coder") {

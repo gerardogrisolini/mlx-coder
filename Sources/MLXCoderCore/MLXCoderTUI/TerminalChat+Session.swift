@@ -121,33 +121,30 @@ extension TerminalChat {
             return []
         }
 
-        var toolNames = Set(DirectToolCatalog.baseDescriptors.map(\.name))
-        if selectedToolGroups.contains(.xcode) || selectedToolGroups.contains(.figma) {
-            var mcpDiscoveryToolNames = Set<String>()
-            if selectedToolGroups.contains(.xcode) {
-                mcpDiscoveryToolNames.insert("xcode.BuildProject")
-            }
-            if selectedToolGroups.contains(.figma) {
-                mcpDiscoveryToolNames.insert("figma.")
-            }
-            let mcpDescriptors: [DirectToolDescriptor]
-            if discoverExternalTools {
-                mcpDescriptors = await sessionRunner.mcpToolDescriptors(
-                    allowedToolNames: mcpDiscoveryToolNames
-                )
-            } else {
-                mcpDescriptors = await sessionRunner.knownMCPToolDescriptors(
-                    allowedToolNames: mcpDiscoveryToolNames
-                )
-            }
-            toolNames.formUnion(mcpDescriptors.map(\.name))
+        let dynamicToolPrefixes = AgentToolSelection.dynamicToolPrefixes(
+            for: selectedToolGroups
+        )
+        let mcpDiscoveryToolNames = Set(
+            dynamicToolPrefixes.filter { $0 == "xcode." || $0 == "figma." }
+        )
+        let mcpDescriptors: [DirectToolDescriptor]
+        if mcpDiscoveryToolNames.isEmpty {
+            mcpDescriptors = []
+        } else if discoverExternalTools {
+            mcpDescriptors = await sessionRunner.mcpToolDescriptors(
+                allowedToolNames: mcpDiscoveryToolNames
+            )
+        } else {
+            mcpDescriptors = await sessionRunner.knownMCPToolDescriptors(
+                allowedToolNames: mcpDiscoveryToolNames
+            )
         }
 
-        return Set(toolNames.filter { toolName in
-            selectedToolGroups.contains { group in
-                group.allows(toolName: toolName)
-            }
-        })
+        return AgentToolSelection.allowedToolNames(
+            for: selectedToolGroups,
+            additionalDescriptors: mcpDescriptors,
+            includeDynamicGroupPrefixes: false
+        )
     }
 
     @discardableResult
