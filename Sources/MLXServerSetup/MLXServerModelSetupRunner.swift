@@ -77,14 +77,15 @@ public enum MLXServerModelSetupRunner {
                 upsert(record: configuredModel.record, in: &manifest)
                 try updateDefaultModel(
                     afterAdding: configuredModel.record,
-                    askUser: configuredModel.shouldPromptForDefault,
                     in: &manifest
                 )
             } while try promptYesNo("Add another model?", defaultValue: false)
         }
 
+        try selectDefaultModelIfRequested(in: &manifest)
         try MLXServerModelsManifestStore.save(manifest, to: modelsURL)
         FileHandle.standardError.writeString("Updated: models.json\n")
+        try syncActiveAgentIntegrationsWithDefaultModel(from: manifest)
         FileHandle.standardError.writeString("\nModels setup completed.\n\n")
     }
 
@@ -201,7 +202,6 @@ public enum MLXServerModelSetupRunner {
             upsert(record: configuredModel.record, in: &manifest)
             try updateDefaultModel(
                 afterAdding: configuredModel.record,
-                askUser: configuredModel.shouldPromptForDefault,
                 in: &manifest
             )
         }
@@ -373,8 +373,7 @@ public enum MLXServerModelSetupRunner {
         ).validated()
 
         return ConfiguredModelRecord(
-            record: record,
-            shouldPromptForDefault: shouldConfigureParameters
+            record: record
         )
     }
 
@@ -738,17 +737,109 @@ public enum MLXServerModelSetupRunner {
 
     private static func updateDefaultModel(
         afterAdding record: MLXServerModelRecord,
-        askUser: Bool,
         in manifest: inout MLXServerModelsManifest
     ) throws {
         if manifest.defaultModelID == nil || manifest.models.count == 1 {
             manifest.defaultModelID = record.id
+        }
+    }
+
+    private static func selectDefaultModelIfRequested(
+        in manifest: inout MLXServerModelsManifest
+    ) throws {
+        let enabledModels = manifest.models.filter(\.enabled)
+        guard !enabledModels.isEmpty else {
             return
         }
-        if askUser,
-           try promptYesNo("Set \(record.id) as the default model?", defaultValue: false) {
-            manifest.defaultModelID = record.id
+
+        let currentDefaultModel = enabledModels.first { $0.id == manifest.defaultModelID }
+            ?? enabledModels[0]
+        manifest.defaultModelID = currentDefaultModel.id
+
+        guard enabledModels.count > 1 else {
+            return
         }
+
+        FileHandle.standardError.writeString("\nEnabled models:\n")
+        for (index, model) in enabledModels.enumerated() {
+            let marker = model.id == currentDefaultModel.id ? " *" : ""
+            FileHandle.standardError.writeString("\(index + 1). \(model.id)\(marker)\n")
+        }
+        FileHandle.standardError.writeString("\n")
+
+        guard try promptYesNo(
+            "Change default model?",
+            defaultValue: false
+        ) else {
+            return
+        }
+
+        while true {
+            let answer = try promptString(
+                "Default model",
+                defaultValue: currentDefaultModel.id,
+                allowEmpty: false
+            )
+            if let index = Int(answer),
+               enabledModels.indices.contains(index - 1) {
+                manifest.defaultModelID = enabledModels[index - 1].id
+                return
+            }
+            if let model = enabledModels.first(where: { $0.id == answer }) {
+                manifest.defaultModelID = model.id
+                return
+            }
+            FileHandle.standardError.writeString("Invalid model selection.\n")
+        }
+    }
+
+    private static func syncActiveAgentIntegrationsWithDefaultModel(
+        from manifest: MLXServerModelsManifest
+    ) throws {
+        let validated = try manifest.validated()
+        let enabledModels = validated.models.filter(\.enabled)
+        guard let defaultModel = enabledModels.first(where: { $0.id == validated.defaultModelID }) else {
+            return
+        }
+
+        let status = MLXServerAgentIntegrationService.status()
+        guard status.codexCLIEnabled
+            || status.codexAppEnabled
+            || status.codexXcodeAppEnabled
+            || status.xcodeClaudeCodeEnabled else {
+            return
+        }
+
+        let configuration = MLXServerAgentIntegrationConfiguration(
+            baseURL: MLXServerAgentIntegrationService.defaultServerBaseURL(),
+            modelID: defaultModel.id,
+            contextWindow: defaultModel.generationDefaults.contextWindow
+        )
+
+        if status.codexCLIEnabled {
+            try MLXServerAgentIntegrationService.configureCodexCLIProfile(
+                configuration: configuration
+            )
+        }
+        if status.codexAppEnabled {
+            try MLXServerAgentIntegrationService.configureCodexAppProfile(
+                target: .desktop,
+                configuration: configuration
+            )
+        }
+        if status.codexXcodeAppEnabled {
+            try MLXServerAgentIntegrationService.configureCodexAppProfile(
+                target: .xcode,
+                configuration: configuration
+            )
+        }
+        if status.xcodeClaudeCodeEnabled {
+            try MLXServerAgentIntegrationService.configureXcodeClaudeCode(
+                configuration: configuration
+            )
+        }
+
+        FileHandle.standardError.writeString("Updated active agent integrations.\n")
     }
 
     private static func printExistingModels(_ manifest: MLXServerModelsManifest) {
@@ -882,7 +973,6 @@ enum MLXServerModelSetupError: LocalizedError {
 
 private struct ConfiguredModelRecord: Sendable {
     var record: MLXServerModelRecord
-    var shouldPromptForDefault: Bool
 }
 
 private struct MLXServerCachedModelCandidate: Sendable {

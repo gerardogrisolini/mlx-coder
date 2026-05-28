@@ -110,7 +110,9 @@ struct MLXServerMain {
         try MLXMetalLibraryBootstrap.prepareIfNeeded()
         let runtime = MLXServerRuntime(
             retentionPolicy: settings.modelRetentionPolicy,
-            diskKVCacheConfiguration: settings.diskKVCache.configuration
+            diskKVCacheConfiguration: settings.diskKVCache.configuration,
+            modelLoadLogger: logModelLoadEvent,
+            modelUnloadLogger: logModelUnloadEvent
         )
         let transport = MLXServerHTTPTransportConfiguration(
             tlsCertificatePath: settings.tlsCertificatePath,
@@ -143,7 +145,9 @@ struct MLXServerMain {
         let initialModel = try modelCatalog.resolve(id: options.modelID)
         let runtime = MLXServerRuntime(
             retentionPolicy: settings.modelRetentionPolicy,
-            diskKVCacheConfiguration: settings.diskKVCache.configuration
+            diskKVCacheConfiguration: settings.diskKVCache.configuration,
+            modelLoadLogger: logModelLoadEvent,
+            modelUnloadLogger: logModelUnloadEvent
         )
         let permissionAuthorizer = LocalExecPermissionAuthorizer()
         let sessionRunner = AgentCoreSessionRunner(
@@ -246,6 +250,55 @@ struct MLXServerMain {
         return options.isEmpty ? nil : options
     }
 
+    private static func logModelLoadEvent(_ event: MLXServerModelLoadEvent) {
+        let defaults = event.generationDefaults
+        let parameters = event.parameters
+        let kvCache = parameters.kvBits.map {
+            "quantized(bits=\($0), group=\(parameters.kvGroupSize), start=\(parameters.quantizedKVStart))"
+        } ?? "standard"
+        let generationLine = [
+            "context_window=\(formatModelDefault(defaults.contextWindow))",
+            "max_output_tokens=\(formatModelDefault(parameters.maxTokens))",
+            "temperature=\(format(parameters.temperature))",
+            "top_p=\(format(parameters.topP))",
+            "top_k=\(parameters.topK)",
+            "min_p=\(format(parameters.minP))",
+        ].joined(separator: ", ")
+        let penaltiesLine = [
+            "repetition=\(formatModelDefault(parameters.repetitionPenalty))",
+            "presence=\(formatModelDefault(parameters.presencePenalty))",
+            "frequency=\(formatModelDefault(parameters.frequencyPenalty))",
+        ].joined(separator: ", ")
+
+        FileHandle.standardError.writeString(
+            """
+            mlx-server loaded model:
+              model: \(event.modelID)
+              runtime: \(event.runtimeKind.rawValue)
+              generation: \(generationLine)
+              penalties: \(penaltiesLine)
+              kv_cache: \(kvCache), prefill_step_size=\(parameters.prefillStepSize)
+
+            """
+        )
+    }
+
+    private static func logModelUnloadEvent(_ event: MLXServerModelUnloadEvent) {
+        FileHandle.standardError.writeString("mlx-server unloaded model: \(event.modelID)\n")
+    }
+
+    private static func formatModelDefault(_ value: Int?) -> String {
+        value.map(String.init) ?? "model_default"
+    }
+
+    private static func formatModelDefault(_ value: Float?) -> String {
+        value.map(format) ?? "model_default"
+    }
+
+    private static func format(_ value: Float) -> String {
+        String(format: "%.4g", Double(value))
+    }
+
     private static func runChat(
         model: MLXServerModelDescriptor,
         settings: MLXServerSettings,
@@ -253,7 +306,9 @@ struct MLXServerMain {
     ) async throws {
         let runtime = MLXServerRuntime(
             retentionPolicy: settings.modelRetentionPolicy,
-            diskKVCacheConfiguration: settings.diskKVCache.configuration
+            diskKVCacheConfiguration: settings.diskKVCache.configuration,
+            modelLoadLogger: logModelLoadEvent,
+            modelUnloadLogger: logModelUnloadEvent
         )
         let thinkingSelection = model.thinking.defaultEnabledSelection()
         var additionalContext = model.thinking.additionalContext(for: thinkingSelection)

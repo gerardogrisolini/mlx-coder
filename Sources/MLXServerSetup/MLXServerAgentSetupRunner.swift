@@ -92,10 +92,9 @@ public enum MLXServerAgentSetupRunner {
 
     private static func promptIntegrationConfiguration()
         throws -> MLXServerAgentIntegrationConfiguration {
-        let defaultBaseURL = defaultServerBaseURL()
         let baseURL = try promptString(
             "Base URL mlx-server",
-            defaultValue: defaultBaseURL,
+            defaultValue: MLXServerAgentIntegrationService.defaultServerBaseURL(),
             allowEmpty: false
         )
         let modelSelection = try promptModelSelection()
@@ -159,12 +158,6 @@ public enum MLXServerAgentSetupRunner {
             )
             FileHandle.standardError.writeString("Updated: Claude Code in Xcode\n")
         }
-    }
-
-    private static func defaultServerBaseURL() -> String {
-        let settings = (try? MLXServerSettingsStore.loadRequired()) ?? MLXServerSettings()
-        let scheme = settings.tlsCertificatePath == nil ? "http" : "https"
-        return "\(scheme)://\(settings.host):\(settings.port)"
     }
 
     private static func promptModelSelection() throws -> ModelSelection {

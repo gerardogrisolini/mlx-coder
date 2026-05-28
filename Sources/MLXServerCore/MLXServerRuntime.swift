@@ -137,6 +137,70 @@ public struct MLXServerGenerationRequest: Sendable {
     }
 }
 
+public struct MLXServerGenerationParameterSnapshot: Sendable, Equatable {
+    public var maxTokens: Int?
+    public var maxKVSize: Int?
+    public var kvBits: Int?
+    public var kvGroupSize: Int
+    public var quantizedKVStart: Int
+    public var temperature: Float
+    public var topP: Float
+    public var topK: Int
+    public var minP: Float
+    public var repetitionPenalty: Float?
+    public var repetitionContextSize: Int
+    public var presencePenalty: Float?
+    public var presenceContextSize: Int
+    public var frequencyPenalty: Float?
+    public var frequencyContextSize: Int
+    public var prefillStepSize: Int
+
+    public init(parameters: GenerateParameters) {
+        self.maxTokens = parameters.maxTokens
+        self.maxKVSize = parameters.maxKVSize
+        self.kvBits = parameters.kvBits
+        self.kvGroupSize = parameters.kvGroupSize
+        self.quantizedKVStart = parameters.quantizedKVStart
+        self.temperature = parameters.temperature
+        self.topP = parameters.topP
+        self.topK = parameters.topK
+        self.minP = parameters.minP
+        self.repetitionPenalty = parameters.repetitionPenalty
+        self.repetitionContextSize = parameters.repetitionContextSize
+        self.presencePenalty = parameters.presencePenalty
+        self.presenceContextSize = parameters.presenceContextSize
+        self.frequencyPenalty = parameters.frequencyPenalty
+        self.frequencyContextSize = parameters.frequencyContextSize
+        self.prefillStepSize = parameters.prefillStepSize
+    }
+}
+
+public struct MLXServerModelLoadEvent: Sendable, Equatable {
+    public var modelID: String
+    public var runtimeKind: MLXServerModelRuntimeKind
+    public var generationDefaults: MLXServerModelGenerationDefaults
+    public var parameters: MLXServerGenerationParameterSnapshot
+
+    public init(
+        model: MLXServerModelDescriptor,
+        runtimeKind: MLXServerModelRuntimeKind,
+        parameters: GenerateParameters
+    ) {
+        self.modelID = model.id
+        self.runtimeKind = runtimeKind
+        self.generationDefaults = model.generationDefaults
+        self.parameters = MLXServerGenerationParameterSnapshot(parameters: parameters)
+    }
+}
+
+public struct MLXServerModelUnloadEvent: Sendable, Equatable {
+    public var modelID: String
+
+    public init(modelID: String) {
+        self.modelID = modelID
+    }
+}
+
 public enum MLXServerModelRetentionPolicy: Sendable, Equatable {
     case keepLoadedModels
     case unloadPreviousModel
@@ -275,16 +339,22 @@ public actor MLXServerRuntime {
     private let generationGate = MLXServerGenerationGate()
     private let retentionPolicy: MLXServerModelRetentionPolicy
     private let diskKVCacheStore: MLXServerDiskKVCacheStore?
+    private let modelLoadLogger: (@Sendable (MLXServerModelLoadEvent) -> Void)?
+    private let modelUnloadLogger: (@Sendable (MLXServerModelUnloadEvent) -> Void)?
     private var lastChatCacheEvent: MLXServerChatCacheEvent?
 
     public init(
         retentionPolicy: MLXServerModelRetentionPolicy = .keepLoadedModels,
-        diskKVCacheConfiguration: MLXServerDiskKVCacheConfiguration = .init()
+        diskKVCacheConfiguration: MLXServerDiskKVCacheConfiguration = .init(),
+        modelLoadLogger: (@Sendable (MLXServerModelLoadEvent) -> Void)? = nil,
+        modelUnloadLogger: (@Sendable (MLXServerModelUnloadEvent) -> Void)? = nil
     ) {
         self.retentionPolicy = retentionPolicy
         self.diskKVCacheStore = diskKVCacheConfiguration.isEnabled
             ? MLXServerDiskKVCacheStore(configuration: diskKVCacheConfiguration)
             : nil
+        self.modelLoadLogger = modelLoadLogger
+        self.modelUnloadLogger = modelUnloadLogger
     }
 
     public var loadedModelIDs: [String] {
@@ -292,9 +362,11 @@ public actor MLXServerRuntime {
     }
 
     public func unloadAll() {
+        let unloadedModelIDs = Set(containers.keys.map(\.modelID)).sorted()
         containers.removeAll(keepingCapacity: true)
         loadingTasks.removeAll(keepingCapacity: true)
         promptPrefixCaches.removeAll(keepingCapacity: true)
+        logUnloadedModels(unloadedModelIDs)
     }
 
     public func generate(
@@ -306,6 +378,7 @@ public actor MLXServerRuntime {
         let container = try await container(
             for: request.model,
             runtimeKind: request.runtimeKind,
+            parameters: request.parameters,
             progressHandler: progressHandler
         )
         do {
@@ -373,6 +446,7 @@ public actor MLXServerRuntime {
             container = try await self.container(
                 for: request.model,
                 runtimeKind: request.runtimeKind,
+                parameters: request.parameters,
                 progressHandler: progressHandler
             )
             rendering = try await renderedPrompt(
@@ -581,6 +655,7 @@ public actor MLXServerRuntime {
     private func container(
         for model: MLXServerModelDescriptor,
         runtimeKind: MLXServerModelRuntimeKind,
+        parameters: GenerateParameters,
         progressHandler: @Sendable @escaping (Progress) -> Void
     ) async throws -> ModelContainer {
         let key = LoadedModelKey(modelID: model.id, runtimeKind: runtimeKind)
@@ -609,6 +684,13 @@ public actor MLXServerRuntime {
             let container = try await task.value
             loadingTasks[key] = nil
             containers[key] = container
+            modelLoadLogger?(
+                MLXServerModelLoadEvent(
+                    model: model,
+                    runtimeKind: runtimeKind,
+                    parameters: parameters
+                )
+            )
             return container
         } catch {
             loadingTasks[key] = nil
@@ -617,12 +699,20 @@ public actor MLXServerRuntime {
     }
 
     private func unloadOtherModelsBeforeLoading(_ key: LoadedModelKey) {
+        let unloadedModelIDs = Set(containers.keys.filter { $0 != key }.map(\.modelID)).sorted()
         containers = containers.filter { $0.key == key }
         promptPrefixCaches.removeAll(keepingCapacity: true)
         for (loadingKey, task) in loadingTasks where loadingKey != key {
             task.cancel()
         }
         loadingTasks = loadingTasks.filter { $0.key == key }
+        logUnloadedModels(unloadedModelIDs)
+    }
+
+    private func logUnloadedModels(_ modelIDs: [String]) {
+        for modelID in modelIDs {
+            modelUnloadLogger?(MLXServerModelUnloadEvent(modelID: modelID))
+        }
     }
 
     private func renderedPrompt(

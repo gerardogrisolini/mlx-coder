@@ -240,6 +240,12 @@ public enum MLXServerAgentIntegrationService {
         URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
             .standardizedFileURL
     }
+
+    public static func defaultServerBaseURL() -> String {
+        let settings = (try? MLXServerSettingsStore.loadRequired()) ?? MLXServerSettings()
+        let scheme = settings.tlsCertificatePath == nil ? "http" : "https"
+        return "\(scheme)://\(settings.host):\(settings.port)"
+    }
 }
 
 private extension MLXServerAgentIntegrationService {
