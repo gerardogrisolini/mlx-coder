@@ -72,6 +72,7 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
             }
             .childChannelOption(.socketOption(.so_reuseaddr), value: 1)
             .childChannelOption(.maxMessagesPerRead, value: 1)
+            .childChannelOption(.allowRemoteHalfClosure, value: true)
 
         let channel = try bootstrap.bind(host: configuration.host, port: configuration.port).wait()
         self.channel = channel
@@ -164,9 +165,17 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
                     status: .notFound
                 )
             }
+        } catch let error as DecodingError {
+            logRequestError(error, request: request, status: .badRequest)
+            await sendError(error, status: .badRequest, writer: writer)
         } catch let error as MLXServerModelsManifestError {
+            logRequestError(error, request: request, status: .badRequest)
+            await sendError(error, status: .badRequest, writer: writer)
+        } catch let error as MLXServerRuntimeError {
+            logRequestError(error, request: request, status: .badRequest)
             await sendError(error, status: .badRequest, writer: writer)
         } catch {
+            logRequestError(error, request: request, status: .internalServerError)
             await sendError(error, status: .internalServerError, writer: writer)
         }
     }
@@ -220,8 +229,8 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
         writer: MLXServerNIOResponseWriter
     ) async throws {
         let id = "chatcmpl-\(UUID().uuidString)"
+        let stream = try await runtime.generateChatSession(request: request)
         try await writer.sendSSEHeaders()
-        try await writer.sendSSE(data: ChatCompletionChunk.role(id: id, model: model.id))
 
         let startedAt = Date()
         var completionInfo: GenerateCompletionInfo?
@@ -231,21 +240,26 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
             model: model.id,
             emitsThinking: request.emitsThinking
         )
-        let stream = try await runtime.generateChatSession(request: request)
-        for await event in stream {
-            switch event {
-            case .chunk(let chunk):
-                try await chunkWriter.write(chunk)
-            case .info(let info):
-                completionInfo = info
-            case .toolCall(let toolCall):
-                try await chunkWriter.write(toolCall)
+        do {
+            try await writer.sendSSE(data: ChatCompletionChunk.role(id: id, model: model.id))
+            for await event in stream {
+                switch event {
+                case .chunk(let chunk):
+                    try await chunkWriter.write(chunk)
+                case .info(let info):
+                    completionInfo = info
+                case .toolCall(let toolCall):
+                    try await chunkWriter.write(toolCall)
+                }
             }
-        }
 
-        try await chunkWriter.finish()
-        try await writer.sendRaw("data: [DONE]\r\n\r\n")
-        try await writer.finish()
+            try await chunkWriter.finish()
+            try await writer.sendRaw("data: [DONE]\r\n\r\n")
+            try await writer.finish()
+        } catch {
+            await writer.close()
+            return
+        }
         await logMetrics(
             endpoint: "chat_completions",
             protocolName: writer.protocolName,
@@ -306,6 +320,7 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
         writer: MLXServerNIOResponseWriter
     ) async throws {
         let id = "resp-\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        let stream = try await runtime.generateChatSession(request: request)
         try await writer.sendSSEHeaders()
 
         let startedAt = Date()
@@ -316,21 +331,25 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
             model: model.id,
             emitsThinking: request.emitsThinking
         )
-        try await responseWriter.start()
-        let stream = try await runtime.generateChatSession(request: request)
-        for await event in stream {
-            switch event {
-            case .chunk(let chunk):
-                try await responseWriter.write(chunk)
-            case .info(let info):
-                completionInfo = info
-            case .toolCall(let toolCall):
-                try await responseWriter.write(toolCall)
+        do {
+            try await responseWriter.start()
+            for await event in stream {
+                switch event {
+                case .chunk(let chunk):
+                    try await responseWriter.write(chunk)
+                case .info(let info):
+                    completionInfo = info
+                case .toolCall(let toolCall):
+                    try await responseWriter.write(toolCall)
+                }
             }
-        }
 
-        try await responseWriter.finish(info: completionInfo)
-        try await writer.finish()
+            try await responseWriter.finish(info: completionInfo)
+            try await writer.finish()
+        } catch {
+            await writer.close()
+            return
+        }
         await logMetrics(
             endpoint: "responses",
             protocolName: writer.protocolName,
@@ -391,11 +410,8 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
         writer: MLXServerNIOResponseWriter
     ) async throws {
         let id = "msg_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        let stream = try await runtime.generateChatSession(request: request)
         try await writer.sendSSEHeaders()
-        try await writer.sendSSE(
-            event: "message_start",
-            data: AnthropicMessageStart(id: id, model: model.id)
-        )
 
         let startedAt = Date()
         var completionInfo: GenerateCompletionInfo?
@@ -404,26 +420,34 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
             emitsThinking: request.emitsThinking
         )
         var emittedToolCall = false
-        let stream = try await runtime.generateChatSession(request: request)
-        for await event in stream {
-            switch event {
-            case .chunk(let chunk):
-                try await blockWriter.write(chunk)
-            case .info(let info):
-                completionInfo = info
-            case .toolCall(let toolCall):
-                emittedToolCall = true
-                try await blockWriter.write(toolCall)
+        do {
+            try await writer.sendSSE(
+                event: "message_start",
+                data: AnthropicMessageStart(id: id, model: model.id)
+            )
+            for await event in stream {
+                switch event {
+                case .chunk(let chunk):
+                    try await blockWriter.write(chunk)
+                case .info(let info):
+                    completionInfo = info
+                case .toolCall(let toolCall):
+                    emittedToolCall = true
+                    try await blockWriter.write(toolCall)
+                }
             }
-        }
 
-        try await blockWriter.finish()
-        try await writer.sendSSE(
-            event: "message_delta",
-            data: AnthropicMessageDelta(stopReason: emittedToolCall ? "tool_use" : "end_turn")
-        )
-        try await writer.sendSSE(event: "message_stop", data: AnthropicTypedEvent(type: "message_stop"))
-        try await writer.finish()
+            try await blockWriter.finish()
+            try await writer.sendSSE(
+                event: "message_delta",
+                data: AnthropicMessageDelta(stopReason: emittedToolCall ? "tool_use" : "end_turn")
+            )
+            try await writer.sendSSE(event: "message_stop", data: AnthropicTypedEvent(type: "message_stop"))
+            try await writer.finish()
+        } catch {
+            await writer.close()
+            return
+        }
         await logMetrics(
             endpoint: "messages",
             protocolName: writer.protocolName,
@@ -438,12 +462,26 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
     fileprivate func sendError(_ error: any Error, status: HTTPStatus, writer: MLXServerNIOResponseWriter) async {
         do {
             try await writer.sendJSON(
-                ErrorResponse(error: .init(message: error.localizedDescription, type: "server_error")),
+                ErrorResponse(
+                    error: .init(
+                        message: error.mlxServerHTTPDescription,
+                        type: status.errorType
+                    )
+                ),
                 status: status
             )
         } catch {
             await writer.close()
         }
+    }
+
+    private func logRequestError(_ error: any Error, request: HTTPRequest, status: HTTPStatus) {
+        let message = """
+        mlx-server \(request.method) \(request.path) -> \(status.nioStatus.code): \(error.mlxServerHTTPDescription)
+        \(String(reflecting: error))
+
+        """
+        try? FileHandle.standardError.write(contentsOf: Data(message.utf8))
     }
 
     private func logMetrics(
@@ -488,6 +526,9 @@ private final class MLXServerNIOHTTPHandler: ChannelInboundHandler, @unchecked S
     private let server: MLXServerHTTPServer
     private var requestHead: HTTPRequestHead?
     private var requestBody: ByteBuffer?
+    private var pendingResponses: [PendingHTTPResponse] = []
+    private var isResponding = false
+    private var closeWhenDrained = false
 
     init(server: MLXServerHTTPServer) {
         self.server = server
@@ -518,9 +559,30 @@ private final class MLXServerNIOHTTPHandler: ChannelInboundHandler, @unchecked S
                 eventLoop: context.eventLoop,
                 requestVersion: head.version
             )
-            let server = server
-            Task {
-                await server.respond(to: request, writer: writer)
+            pendingResponses.append(PendingHTTPResponse(request: request, writer: writer))
+            drainResponses(context: context)
+        }
+    }
+
+    private func drainResponses(context: ChannelHandlerContext) {
+        guard !isResponding, !pendingResponses.isEmpty else {
+            return
+        }
+
+        isResponding = true
+        let pending = pendingResponses.removeFirst()
+        let eventLoop = context.eventLoop
+        let loopBoundContext = NIOLoopBound(context, eventLoop: eventLoop)
+        let server = server
+        Task {
+            await server.respond(to: pending.request, writer: pending.writer)
+            eventLoop.execute {
+                self.isResponding = false
+                if self.pendingResponses.isEmpty, self.closeWhenDrained {
+                    loopBoundContext.value.close(promise: nil)
+                    return
+                }
+                self.drainResponses(context: loopBoundContext.value)
             }
         }
     }
@@ -532,11 +594,20 @@ private final class MLXServerNIOHTTPHandler: ChannelInboundHandler, @unchecked S
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
         switch event {
         case let event as ChannelEvent where event == .inputClosed:
-            context.close(promise: nil)
+            if isResponding || !pendingResponses.isEmpty {
+                closeWhenDrained = true
+            } else {
+                context.close(promise: nil)
+            }
         default:
             context.fireUserInboundEventTriggered(event)
         }
     }
+}
+
+private struct PendingHTTPResponse: Sendable {
+    var request: HTTPRequest
+    var writer: MLXServerNIOResponseWriter
 }
 
 private final class MLXServerNIOErrorHandler: ChannelInboundHandler, Sendable {
@@ -576,7 +647,6 @@ private struct MLXServerNIOResponseWriter: Sendable {
         var headers = HTTPHeaders()
         headers.add(name: "Content-Type", value: "application/json")
         headers.add(name: "Content-Length", value: "\(body.count)")
-        addConnectionCloseIfNeeded(to: &headers)
 
         let responseHead = HTTPResponseHead(version: requestVersion, status: status.nioStatus, headers: headers)
         try await write(.head(responseHead))
@@ -588,7 +658,6 @@ private struct MLXServerNIOResponseWriter: Sendable {
         var headers = HTTPHeaders()
         headers.add(name: "Content-Type", value: "text/event-stream")
         headers.add(name: "Cache-Control", value: "no-cache")
-        addConnectionCloseIfNeeded(to: &headers)
 
         let responseHead = HTTPResponseHead(version: requestVersion, status: .ok, headers: headers)
         try await write(.head(responseHead))
@@ -611,7 +680,6 @@ private struct MLXServerNIOResponseWriter: Sendable {
 
     func finish() async throws {
         try await write(.end(nil))
-        await close()
     }
 
     func close() async {
@@ -620,12 +688,6 @@ private struct MLXServerNIOResponseWriter: Sendable {
                 context.value.close(promise: nil)
                 continuation.resume()
             }
-        }
-    }
-
-    private func addConnectionCloseIfNeeded(to headers: inout HTTPHeaders) {
-        if requestVersion.major == 1 {
-            headers.add(name: "Connection", value: "close")
         }
     }
 
@@ -696,6 +758,48 @@ private enum HTTPStatus {
         case .internalServerError:
             .internalServerError
         }
+    }
+
+    var errorType: String {
+        switch self {
+        case .badRequest:
+            "invalid_request_error"
+        case .notFound:
+            "not_found"
+        case .internalServerError:
+            "server_error"
+        case .ok:
+            "ok"
+        }
+    }
+}
+
+private extension Error {
+    var mlxServerHTTPDescription: String {
+        if let decodingError = self as? DecodingError {
+            return decodingError.mlxServerHTTPDescription
+        }
+        return localizedDescription
+    }
+}
+
+private extension DecodingError {
+    var mlxServerHTTPDescription: String {
+        let path: String
+        let debugDescription: String
+        switch self {
+        case .typeMismatch(_, let context),
+             .valueNotFound(_, let context),
+             .keyNotFound(_, let context),
+             .dataCorrupted(let context):
+            path = context.codingPath.map(\.stringValue).joined(separator: ".")
+            debugDescription = context.debugDescription
+        @unknown default:
+            path = ""
+            debugDescription = localizedDescription
+        }
+        let prefix = path.isEmpty ? "Invalid JSON request" : "Invalid JSON request at \(path)"
+        return "\(prefix): \(debugDescription)"
     }
 }
 
@@ -836,7 +940,12 @@ private struct FlexibleMessageContent: Decodable, Sendable {
             return
         }
 
-        let parts = try container.decode([ContentPart].self)
+        let parts: [ContentPart]
+        if let decodedParts = try? container.decode([ContentPart].self) {
+            parts = decodedParts
+        } else {
+            parts = [try container.decode(ContentPart.self)]
+        }
         text = parts.compactMap(\.resolvedText).joined(separator: "\n")
         thinkingText = parts.compactMap(\.resolvedThinking).joined(separator: "\n")
         imageURLs = parts.compactMap(\.resolvedImageURL)
@@ -954,7 +1063,12 @@ private struct FlexibleNestedTextContent: Decodable, Sendable {
             return
         }
 
-        let parts = try container.decode([NestedTextPart].self)
+        let parts: [NestedTextPart]
+        if let decodedParts = try? container.decode([NestedTextPart].self) {
+            parts = decodedParts
+        } else {
+            parts = [try container.decode(NestedTextPart.self)]
+        }
         text = parts.compactMap(\.text).joined(separator: "\n")
     }
 
@@ -1482,7 +1596,7 @@ private struct ResponsesRequest: Decodable, Sendable {
         if let instructions, !instructions.text.isEmpty {
             messages.insert(.system(instructions.text), at: 0)
         }
-        return messages
+        return messages.mlxServerSystemMessagesFirst()
     }
 
     var toolSpecs: [ToolSpec]? {
@@ -1518,6 +1632,8 @@ private enum ResponsesInput: Decodable, Sendable {
         let container = try decoder.singleValueContainer()
         if let text = try? container.decode(String.self) {
             self = .text(text)
+        } else if let message = try? container.decode(ResponsesInputItem.self) {
+            self = .messages([message])
         } else {
             self = .messages(try container.decode([ResponsesInputItem].self))
         }
@@ -1540,7 +1656,7 @@ private struct ResponsesInputItem: Decodable, Sendable {
     var callID: String?
     var output: FlexibleMessageContent?
     var name: String?
-    var arguments: String?
+    var arguments: FlexibleJSONString?
     var summary: [ResponsesReasoningSummaryContent]?
 
     enum CodingKeys: String, CodingKey {
@@ -1562,7 +1678,7 @@ private struct ResponsesInputItem: Decodable, Sendable {
             return [
                 MLXServerChatMessage(
                     role: .assistant,
-                    content: MLXServerToolTranscript.toolCall(name: name ?? "", arguments: arguments ?? "")
+                    content: MLXServerToolTranscript.toolCall(name: name ?? "", arguments: arguments?.value ?? "")
                 )
             ]
         case "reasoning":
@@ -1600,9 +1716,57 @@ private struct ResponsesInputItem: Decodable, Sendable {
     }
 }
 
+private extension Array where Element == MLXServerChatMessage {
+    func mlxServerSystemMessagesFirst() -> [MLXServerChatMessage] {
+        let systemText = filter { $0.role == .system }
+            .map(\.content)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+        guard !systemText.isEmpty else {
+            return self
+        }
+
+        return [.system(systemText)] + filter { $0.role != .system }
+    }
+}
+
 private struct ResponsesReasoningSummaryContent: Decodable, Sendable {
     var type: String?
     var text: String
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case text
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let string = try? container.decode(String.self) {
+            type = nil
+            text = string
+            return
+        }
+
+        let keyed = try decoder.container(keyedBy: CodingKeys.self)
+        type = try keyed.decodeIfPresent(String.self, forKey: .type)
+        text = try keyed.decodeIfPresent(String.self, forKey: .text) ?? ""
+    }
+}
+
+private struct FlexibleJSONString: Decodable, Sendable {
+    var value: String
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let string = try? container.decode(String.self) {
+            value = string
+            return
+        }
+
+        let json = try container.decode(JSONValue.self)
+        value = (try? ResponsesOutputBuilder.encodedJSONString(json)) ?? "{}"
+    }
 }
 
 private struct ResponsesToolDefinition: Decodable, Sendable {
@@ -1611,6 +1775,38 @@ private struct ResponsesToolDefinition: Decodable, Sendable {
     var description: String?
     var parameters: JSONValue?
     var strict: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case name
+        case description
+        case parameters
+        case strict
+        case function
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        type = try container.decode(String.self, forKey: .type)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        parameters = try container.decodeIfPresent(JSONValue.self, forKey: .parameters)
+        strict = try container.decodeIfPresent(Bool.self, forKey: .strict)
+
+        if let function = try container.decodeIfPresent(Function.self, forKey: .function) {
+            name = function.name ?? name
+            description = function.description ?? description
+            parameters = function.parameters ?? parameters
+            strict = function.strict ?? strict
+        }
+    }
+
+    struct Function: Decodable, Sendable {
+        var name: String?
+        var description: String?
+        var parameters: JSONValue?
+        var strict: Bool?
+    }
 
     var toolSpec: ToolSpec? {
         guard type == "function", let name else {
@@ -1657,7 +1853,7 @@ private struct ResponsesResponse: Encodable {
     var status = "completed"
     var model: String
     var output: [ResponsesOutputItem]
-    var usage: Usage
+    var usage: ResponsesUsage
     var mlxMetrics: MLXMetrics?
 
     init(
@@ -1675,7 +1871,7 @@ private struct ResponsesResponse: Encodable {
             toolCalls: toolCalls,
             emitsThinking: emitsThinking
         )
-        usage = Usage(info: info)
+        usage = ResponsesUsage(info: info)
         mlxMetrics = info.map(MLXMetrics.init)
     }
 
@@ -1974,7 +2170,7 @@ private struct ResponsesStreamingContentWriter {
                     model: model,
                     status: "completed",
                     output: outputItems,
-                    usage: Usage(info: info),
+                    usage: ResponsesUsage(info: info),
                     mlxMetrics: info.map(MLXMetrics.init)
                 ),
                 sequenceNumber: nextSequenceNumber()
@@ -2170,7 +2366,7 @@ private struct ResponsesStreamResponse: Encodable {
     var status: String
     var model: String
     var output: [ResponsesOutputItem]
-    var usage: Usage?
+    var usage: ResponsesUsage?
     var mlxMetrics: MLXMetrics?
 
     init(
@@ -2178,7 +2374,7 @@ private struct ResponsesStreamResponse: Encodable {
         model: String,
         status: String,
         output: [ResponsesOutputItem] = [],
-        usage: Usage? = nil,
+        usage: ResponsesUsage? = nil,
         mlxMetrics: MLXMetrics? = nil
     ) {
         self.id = id
@@ -3133,6 +3329,46 @@ private struct Usage: Encodable {
         case promptTokens = "prompt_tokens"
         case completionTokens = "completion_tokens"
         case totalTokens = "total_tokens"
+    }
+}
+
+private struct ResponsesUsage: Encodable {
+    var inputTokens: Int
+    var inputTokensDetails: InputTokensDetails
+    var outputTokens: Int
+    var outputTokensDetails: OutputTokensDetails
+    var totalTokens: Int
+
+    init(info: GenerateCompletionInfo?) {
+        inputTokens = info?.promptTokenCount ?? 0
+        inputTokensDetails = InputTokensDetails(cachedTokens: 0)
+        outputTokens = info?.generationTokenCount ?? 0
+        outputTokensDetails = OutputTokensDetails(reasoningTokens: 0)
+        totalTokens = inputTokens + outputTokens
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case inputTokens = "input_tokens"
+        case inputTokensDetails = "input_tokens_details"
+        case outputTokens = "output_tokens"
+        case outputTokensDetails = "output_tokens_details"
+        case totalTokens = "total_tokens"
+    }
+
+    struct InputTokensDetails: Encodable {
+        var cachedTokens: Int
+
+        enum CodingKeys: String, CodingKey {
+            case cachedTokens = "cached_tokens"
+        }
+    }
+
+    struct OutputTokensDetails: Encodable {
+        var reasoningTokens: Int
+
+        enum CodingKeys: String, CodingKey {
+            case reasoningTokens = "reasoning_tokens"
+        }
     }
 }
 

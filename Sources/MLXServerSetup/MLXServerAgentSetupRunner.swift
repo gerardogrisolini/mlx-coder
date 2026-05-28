@@ -36,7 +36,7 @@ public enum MLXServerAgentSetupRunner {
             Current status:
             - Codex CLI: \(enabledLabel(status.codexCLIEnabled))
             - Codex App: \(enabledLabel(status.codexAppEnabled))
-            - Codex App in Xcode: \(enabledLabel(status.codexXcodeAppEnabled))
+            - Codex in Xcode: \(enabledLabel(status.codexXcodeAppEnabled))
             - Claude Code in Xcode: \(enabledLabel(status.xcodeClaudeCodeEnabled))
 
             """
@@ -51,7 +51,7 @@ public enum MLXServerAgentSetupRunner {
             defaultValue: status.codexAppEnabled
         )
         let desiredCodexXcodeApp = try promptYesNo(
-            "Enable Codex App in Xcode?",
+            "Enable Codex in Xcode?",
             defaultValue: status.codexXcodeAppEnabled
         )
         let desiredXcodeClaudeCode = try promptYesNo(
@@ -151,7 +151,7 @@ public enum MLXServerAgentSetupRunner {
                 target: .xcode,
                 configuration: configuration
             )
-            FileHandle.standardError.writeString("Updated: Codex App in Xcode\n")
+            FileHandle.standardError.writeString("Updated: Codex in Xcode\n")
         }
         if xcodeClaudeCode {
             try MLXServerAgentIntegrationService.configureXcodeClaudeCode(

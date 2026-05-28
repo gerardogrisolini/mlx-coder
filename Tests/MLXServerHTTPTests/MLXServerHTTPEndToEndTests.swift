@@ -63,6 +63,7 @@ func responsesEndpointMapsReasoningProtocol() async throws {
     """
 
     let data = try await server.post(path: "/v1/responses", body: body)
+    let responseText = String(decoding: data, as: UTF8.self)
     let response = try JSONDecoder().decode(ResponsesTestResponse.self, from: data)
     let reasoning = try #require(response.output.first { $0.type == "reasoning" })
     let message = try #require(response.output.first { $0.type == "message" })
@@ -71,10 +72,55 @@ func responsesEndpointMapsReasoningProtocol() async throws {
     #expect(response.model == "mlx-community/test-model")
     #expect(reasoning.summary?.first?.text == "Analisi breve.")
     #expect(message.content?.first?.text == "Risposta finale.")
+    #expect(responseText.contains(#""input_tokens""#))
+    #expect(responseText.contains(#""output_tokens""#))
     #expect(request.messages.map(\.role) == [.user])
     #expect(request.messages.map(\.content) == ["ciao"])
     #expect(request.additionalContext?["enable_thinking"] as? Bool == true)
     #expect(request.additionalContext?["thinking_level"] as? String == "high")
+}
+
+@Test
+func responsesEndpointMovesDeveloperMessagesToSystemPrefix() async throws {
+    let runtime = RecordingRuntime(outputText: "Ok.")
+    let server = try TestHTTPServer(runtime: runtime)
+    defer {
+        server.stop()
+    }
+
+    let body = """
+    {
+      "model": "mlx-community/test-model",
+      "instructions": "Base instructions.",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": "ciao"
+        },
+        {
+          "type": "message",
+          "role": "developer",
+          "content": "Developer rules."
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": "come va?"
+        }
+      ]
+    }
+    """
+
+    _ = try await server.post(path: "/v1/responses", body: body)
+    let request = try await #require(runtime.lastRequest)
+
+    #expect(request.messages.map(\.role) == [.system, .user, .user])
+    #expect(request.messages.map(\.content) == [
+        "Base instructions.\n\nDeveloper rules.",
+        "ciao",
+        "come va?"
+    ])
 }
 
 @Test

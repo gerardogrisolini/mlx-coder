@@ -101,6 +101,14 @@ public enum MLXServerAgentIntegrationService {
         configuration: MLXServerAgentIntegrationConfiguration,
         homeDirectory: URL = defaultHomeDirectory()
     ) throws {
+        if target == .xcode {
+            try configureXcodeCodexCLIProfile(
+                configuration: configuration,
+                homeDirectory: homeDirectory
+            )
+            return
+        }
+
         try configureCodexProfile(
             profileName: codexAppProfileName,
             target: target,
@@ -114,6 +122,11 @@ public enum MLXServerAgentIntegrationService {
         target: MLXServerCodexConfigurationTarget,
         homeDirectory: URL = defaultHomeDirectory()
     ) throws {
+        if target == .xcode {
+            try removeXcodeCodexCLIProfile(homeDirectory: homeDirectory)
+            return
+        }
+
         try removeCodexProfile(
             profileName: codexAppProfileName,
             target: target,
@@ -174,7 +187,14 @@ public enum MLXServerAgentIntegrationService {
         target: MLXServerCodexConfigurationTarget,
         homeDirectory: URL = defaultHomeDirectory()
     ) -> Bool {
-        codexProfileUsesMLXServer(
+        if target == .xcode {
+            return codexTopLevelProfileUsesMLXServer(
+                target: target,
+                homeDirectory: homeDirectory
+            )
+        }
+
+        return codexProfileUsesMLXServer(
             profileName: codexAppProfileName,
             target: target,
             homeDirectory: homeDirectory
@@ -223,6 +243,71 @@ public enum MLXServerAgentIntegrationService {
 }
 
 private extension MLXServerAgentIntegrationService {
+    static func configureXcodeCodexCLIProfile(
+        configuration: MLXServerAgentIntegrationConfiguration,
+        homeDirectory: URL
+    ) throws {
+        let normalizedModelID = try normalizedRequired(
+            configuration.modelID,
+            fieldName: "modelID"
+        )
+        let providerBaseURL = normalizedProviderBaseURL(configuration.baseURL)
+        let configURL = codexConfigURL(target: .xcode, homeDirectory: homeDirectory)
+        var updatedText = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
+        updatedText = removingTopLevelTOMLAssignments(
+            from: updatedText,
+            keys: ["model", "model_provider", "forced_login_method"]
+        )
+        updatedText = removingTOMLSection(
+            from: updatedText,
+            matchingHeaders: tomlHeaderVariants(prefix: "model_providers", key: codexProviderID)
+        )
+        updatedText = updatedText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let mlxServerBlock = """
+        model = "\(tomlEscapedString(normalizedModelID))"
+        model_provider = "\(tomlEscapedString(codexProviderID))"
+        forced_login_method = "api"
+
+        [model_providers.\(tomlQuotedKey(codexProviderID))]
+        name = "mlx-server"
+        base_url = "\(tomlEscapedString(providerBaseURL))"
+        wire_api = "responses"
+        """
+
+        let finalText = updatedText.isEmpty
+            ? "\(mlxServerBlock)\n"
+            : "\(mlxServerBlock)\n\n\(updatedText)\n"
+        try writeCodexConfig(finalText, to: configURL)
+        try removeCodexModelCatalogIfUnused(target: .xcode, homeDirectory: homeDirectory)
+    }
+
+    static func removeXcodeCodexCLIProfile(homeDirectory: URL) throws {
+        let configURL = codexConfigURL(target: .xcode, homeDirectory: homeDirectory)
+        guard FileManager.default.fileExists(atPath: configURL.path) else {
+            return
+        }
+
+        var updatedText = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
+        if topLevelTOMLStringValue(updatedText, key: "model_provider") == codexProviderID {
+            updatedText = removingTopLevelTOMLAssignments(
+                from: updatedText,
+                keys: ["model", "model_provider", "forced_login_method"]
+            )
+        }
+        if !containsModelProviderReference(in: updatedText, providerID: codexProviderID) {
+            updatedText = removingTOMLSection(
+                from: updatedText,
+                matchingHeaders: tomlHeaderVariants(prefix: "model_providers", key: codexProviderID)
+            )
+        }
+        try writeCodexConfig(
+            updatedText.trimmingCharacters(in: .whitespacesAndNewlines) + "\n",
+            to: configURL
+        )
+        try removeCodexModelCatalogIfUnused(target: .xcode, homeDirectory: homeDirectory)
+    }
+
     static func configureCodexProfile(
         profileName: String,
         target: MLXServerCodexConfigurationTarget,
@@ -322,6 +407,15 @@ private extension MLXServerAgentIntegrationService {
             in: text,
             matchingHeaders: tomlHeaderVariants(prefix: "profiles", key: profileName)
         )
+    }
+
+    static func codexTopLevelProfileUsesMLXServer(
+        target: MLXServerCodexConfigurationTarget,
+        homeDirectory: URL
+    ) -> Bool {
+        let configURL = codexConfigURL(target: target, homeDirectory: homeDirectory)
+        let text = (try? String(contentsOf: configURL, encoding: .utf8)) ?? ""
+        return topLevelTOMLStringValue(text, key: "model_provider") == codexProviderID
     }
 
     static func codexModelCatalogURL(
@@ -455,6 +549,31 @@ private extension MLXServerAgentIntegrationService {
         return retainedLines.joined(separator: "\n")
     }
 
+    static func removingTopLevelTOMLAssignments(
+        from text: String,
+        keys: Set<String>
+    ) -> String {
+        var retainedLines: [String] = []
+        var reachedTable = false
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+
+        for line in lines {
+            let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedLine.hasPrefix("["),
+               trimmedLine.hasSuffix("]") {
+                reachedTable = true
+            }
+
+            if !reachedTable,
+               let key = topLevelTOMLAssignmentKey(String(line)),
+               keys.contains(key) {
+                continue
+            }
+            retainedLines.append(String(line))
+        }
+        return retainedLines.joined(separator: "\n")
+    }
+
     static func containsTOMLSection(
         in text: String,
         matchingHeaders headers: Set<String>
@@ -483,6 +602,25 @@ private extension MLXServerAgentIntegrationService {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 return tomlStringValue(rawValue) == providerID
             }
+    }
+
+    static func topLevelTOMLStringValue(_ text: String, key: String) -> String? {
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let rawLine = String(line)
+            let trimmedLine = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedLine.hasPrefix("["),
+               trimmedLine.hasSuffix("]") {
+                return nil
+            }
+            guard topLevelTOMLAssignmentKey(rawLine) == key,
+                  let equalsIndex = rawLine.firstIndex(of: "=") else {
+                continue
+            }
+            let rawValue = String(rawLine[rawLine.index(after: equalsIndex)...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return tomlStringValue(rawValue)
+        }
+        return nil
     }
 
     static func tomlHeaderVariants(prefix: String, key: String) -> Set<String> {

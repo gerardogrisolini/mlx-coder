@@ -313,13 +313,6 @@ struct MLXServerMain {
             messages.append(.assistant(result.visibleAssistantText))
             turnIndex += 1
 
-            if let threshold = options.minimumGenerationTokensPerSecond,
-               result.metrics.generationTokensPerSecond < threshold {
-                throw MLXServerMainError.generationThresholdNotMet(
-                    required: threshold,
-                    observed: result.metrics.generationTokensPerSecond
-                )
-            }
         }
 
         if !turnResults.isEmpty {
@@ -517,14 +510,12 @@ private struct MLXServerChatOptions {
     var initialPrompt: String?
     var maxTokens: Int?
     var quiet: Bool
-    var minimumGenerationTokensPerSecond: Double?
 
     init(arguments: [String]) throws {
         var modelID: String?
         var initialPrompt: String?
         var maxTokens: Int?
         var quiet = false
-        var minimumGenerationTokensPerSecond: Double?
         var didSeeChat = false
 
         var index = arguments.startIndex
@@ -547,12 +538,6 @@ private struct MLXServerChatOptions {
                     throw MLXServerMainError.invalidArgument(argument, value)
                 }
                 maxTokens = parsed
-            case "--min-generation-tokens-per-second":
-                let value = try Self.requiredValue(after: argument, in: arguments, index: &index)
-                guard let parsed = Double(value), parsed >= 0 else {
-                    throw MLXServerMainError.invalidArgument(argument, value)
-                }
-                minimumGenerationTokensPerSecond = parsed
             case "--quiet":
                 quiet = true
             default:
@@ -569,7 +554,6 @@ private struct MLXServerChatOptions {
         self.initialPrompt = initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.maxTokens = maxTokens
         self.quiet = quiet
-        self.minimumGenerationTokensPerSecond = minimumGenerationTokensPerSecond
     }
 
     private static func requiredValue(
@@ -601,7 +585,6 @@ private enum MLXServerMainError: LocalizedError {
     case missingRequiredArgument(String)
     case invalidArgument(String, String)
     case generationMissingMetrics
-    case generationThresholdNotMet(required: Double, observed: Double)
 
     var errorDescription: String? {
         switch self {
@@ -613,8 +596,6 @@ private enum MLXServerMainError: LocalizedError {
             return "Invalid value for \(argument): \(value)."
         case .generationMissingMetrics:
             return "Generation did not receive MLX completion metrics."
-        case .generationThresholdNotMet(let required, let observed):
-            return "Generation \(observed.formatted(.number.precision(.fractionLength(1)))) tok/s is below required \(required.formatted(.number.precision(.fractionLength(1)))) tok/s."
         }
     }
 }
@@ -635,7 +616,6 @@ private enum MLXServerHelp {
       mlx-server --coder [--cwd <path>] [--model <id>] [--agent <name>] [--skills <list>]
                  [--max-output-tokens <count>] [--max-tool-rounds <count>] [--verbose]
       mlx-server --chat [initial text] [--model <id>] [--max-tokens <count>] [--quiet]
-                 [--min-generation-tokens-per-second <tok/s>]
 
     Run mlx-server --setup once to create settings.json. At the end it can launch model setup too.
     Run mlx-server --setup-models directly to create or update models.json and download MLX models.

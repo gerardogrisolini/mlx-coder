@@ -121,10 +121,10 @@ The setup reads the current external configuration files as the source of truth,
 
 - Codex CLI through the `mlx-server` profile in `~/.codex/config.toml`.
 - Codex App through the `mlx-server-codex-app` profile in `~/.codex/config.toml`.
-- Codex App in Xcode through `~/Library/Developer/Xcode/CodingAssistant/codex/config.toml`.
+- Codex in Xcode through `~/Library/Developer/Xcode/CodingAssistant/codex/config.toml`.
 - Claude Code in Xcode through `~/Library/Developer/Xcode/CodingAssistant/ClaudeAgentConfig/settings.json`.
 
-When a Codex integration is enabled, setup writes the local `mlx-server` model provider, the dedicated profile, and a small `mlx-server-codex-models.json` catalog pointing at the selected model. When it is disabled, setup removes only the profile it owns; the shared provider and catalog are removed only when no remaining `mlx-server` profile references them.
+When a Codex CLI or Codex App integration is enabled, setup writes the local `mlx-server` model provider, the dedicated profile, and a small `mlx-server-codex-models.json` catalog pointing at the selected model. Codex in Xcode uses the same local provider but writes the active top-level model settings in Xcode's dedicated Codex config, because Xcode runs Codex through that CLI configuration. When an integration is disabled, setup removes only the entries it owns.
 
 Claude Code in Xcode is intentionally simpler: enabled means the dedicated Xcode Claude settings file exists and points at the local Anthropic-compatible server; disabled means that file is removed.
 
@@ -213,8 +213,7 @@ The chat path runs the same session runtime used by the server, but without star
 ```bash
 swift run -c release mlx-server \
   --chat \
-  --max-tokens 256 \
-  --min-generation-tokens-per-second 29
+  --max-tokens 256
 ```
 
 You can also pass the first message directly. After that first answer, the process keeps reading more turns until EOF:
@@ -223,7 +222,7 @@ You can also pass the first message directly. After that first answer, the proce
 swift run -c release mlx-server --chat Ciao --max-tokens 256
 ```
 
-Each turn prints prompt/generation token counts and tok/s. If a turn falls below `--min-generation-tokens-per-second`, the command exits with an error. This is useful before changing the runtime, protocol adapters, cache behavior, or model loading code.
+Each turn prints prompt/generation token counts and tok/s, which is useful before changing the runtime, protocol adapters, cache behavior, or model loading code.
 
 The helper script wraps the same command:
 
@@ -247,7 +246,7 @@ swift run -c release mlx-server --reset-disk-cache
 swift run -c release mlx-coder --setup
 swift run -c release mlx-server --chat
 swift run -c release mlx-server --coder --cwd /path/to/project
-swift run -c release mlx-server --chat Ciao --max-tokens 256 --min-generation-tokens-per-second 29 --quiet
+swift run -c release mlx-server --chat Ciao --max-tokens 256 --quiet
 ./Scripts/benchmark.sh
 ```
 

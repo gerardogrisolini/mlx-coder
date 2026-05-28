@@ -130,14 +130,12 @@ func xcodeCodexProfileWritesOnlyXcodeConfigurationTree() throws {
 
     let configText = try String(contentsOf: xcodeConfigURL, encoding: .utf8)
     #expect(configText.contains("[model_providers.\"mlx-server\"]"))
-    #expect(configText.contains("[profiles.\"mlx-server-codex-app\"]"))
+    #expect(!configText.contains("[profiles.\"mlx-server-codex-app\"]"))
+    #expect(configText.contains("model_provider = \"mlx-server\""))
+    #expect(configText.contains("forced_login_method = \"api\""))
     #expect(configText.contains("base_url = \"http://127.0.0.1:9090/v1\""))
     #expect(configText.contains("model = \"mlx-community/xcode-model\""))
-
-    let catalog = try loadCodexCatalog(at: codexCatalogURL(home: home, target: .xcode))
-    let model = try #require(catalog.models.first)
-    #expect(model.slug == "mlx-community/xcode-model")
-    #expect(model.contextWindow == 65_536)
+    #expect(!FileManager.default.fileExists(atPath: codexCatalogURL(home: home, target: .xcode).path))
 }
 
 @Test
