@@ -21,17 +21,23 @@ public struct MLXServerChatMessage: Sendable, Equatable {
     public var content: String
     public var imageURLs: [URL]
     public var videoURLs: [URL]
+    public var toolCalls: [MLXServerChatToolCall]
+    public var toolCallID: String?
 
     public init(
         role: Role,
         content: String,
         imageURLs: [URL] = [],
-        videoURLs: [URL] = []
+        videoURLs: [URL] = [],
+        toolCalls: [MLXServerChatToolCall] = [],
+        toolCallID: String? = nil
     ) {
         self.role = role
         self.content = content
         self.imageURLs = imageURLs
         self.videoURLs = videoURLs
+        self.toolCalls = toolCalls
+        self.toolCallID = toolCallID
     }
 
     public static func system(_ content: String) -> Self {
@@ -46,12 +52,46 @@ public struct MLXServerChatMessage: Sendable, Equatable {
         Self(role: .user, content: content, imageURLs: imageURLs, videoURLs: videoURLs)
     }
 
-    public static func assistant(_ content: String) -> Self {
-        Self(role: .assistant, content: content)
+    public static func assistant(
+        _ content: String,
+        toolCalls: [MLXServerChatToolCall] = []
+    ) -> Self {
+        Self(role: .assistant, content: content, toolCalls: toolCalls)
     }
 
-    public static func tool(_ content: String) -> Self {
-        Self(role: .tool, content: content)
+    public static func tool(_ content: String, toolCallID: String? = nil) -> Self {
+        Self(role: .tool, content: content, toolCallID: toolCallID)
+    }
+}
+
+public struct MLXServerChatToolCall: Sendable, Equatable {
+    public var id: String?
+    public var function: ToolCall.Function
+
+    public init(
+        id: String? = nil,
+        function: ToolCall.Function
+    ) {
+        self.id = id
+        self.function = function
+    }
+
+    public init(
+        id: String? = nil,
+        name: String,
+        arguments: [String: any Sendable]
+    ) {
+        self.id = id
+        self.function = .init(name: name, arguments: arguments)
+    }
+
+    public init(id: String? = nil, toolCall: ToolCall) {
+        self.id = id
+        self.function = toolCall.function
+    }
+
+    public var toolCall: ToolCall {
+        ToolCall(function: function)
     }
 }
 
@@ -218,33 +258,6 @@ extension MLXServerRuntime: MLXServerRuntimeCacheDiagnosing {
             lastChatCacheEvent = nil
         }
         return lastChatCacheEvent
-    }
-}
-
-public enum MLXServerToolTranscript {
-    public static func toolCall(name: String, arguments: String) -> String {
-        "function_call: \(name)\narguments: \(arguments)"
-    }
-
-    public static func toolCall(_ toolCall: ToolCall) -> String {
-        self.toolCall(
-            name: toolCall.function.name,
-            arguments: (try? encodedJSONString(toolCall.function.arguments)) ?? "{}"
-        )
-    }
-
-    public static func toolOutput(callID: String?, output: String) -> String {
-        if let callID, !callID.isEmpty {
-            return "call_id: \(callID)\n\(output)"
-        }
-        return output
-    }
-
-    private static func encodedJSONString<T: Encodable>(_ value: T) throws -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
-        let data = try encoder.encode(value)
-        return String(decoding: data, as: UTF8.self)
     }
 }
 
@@ -620,7 +633,9 @@ public actor MLXServerRuntime {
             messages: request.messages.map {
                 PromptPrefixRenderingMessage(
                     role: $0.role.rawValue,
-                    content: $0.content
+                    content: $0.content,
+                    toolCalls: $0.toolCalls,
+                    toolCallID: $0.toolCallID
                 )
             },
             tools: request.tools,
@@ -629,10 +644,17 @@ public actor MLXServerRuntime {
 
         return try await container.perform(values: payload) { context, payload in
             let messages: [[String: any Sendable]] = payload.messages.map { message in
-                [
+                var rendered: [String: any Sendable] = [
                     "role": message.role,
                     "content": message.content
                 ]
+                if !message.toolCalls.isEmpty {
+                    rendered["tool_calls"] = message.toolCalls.map(\.chatTemplatePayload)
+                }
+                if let toolCallID = message.toolCallID, !toolCallID.isEmpty {
+                    rendered["tool_call_id"] = toolCallID
+                }
+                return rendered
             }
 
             let tokenIDs: [Int]
@@ -924,6 +946,8 @@ private struct PromptPrefixCacheKey: Hashable, Sendable {
 private struct PromptPrefixRenderingMessage: Sendable {
     var role: String
     var content: String
+    var toolCalls: [MLXServerChatToolCall]
+    var toolCallID: String?
 }
 
 private struct PromptPrefixRenderingPayload: Sendable {
@@ -958,6 +982,43 @@ private struct PromptPrefixCacheState {
 private struct PromptPrefixMemoryMatch {
     var cache: [KVCache]
     var prefixTokenCount: Int
+}
+
+private extension MLXServerChatToolCall {
+    var chatTemplatePayload: [String: any Sendable] {
+        var payload: [String: any Sendable] = [
+            "type": "function",
+            "function": [
+                "name": function.name,
+                "arguments": function.arguments.mapValues(\.chatTemplateValue)
+            ] as [String: any Sendable]
+        ]
+        if let id, !id.isEmpty {
+            payload["id"] = id
+        }
+        return payload
+    }
+}
+
+private extension JSONValue {
+    var chatTemplateValue: any Sendable {
+        switch self {
+        case .null:
+            NSNull()
+        case .bool(let value):
+            value
+        case .int(let value):
+            value
+        case .double(let value):
+            value
+        case .string(let value):
+            value
+        case .array(let values):
+            values.map(\.chatTemplateValue)
+        case .object(let values):
+            values.mapValues(\.chatTemplateValue)
+        }
+    }
 }
 
 private struct MLXServerKVCacheTransfer: @unchecked Sendable {

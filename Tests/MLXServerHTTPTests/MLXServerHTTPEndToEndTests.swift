@@ -226,16 +226,17 @@ func anthropicMessagesEndpointMapsPreviousAssistantThinkingAndToolUse() async th
     _ = try await server.post(path: "/v1/messages", body: body)
     let request = try await #require(runtime.lastRequest)
 
-    #expect(request.messages.map(\.role) == [.user, .assistant, .assistant, .assistant, .user])
+    #expect(request.messages.map(\.role) == [.user, .assistant, .assistant, .user])
     #expect(
         request.messages.map(\.content) == [
             "prima",
             "reasoning_summary:\nAnalizzo.",
             "Risposta.",
-            "function_call: lookup\narguments: {\"city\":\"Roma\"}",
             "continua"
         ]
     )
+    #expect(request.messages[2].toolCalls.map(\.function.name) == ["lookup"])
+    #expect(request.messages[2].toolCalls.first?.id == "toolu_test")
     #expect(request.retainsReasoningInHistory)
 }
 

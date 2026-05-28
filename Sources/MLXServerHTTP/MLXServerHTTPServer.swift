@@ -920,13 +920,62 @@ private extension JSONValue {
     }
 }
 
+private enum MLXServerHTTPToolArguments {
+    static func object(from value: JSONValue?) -> [String: any Sendable] {
+        guard let value,
+              case .object(let object) = value else {
+            return [:]
+        }
+        return object.mapValues(\.sendableValue)
+    }
+
+    static func object(from json: String?) -> [String: any Sendable] {
+        guard let json,
+              let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        return object.mapValues(sendableValue)
+    }
+
+    private static func sendableValue(_ value: Any) -> any Sendable {
+        switch value {
+        case is NSNull:
+            return NSNull()
+        case let value as Bool:
+            return value
+        case let value as Int:
+            return value
+        case let value as Double:
+            return value
+        case let value as String:
+            return value
+        case let value as [Any]:
+            return value.map(sendableValue)
+        case let value as [String: Any]:
+            return value.mapValues(sendableValue)
+        case let value as NSNumber:
+            let objectiveCType = String(cString: value.objCType)
+            if objectiveCType == "c" || objectiveCType == "B" {
+                return value.boolValue
+            }
+            if value.doubleValue.rounded() == value.doubleValue {
+                return value.intValue
+            }
+            return value.doubleValue
+        default:
+            return String(describing: value)
+        }
+    }
+}
+
 private struct FlexibleMessageContent: Decodable, Sendable {
     var text: String
     var thinkingText: String
     var imageURLs: [URL]
     var videoURLs: [URL]
-    var toolResults: [String]
-    var toolUses: [String]
+    var toolResults: [MLXServerChatMessage]
+    var toolUses: [MLXServerChatToolCall]
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
@@ -1012,14 +1061,15 @@ private struct ContentPart: Decodable, Sendable {
         return thinking ?? text
     }
 
-    var resolvedToolUse: String? {
+    var resolvedToolUse: MLXServerChatToolCall? {
         guard type == "tool_use" else {
             return nil
         }
-        let arguments = input
-            .flatMap { try? ResponsesOutputBuilder.encodedJSONString($0) }
-            ?? "{}"
-        return MLXServerToolTranscript.toolCall(name: name ?? "", arguments: arguments)
+        return MLXServerChatToolCall(
+            id: id,
+            name: name ?? "",
+            arguments: MLXServerHTTPToolArguments.object(from: input)
+        )
     }
 
     var resolvedImageURL: URL? {
@@ -1040,16 +1090,13 @@ private struct ContentPart: Decodable, Sendable {
         }
     }
 
-    var resolvedToolResult: String? {
+    var resolvedToolResult: MLXServerChatMessage? {
         guard type == "tool_result" else {
             return nil
         }
 
         let body = content?.text ?? text ?? ""
-        if let toolUseID {
-            return "tool_use_id: \(toolUseID)\n\(body)"
-        }
-        return body
+        return .tool(body, toolCallID: toolUseID)
     }
 }
 
@@ -1185,20 +1232,25 @@ private struct OpenAIChatMessage: Decodable, Sendable {
     var serverMessages: [MLXServerChatMessage] {
         switch role {
         case "tool":
-            return [.tool(MLXServerToolTranscript.toolOutput(callID: toolCallID, output: content?.text ?? ""))]
+            return [.tool(content?.text ?? "", toolCallID: toolCallID)]
         case "assistant":
             var messages: [MLXServerChatMessage] = []
             if let reasoningContent, !reasoningContent.isEmpty {
                 messages.append(.assistant(MLXServerReasoningTranscript.reasoningSummary(reasoningContent)))
             }
-            if let content, !content.text.isEmpty {
-                messages.append(serverMessage)
+            let calls = (toolCalls ?? []).map(\.serverToolCall)
+            let text = content?.text ?? ""
+            if !text.isEmpty || !calls.isEmpty {
+                messages.append(
+                    MLXServerChatMessage(
+                        role: .assistant,
+                        content: text,
+                        imageURLs: content?.imageURLs ?? [],
+                        videoURLs: content?.videoURLs ?? [],
+                        toolCalls: calls
+                    )
+                )
             }
-            messages.append(
-                contentsOf: (toolCalls ?? []).map { toolCall in
-                    .assistant(MLXServerToolTranscript.toolCall(name: toolCall.function.name, arguments: toolCall.function.arguments))
-                }
-            )
             if messages.isEmpty {
                 messages.append(serverMessage)
             }
@@ -1259,6 +1311,14 @@ private struct OpenAIChatMessageToolCall: Decodable, Sendable {
     struct Function: Decodable, Sendable {
         var name: String
         var arguments: String
+    }
+
+    var serverToolCall: MLXServerChatToolCall {
+        MLXServerChatToolCall(
+            id: id,
+            name: function.name,
+            arguments: MLXServerHTTPToolArguments.object(from: function.arguments)
+        )
     }
 }
 
@@ -1673,12 +1733,19 @@ private struct ResponsesInputItem: Decodable, Sendable {
     var serverMessages: [MLXServerChatMessage] {
         switch type {
         case "function_call_output":
-            return [.tool(MLXServerToolTranscript.toolOutput(callID: callID, output: output?.text ?? ""))]
+            return [.tool(output?.text ?? "", toolCallID: callID)]
         case "function_call":
             return [
                 MLXServerChatMessage(
                     role: .assistant,
-                    content: MLXServerToolTranscript.toolCall(name: name ?? "", arguments: arguments?.value ?? "")
+                    content: "",
+                    toolCalls: [
+                        MLXServerChatToolCall(
+                            id: callID,
+                            name: name ?? "",
+                            arguments: MLXServerHTTPToolArguments.object(from: arguments?.value)
+                        )
+                    ]
                 )
             ]
         case "reasoning":
@@ -2691,10 +2758,17 @@ private struct AnthropicInputMessage: Decodable, Sendable {
             if !content.thinkingText.isEmpty {
                 result.append(.assistant(MLXServerReasoningTranscript.reasoningSummary(content.thinkingText)))
             }
-            if !content.text.isEmpty {
-                result.append(serverMessage)
+            if !content.text.isEmpty || !content.toolUses.isEmpty {
+                result.append(
+                    MLXServerChatMessage(
+                        role: .assistant,
+                        content: content.text,
+                        imageURLs: content.imageURLs,
+                        videoURLs: content.videoURLs,
+                        toolCalls: content.toolUses
+                    )
+                )
             }
-            result.append(contentsOf: content.toolUses.map(MLXServerChatMessage.assistant))
             return result.isEmpty ? [serverMessage] : result
         }
 
@@ -2710,7 +2784,7 @@ private struct AnthropicInputMessage: Decodable, Sendable {
                     )
                 )
             }
-            result.append(contentsOf: content.toolResults.map(MLXServerChatMessage.tool))
+            result.append(contentsOf: content.toolResults)
             return result
         }
         return [serverMessage]

@@ -209,7 +209,8 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
                 request: request,
                 onEvent: onEvent
             )
-            appendAssistantTurn(turn, to: &session)
+            let directToolCalls = turn.toolCalls.map(Self.directToolCall(from:))
+            appendAssistantTurn(turn, directToolCalls: directToolCalls, to: &session)
             accumulatedVisibleText += turn.visibleText
 
             if let completionInfo = turn.completionInfo {
@@ -225,8 +226,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
                 )
             }
 
-            for toolCall in turn.toolCalls {
-                let directToolCall = Self.directToolCall(from: toolCall)
+            for directToolCall in directToolCalls {
                 await onEvent(.toolCallStarted(directToolCall))
                 let result = await toolExecutor.execute(
                     sessionID: sessionID,
@@ -236,12 +236,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
                 )
                 await onEvent(.toolCallCompleted(directToolCall, result))
                 session.messages.append(
-                    .tool(
-                        MLXServerToolTranscript.toolOutput(
-                            callID: directToolCall.id,
-                            output: result.output
-                        )
-                    )
+                    .tool(result.output, toolCallID: directToolCall.id)
                 )
             }
         }
@@ -384,6 +379,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
 
     private func appendAssistantTurn(
         _ turn: GenerationTurn,
+        directToolCalls: [DirectAgentToolCall],
         to session: inout SessionState
     ) {
         if !turn.reasoningText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -394,11 +390,17 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
                 )
             )
         }
-        if !turn.visibleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            session.messages.append(.assistant(turn.visibleText))
+        let structuredToolCalls = zip(turn.toolCalls, directToolCalls).map { toolCall, directToolCall in
+            MLXServerChatToolCall(id: directToolCall.id, toolCall: toolCall)
         }
-        for toolCall in turn.toolCalls {
-            session.messages.append(.assistant(MLXServerToolTranscript.toolCall(toolCall)))
+        if !turn.visibleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !structuredToolCalls.isEmpty {
+            session.messages.append(
+                .assistant(
+                    turn.visibleText,
+                    toolCalls: structuredToolCalls
+                )
+            )
         }
         if turn.visibleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            turn.reasoningText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -411,21 +413,26 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         _ info: GenerateCompletionInfo,
         onEvent: @escaping @Sendable (DirectAgentEvent) async -> Void
     ) async {
+        let cacheEvent = await runtime.consumeLastChatCacheEvent()
+        let renderedPromptTokenCount = cacheEvent?.priorTranscriptCount
+            ?? info.promptTokenCount
+        let contextTokenCount = renderedPromptTokenCount + info.generationTokenCount
         await onEvent(
             .metrics(
                 DirectAgentGenerationMetrics(
                     promptTokenCount: info.promptTokenCount,
+                    cachedPromptTokenCount: cacheEvent?.cachedPromptTokenCount,
                     promptTokensPerSecond: info.promptTokensPerSecond,
                     completionTokenCount: info.generationTokenCount,
                     completionTokensPerSecond: info.tokensPerSecond,
-                    contextTokenCount: info.promptTokenCount + info.generationTokenCount
+                    contextTokenCount: contextTokenCount
                 )
             )
         )
         await onEvent(
             .contextWindow(
                 DirectAgentContextWindowStatus(
-                    usedTokens: info.promptTokenCount + info.generationTokenCount,
+                    usedTokens: contextTokenCount,
                     maxTokens: configuration.configuredContextWindowLimit
                         ?? model.generationDefaults.contextWindow,
                     modelID: model.id,
@@ -516,9 +523,24 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
             }
         return AgentRuntimeMessage(
             role: AgentRuntimeMessage.Role(rawValue: message.role.rawValue) ?? .user,
-            content: message.content,
+            content: Self.compactionContent(from: message),
             attachments: attachments
         )
+    }
+
+    private static func compactionContent(from message: MLXServerChatMessage) -> String {
+        var sections: [String] = []
+        if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sections.append(message.content)
+        }
+        if !message.toolCalls.isEmpty {
+            let names = message.toolCalls.map(\.function.name).joined(separator: ", ")
+            sections.append("Assistant requested tools: \(names).")
+        }
+        if message.role == .tool, let toolCallID = message.toolCallID?.nilIfBlank {
+            sections.append("Tool result id: \(toolCallID).")
+        }
+        return sections.joined(separator: "\n\n")
     }
 
     private static func serverMessage(
