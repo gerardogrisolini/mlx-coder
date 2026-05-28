@@ -41,6 +41,21 @@ func diskKVCacheDefaultsToBalancedLimit() {
 }
 
 @Test
+func diskKVCacheRejectsUnreasonableLimit() {
+    #expect(throws: MLXServerSettingsError.invalidDiskKVCacheLimit) {
+        try MLXServerDiskKVCacheSettings(limitGB: -1).validated()
+    }
+    #expect(throws: MLXServerSettingsError.invalidDiskKVCacheLimit) {
+        try MLXServerDiskKVCacheSettings(
+            limitGB: MLXServerDiskKVCacheSettings.maximumLimitGB + 1
+        ).validated()
+    }
+    #expect(throws: MLXServerSettingsError.invalidDiskKVCacheLimit) {
+        try MLXServerDiskKVCacheSettings(limitGB: .infinity).validated()
+    }
+}
+
+@Test
 func diskKVCachePromptTokenIdentityWinsOverChatSignature() {
     let firstIdentity = MLXServerDiskKVCacheIdentity(
         modelID: "mlx-community/test-a",

@@ -46,7 +46,8 @@ let package = Package(
         .package(url: "https://github.com/huggingface/swift-huggingface.git", from: "0.9.0"),
         .package(url: "https://github.com/huggingface/swift-transformers.git", from: "1.3.3"),
         .package(url: "https://github.com/ml-explore/mlx-swift", .upToNextMinor(from: "0.31.3")),
-        .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", branch: "main")
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", branch: "main"),
+        .package(url: "https://github.com/swiftlang/swift-markdown.git", from: "0.8.0")
     ],
     targets: [
         .target(
@@ -74,7 +75,8 @@ let package = Package(
         .target(
             name: "MLXCoderCore",
             dependencies: [
-                .product(name: "Crypto", package: "swift-crypto")
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "Markdown", package: "swift-markdown")
             ],
             swiftSettings: [
                 .define("SWIFTPM_NON_SANDBOX_TUI")
@@ -118,6 +120,10 @@ let package = Package(
         .testTarget(
             name: "MLXServerCoreTests",
             dependencies: ["MLXServerCore"]
+        ),
+        .testTarget(
+            name: "MLXServerSetupTests",
+            dependencies: ["MLXServerSetup"]
         ),
         .testTarget(
             name: "MLXServerHTTPTests",

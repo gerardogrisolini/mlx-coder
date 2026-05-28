@@ -119,12 +119,14 @@ public enum MLXServerSetupRunner {
             tlsCertificatePath = try promptString(
                 "TLS certificate path",
                 defaultValue: defaultSettings.tlsCertificatePath,
-                allowEmpty: false
+                allowEmpty: false,
+                maximumLength: MLXServerSetupInputParser.maximumPathLength
             )
             tlsPrivateKeyPath = try promptString(
                 "TLS private key path",
                 defaultValue: defaultSettings.tlsPrivateKeyPath,
-                allowEmpty: false
+                allowEmpty: false,
+                maximumLength: MLXServerSetupInputParser.maximumPathLength
             )
         } else {
             tlsCertificatePath = nil
@@ -140,7 +142,8 @@ public enum MLXServerSetupRunner {
             metricsLogPath = try promptString(
                 "Metrics log file path",
                 defaultValue: defaultSettings.metricsLogPath,
-                allowEmpty: false
+                allowEmpty: false,
+                maximumLength: MLXServerSetupInputParser.maximumPathLength
             )
         } else {
             metricsLogPath = nil
@@ -162,7 +165,8 @@ public enum MLXServerSetupRunner {
                 directoryPath = try promptString(
                     "KV cache directory",
                     defaultValue: defaultSettings.diskKVCache.directoryPath ?? defaultDirectory,
-                    allowEmpty: false
+                    allowEmpty: false,
+                    maximumLength: MLXServerSetupInputParser.maximumPathLength
                 )
             } else {
                 directoryPath = nil
@@ -170,7 +174,7 @@ public enum MLXServerSetupRunner {
             let limitGB = try promptDouble(
                 "Disk KV cache limit in GB",
                 defaultValue: defaultSettings.diskKVCache.limitGB ?? 100,
-                allowedRange: 0...Double.greatestFiniteMagnitude
+                allowedRange: 0...MLXServerDiskKVCacheSettings.maximumLimitGB
             )
             diskKVCache = MLXServerDiskKVCacheSettings(
                 enabled: true,
@@ -225,7 +229,7 @@ public enum MLXServerSetupRunner {
 
         switch profile {
         case .bestPerformance, .balanced, .lowMemory, .longSessions:
-            return profile.settings
+            return profile.presetSettings ?? defaultSettings.validated()
         case .custom:
             let useQuantized = try promptYesNo(
                 "Use quantized KV cache?",
@@ -267,7 +271,8 @@ public enum MLXServerSetupRunner {
     private static func promptString(
         _ prompt: String,
         defaultValue: String?,
-        allowEmpty: Bool
+        allowEmpty: Bool,
+        maximumLength: Int? = nil
     ) throws -> String {
         while true {
             let suffix = defaultValue.map { " [\($0)]" } ?? ""
@@ -281,6 +286,12 @@ public enum MLXServerSetupRunner {
             }
             if trimmed.isEmpty, allowEmpty {
                 return ""
+            }
+            if !MLXServerSetupInputParser.isValidLength(trimmed, maximumLength: maximumLength) {
+                FileHandle.standardError.writeString(
+                    "Invalid value: maximum length is \(maximumLength ?? 0) characters.\n"
+                )
+                continue
             }
             if !trimmed.isEmpty {
                 return trimmed
@@ -318,7 +329,7 @@ public enum MLXServerSetupRunner {
                 defaultValue: String(format: "%.0f", defaultValue),
                 allowEmpty: false
             )
-            guard let parsed = Double(value.replacingOccurrences(of: ",", with: ".")),
+            guard let parsed = MLXServerSetupInputParser.parseDouble(value),
                   allowedRange.contains(parsed) else {
                 FileHandle.standardError.writeString("Invalid value.\n")
                 continue
@@ -389,10 +400,10 @@ private enum KVCacheProfile: Int, CaseIterable {
     }
 
     static func matching(_ settings: MLXServerKVCacheSettings) -> Self? {
-        allCases.first { $0 != .custom && $0.settings == settings }
+        allCases.first { $0.presetSettings == settings }
     }
 
-    var settings: MLXServerKVCacheSettings {
+    var presetSettings: MLXServerKVCacheSettings? {
         switch self {
         case .bestPerformance:
             MLXServerKVCacheSettings(mode: .standard)
@@ -412,14 +423,40 @@ private enum KVCacheProfile: Int, CaseIterable {
                 quantizedStart: 2_048
             )
         case .custom:
-            MLXServerKVCacheSettings()
+            nil
         }
     }
 }
 
-private extension String {
-    var trimmedNonEmpty: String? {
-        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+enum MLXServerSetupInputParser {
+    static let maximumPathLength = 4_096
+
+    static func parseDouble(_ value: String) -> Double? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+
+        let decimalSeparatorCount = trimmed.reduce(into: 0) { count, character in
+            if character == "." || character == "," {
+                count += 1
+            }
+        }
+        guard decimalSeparatorCount <= 1 else {
+            return nil
+        }
+
+        let normalized = trimmed.replacingOccurrences(of: ",", with: ".", options: .literal)
+        guard let parsed = Double(normalized), parsed.isFinite else {
+            return nil
+        }
+        return parsed
+    }
+
+    static func isValidLength(_ value: String, maximumLength: Int?) -> Bool {
+        guard let maximumLength else {
+            return true
+        }
+        return value.count <= maximumLength
     }
 }

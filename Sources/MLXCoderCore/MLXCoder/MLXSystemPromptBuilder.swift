@@ -113,6 +113,13 @@ public enum MLXSystemPromptBuilder {
         """
     }
 
+    public static var responseLanguageSection: String {
+        """
+        Response language:
+        Match the language of the user's latest request for all natural-language replies. If the user writes in Italian, reply in Italian; if they write in English, reply in English. Keep using that language until the user switches language or explicitly asks for another one. Keep code, file paths, API names, tool names, and literal command output unchanged unless translation is explicitly requested.
+        """
+    }
+
     public static func workingDirectorySection(path: String) -> String {
         """
         Current task working directory for local tools:
@@ -151,10 +158,7 @@ public enum MLXSystemPromptBuilder {
     }
 
     private static var standaloneLanguageSection: String {
-        """
-        Response language:
-        Use the active conversation language for all natural-language responses unless the user explicitly asks for another language. Keep code, file paths, API names, tool names, and literal command output unchanged unless translation is explicitly requested.
-        """
+        responseLanguageSection
     }
 
     private static var standaloneTurnClosingInstruction: String {

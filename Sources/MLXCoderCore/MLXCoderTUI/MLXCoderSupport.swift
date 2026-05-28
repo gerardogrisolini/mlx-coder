@@ -83,6 +83,10 @@ public enum AgentOutput {
         isatty(standardError.fileDescriptor) == 1
     }
 
+    public static var standardOutputIsTerminal: Bool {
+        isatty(standardOutput.fileDescriptor) == 1
+    }
+
     public static func silenceInheritedProcessOutput(keepStandardError: Bool) {
         _ = standardOutput
         _ = standardError

@@ -94,7 +94,12 @@ extension MLXCoderACPBridge {
         let providedSystemPrompt = providedSystemPrompt?.nilIfBlank
 
         if let providedSystemPrompt {
-            return [selectedAgentSection, selectedSkillSection, providedSystemPrompt]
+            return [
+                MLXSystemPromptBuilder.responseLanguageSection,
+                selectedAgentSection,
+                selectedSkillSection,
+                providedSystemPrompt
+            ]
                 .compactMap { $0?.nilIfBlank }
                 .joined(separator: "\n\n")
         }

@@ -39,6 +39,12 @@ public final class TerminalChat: @unchecked Sendable {
     public var subAgentOverviewRefreshTask: Task<Void, Never>?
     public var availableSkillsCache: [MLXPromptSkill]?
     public var isStreamingThoughtOutput = false
+    public var assistantMarkdownFormatter = TerminalMarkdownStreamFormatter(
+        isEnabled: AgentOutput.standardOutputIsTerminal
+    )
+    public var thoughtMarkdownFormatter = TerminalMarkdownStreamFormatter(
+        isEnabled: AgentOutput.standardErrorIsTerminal
+    )
     public let statusBar: TerminalStatusBar
 
     public init(
@@ -519,12 +525,14 @@ public final class TerminalChat: @unchecked Sendable {
                         self.writeContextWindowStatus(status)
                     case let .content(delta):
                         self.finishThoughtOutputIfNeeded()
-                        AgentOutput.standardOutput.writeString(delta)
+                        self.writeAssistantContent(delta)
                     case let .toolCallStarted(toolCall):
                         self.finishThoughtOutputIfNeeded()
+                        self.finishAssistantContentFormatting()
                         self.writeToolCallStarted(toolCall)
                     case let .toolCallCompleted(toolCall, result):
                         self.finishThoughtOutputIfNeeded()
+                        self.finishAssistantContentFormatting()
                         self.writeToolCallCompleted(toolCall, result: result)
                         await self.publishSubAgentOverviewIfVisible(
                             relatedToolName: toolCall.name
@@ -546,6 +554,7 @@ public final class TerminalChat: @unchecked Sendable {
         switch result {
         case let .success(response):
             finishThoughtOutputIfNeeded()
+            finishAssistantContentFormatting()
             printModelIfNeeded(response.modelID)
             if response.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 AgentOutput.standardOutput.writeString("Done.")
@@ -553,6 +562,7 @@ public final class TerminalChat: @unchecked Sendable {
             AgentOutput.standardOutput.writeString("\n")
         case let .failure(failure):
             finishThoughtOutputIfNeeded()
+            finishAssistantContentFormatting()
             if failure.isCancellation {
                 AgentOutput.standardError.writeString("\nStopped.\n")
             } else {

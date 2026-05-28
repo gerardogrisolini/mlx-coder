@@ -254,13 +254,32 @@ extension TerminalChat {
             return
         }
 
+        finishAssistantContentFormatting()
         if !isStreamingThoughtOutput {
-            AgentOutput.standardError.writeString("\n")
             isStreamingThoughtOutput = true
-            AgentOutput.standardError.writeString("\u{1B}[90mthinking:\n\(delta)\u{1B}[0m")
-        } else {
-            AgentOutput.standardError.writeString("\u{1B}[90m\(delta)\u{1B}[0m")
+            let title = AgentOutput.standardErrorIsTerminal
+                ? "\u{1B}[90mthinking:\u{1B}[0m"
+                : "thinking:"
+            AgentOutput.standardError.writeString("\n\(title)\n")
         }
+        AgentOutput.standardError.writeString(
+            Self.renderThoughtMarkdown(thoughtMarkdownFormatter.consume(delta))
+        )
+    }
+
+    public func writeAssistantContent(_ delta: String) {
+        guard !delta.isEmpty else {
+            return
+        }
+        AgentOutput.standardOutput.writeString(
+            assistantMarkdownFormatter.consume(delta)
+        )
+    }
+
+    public func finishAssistantContentFormatting() {
+        AgentOutput.standardOutput.writeString(
+            assistantMarkdownFormatter.finish()
+        )
     }
 
     public func writeSubmittedPrompt(_ prompt: String) {
@@ -279,8 +298,96 @@ extension TerminalChat {
         guard isStreamingThoughtOutput else {
             return
         }
+        AgentOutput.standardError.writeString(
+            Self.renderThoughtMarkdown(thoughtMarkdownFormatter.finish())
+        )
         AgentOutput.standardError.writeString("\n")
         isStreamingThoughtOutput = false
+    }
+
+    private static func renderThoughtMarkdown(_ renderedMarkdown: String) -> String {
+        guard AgentOutput.standardErrorIsTerminal,
+              !renderedMarkdown.isEmpty else {
+            return renderedMarkdown
+        }
+
+        let gray = "\u{1B}[90m"
+        let reset = "\u{1B}[0m"
+        var output = gray
+        var cursor = renderedMarkdown.startIndex
+
+        while cursor < renderedMarkdown.endIndex {
+            guard renderedMarkdown[cursor] == "\u{1B}",
+                  renderedMarkdown.index(after: cursor) < renderedMarkdown.endIndex,
+                  renderedMarkdown[renderedMarkdown.index(after: cursor)] == "[" else {
+                output.append(renderedMarkdown[cursor])
+                cursor = renderedMarkdown.index(after: cursor)
+                continue
+            }
+
+            guard let sequenceEnd = renderedMarkdown[cursor...].firstIndex(of: "m") else {
+                output.append(renderedMarkdown[cursor])
+                cursor = renderedMarkdown.index(after: cursor)
+                continue
+            }
+
+            let sequence = String(renderedMarkdown[cursor...sequenceEnd])
+            output += dimmedANSISequence(sequence, gray: gray, reset: reset)
+            cursor = renderedMarkdown.index(after: sequenceEnd)
+        }
+
+        output += reset
+        return output
+    }
+
+    private static func dimmedANSISequence(
+        _ sequence: String,
+        gray: String,
+        reset: String
+    ) -> String {
+        guard sequence.hasPrefix("\u{1B}["),
+              sequence.hasSuffix("m") else {
+            return sequence
+        }
+
+        let rawCodes = sequence
+            .dropFirst(2)
+            .dropLast()
+            .split(separator: ";")
+            .compactMap { Int(String($0)) }
+        guard !rawCodes.isEmpty else {
+            return gray
+        }
+
+        if rawCodes.contains(0) {
+            return reset + gray
+        }
+
+        var preservedCodes: [Int] = []
+        var index = 0
+        while index < rawCodes.count {
+            let code = rawCodes[index]
+            if code == 38,
+               index + 2 < rawCodes.count,
+               rawCodes[index + 1] == 5 {
+                index += 3
+                continue
+            }
+            if code == 39 || (30...37).contains(code) || (90...97).contains(code) {
+                index += 1
+                continue
+            }
+            if [1, 2, 3, 4, 9].contains(code) {
+                preservedCodes.append(code)
+            }
+            index += 1
+        }
+
+        preservedCodes.append(90)
+        let renderedCodes = preservedCodes
+            .map(String.init)
+            .joined(separator: ";")
+        return "\u{1B}[\(renderedCodes)m"
     }
 
     public func writeToolCallStarted(_ toolCall: DirectAgentToolCall) {

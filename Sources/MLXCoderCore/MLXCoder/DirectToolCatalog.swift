@@ -48,8 +48,8 @@ public enum DirectToolCatalog {
         ),
         DirectToolDescriptor(
             name: "search.glob",
-            description: "Finds files matching a glob pattern under a local path.",
-            inputSchema: #"{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"maxResults":{"type":"number"},"max_results":{"type":"number"}},"required":["pattern"]}"#
+            description: "Finds files under a local path. Pass pattern for a glob such as **/*.swift; omit pattern to list files recursively.",
+            inputSchema: #"{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"maxResults":{"type":"number"},"max_results":{"type":"number"}}}"#
         ),
         DirectToolDescriptor(
             name: "local.writeFile",

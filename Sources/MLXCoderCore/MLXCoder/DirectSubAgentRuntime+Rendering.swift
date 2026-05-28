@@ -14,6 +14,7 @@ extension DirectSubAgentRuntime {
         var lines = [
             "You are mlx-coder delegated sub-agent \(name).",
             "Role: \(role)",
+            "Match the user's latest request language for natural-language replies unless the user explicitly asks for another language.",
             "You are running inside mlx-coder and receive the complete direct toolset available to this process, including local, shell, git, MCP, and sub-agent tools when exposed.",
             "Work only on the delegated scope. Be concise, concrete, and report blockers clearly."
         ]

@@ -235,6 +235,8 @@ public struct MLXServerHuggingFaceCacheSettings: Codable, Equatable, Sendable {
 }
 
 public struct MLXServerDiskKVCacheSettings: Codable, Equatable, Sendable {
+    public static let maximumLimitGB: Double = 1_000_000
+
     public var enabled: Bool
     public var directoryPath: String?
     public var limitGB: Double?
@@ -257,7 +259,8 @@ public struct MLXServerDiskKVCacheSettings: Codable, Equatable, Sendable {
 
     public func validated() throws -> Self {
         let normalizedDirectoryPath = directoryPath?.trimmedNonEmpty
-        if let limitGB, limitGB < 0 {
+        if let limitGB,
+           !limitGB.isFinite || !(0...Self.maximumLimitGB).contains(limitGB) {
             throw MLXServerSettingsError.invalidDiskKVCacheLimit
         }
         return Self(
@@ -276,7 +279,11 @@ public struct MLXServerDiskKVCacheSettings: Codable, Equatable, Sendable {
             URL(fileURLWithPath: $0, isDirectory: true)
         }
         let limitBytes = limitGB.map { gb in
-            Int64(gb * 1024 * 1024 * 1024)
+            guard gb.isFinite, gb > 0 else {
+                return Int64(0)
+            }
+            let clampedGB = min(gb, Self.maximumLimitGB)
+            return Int64(clampedGB * 1024 * 1024 * 1024)
         }
 
         return MLXServerDiskKVCacheConfiguration(
@@ -421,7 +428,7 @@ public enum MLXServerSettingsError: LocalizedError, Equatable, Sendable {
         case .incompleteTLSConfiguration:
             return "TLS requires both certificate and private key paths."
         case .invalidDiskKVCacheLimit:
-            return "Disk KV cache limit must be greater than or equal to 0 GB."
+            return "Disk KV cache limit must be between 0 and 1,000,000 GB."
         case .invalidWebServerThreadCount(let value):
             return "Web server thread count \(value) is outside the supported range."
         }

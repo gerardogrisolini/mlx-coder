@@ -129,9 +129,7 @@ extension DirectToolExecutor {
 #endif
 
     public func glob(arguments: [String: Any], cwd: URL) throws -> String {
-        guard let pattern = arguments.string("pattern")?.nilIfBlank else {
-            throw DirectToolError.missingArgument("pattern")
-        }
+        let pattern = arguments.string("pattern")?.nilIfBlank
         let root = resolvePath(arguments.string("path") ?? ".", cwd: cwd)
         let maxResults = max(1, arguments.int("maxResults", "max_results") ?? 200)
         guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey]) else {
@@ -143,7 +141,14 @@ extension DirectToolExecutor {
             guard !relative.isEmpty else {
                 continue
             }
-            if fnmatch(pattern, relative, 0) == 0 || fnmatch(pattern, url.lastPathComponent, 0) == 0 {
+            let isMatch: Bool
+            if let pattern {
+                isMatch = fnmatch(pattern, relative, 0) == 0
+                    || fnmatch(pattern, url.lastPathComponent, 0) == 0
+            } else {
+                isMatch = true
+            }
+            if isMatch {
                 matches.append(relative)
                 if matches.count >= maxResults {
                     break
