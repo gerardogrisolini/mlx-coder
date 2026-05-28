@@ -32,7 +32,7 @@ public enum MLXServerSetupRunner {
         FileHandle.standardError.writeString(
             """
             mlx-server setup
-            Configuro settings.json in:
+            Configuring settings.json at:
             \(settingsURL.path)
 
             """
@@ -43,16 +43,16 @@ public enum MLXServerSetupRunner {
             do {
                 defaultSettings = try MLXServerSettingsStore.loadRequired(from: settingsURL)
                 let shouldReconfigure = try promptYesNo(
-                    "settings.json esiste gia. Vuoi riconfigurarlo?",
+                    "settings.json already exists. Reconfigure it?",
                     defaultValue: false
                 )
                 guard shouldReconfigure else {
                     return try promptConfigureModels()
                 }
-                FileHandle.standardError.writeString("Uso i valori attuali come default. Premi invio per mantenerli.\n\n")
+                FileHandle.standardError.writeString("Using current values as defaults. Press Return to keep them.\n\n")
             } catch {
                 let shouldOverwrite = try promptYesNo(
-                    "settings.json esiste ma non e valido. Vuoi riscriverlo?",
+                    "settings.json exists but is invalid. Rewrite it?",
                     defaultValue: true
                 )
                 guard shouldOverwrite else {
@@ -63,15 +63,15 @@ public enum MLXServerSetupRunner {
 
         let settings = try buildSettings(defaultSettings: defaultSettings)
         try MLXServerSettingsStore.save(settings, to: settingsURL)
-        FileHandle.standardError.writeString("Aggiornato: settings.json\n")
+        FileHandle.standardError.writeString("Updated: settings.json\n")
         return try promptConfigureModels()
     }
 
     private static func promptConfigureModels() throws -> Bool {
-        FileHandle.standardError.writeString("\nSetup runtime completato.\n")
+        FileHandle.standardError.writeString("\nRuntime setup completed.\n")
         let modelsURL = MLXServerModelsManifestStore.modelsURL()
         return try promptYesNo(
-            "Vuoi configurare anche i modelli?",
+            "Configure models now?",
             defaultValue: !FileManager.default.fileExists(atPath: modelsURL.path)
         )
     }
@@ -83,12 +83,12 @@ public enum MLXServerSetupRunner {
             allowEmpty: false
         )
         let port = try promptInt(
-            "Porta",
+            "Port",
             defaultValue: defaultSettings.port,
             allowedRange: 1...Int(UInt16.max)
         )
         FileHandle.standardError.writeString(
-            "Suggerimento thread web server: 2 per lavoro locale, almeno 4 se lo usi come server.\n"
+            "Web server thread suggestion: 2 for local work, at least 4 when used as a server.\n"
         )
         let webServerThreadCount = try promptInt(
             "Thread web server",
@@ -96,30 +96,33 @@ public enum MLXServerSetupRunner {
             allowedRange: 1...MLXServerSettings.maximumWebServerThreadCount
         )
         let loadOneModelAtATime = try promptYesNo(
-            "Caricare un solo modello alla volta?",
+            "Load only one model at a time?",
             defaultValue: defaultSettings.loadOneModelAtATime
         )
+        let kvCache = try promptKVCacheSettings(
+            defaultSettings: defaultSettings.kvCache
+        )
         let http2PriorKnowledge = try promptYesNo(
-            "Abilitare HTTP/2 prior knowledge?",
+            "Enable HTTP/2 prior knowledge?",
             defaultValue: defaultSettings.http2PriorKnowledge
         )
 
         let hasTLSSettings = defaultSettings.tlsCertificatePath != nil
             && defaultSettings.tlsPrivateKeyPath != nil
         let configureTLS = try promptYesNo(
-            "Configurare TLS/SSL?",
+            "Configure TLS/SSL?",
             defaultValue: hasTLSSettings
         )
         let tlsCertificatePath: String?
         let tlsPrivateKeyPath: String?
         if configureTLS {
             tlsCertificatePath = try promptString(
-                "Percorso certificato TLS",
+                "TLS certificate path",
                 defaultValue: defaultSettings.tlsCertificatePath,
                 allowEmpty: false
             )
             tlsPrivateKeyPath = try promptString(
-                "Percorso chiave privata TLS",
+                "TLS private key path",
                 defaultValue: defaultSettings.tlsPrivateKeyPath,
                 allowEmpty: false
             )
@@ -129,13 +132,13 @@ public enum MLXServerSetupRunner {
         }
 
         let useMetricsLogFile = try promptYesNo(
-            "Scrivere metriche su file?",
+            "Write metrics to a file?",
             defaultValue: defaultSettings.metricsLogPath != nil
         )
         let metricsLogPath: String?
         if useMetricsLogFile {
             metricsLogPath = try promptString(
-                "Percorso file log metriche",
+                "Metrics log file path",
                 defaultValue: defaultSettings.metricsLogPath,
                 allowEmpty: false
             )
@@ -144,20 +147,20 @@ public enum MLXServerSetupRunner {
         }
 
         let diskKVCacheEnabled = try promptYesNo(
-            "Abilitare KV cache su disco?",
+            "Enable disk KV cache?",
             defaultValue: defaultSettings.diskKVCache.enabled
         )
         let diskKVCache: MLXServerDiskKVCacheSettings
         if diskKVCacheEnabled {
             let defaultDirectory = MLXServerDiskKVCacheConfiguration.defaultDirectory().path
             let useCustomDirectory = try promptYesNo(
-                "Usare una cartella KV cache personalizzata?",
+                "Use a custom KV cache directory?",
                 defaultValue: defaultSettings.diskKVCache.directoryPath != nil
             )
             let directoryPath: String?
             if useCustomDirectory {
                 directoryPath = try promptString(
-                    "Cartella KV cache",
+                    "KV cache directory",
                     defaultValue: defaultSettings.diskKVCache.directoryPath ?? defaultDirectory,
                     allowEmpty: false
                 )
@@ -165,7 +168,7 @@ public enum MLXServerSetupRunner {
                 directoryPath = nil
             }
             let limitGB = try promptDouble(
-                "Limite KV cache su disco in GB",
+                "Disk KV cache limit in GB",
                 defaultValue: defaultSettings.diskKVCache.limitGB ?? 100,
                 allowedRange: 0...Double.greatestFiniteMagnitude
             )
@@ -187,9 +190,78 @@ public enum MLXServerSetupRunner {
             tlsCertificatePath: tlsCertificatePath,
             tlsPrivateKeyPath: tlsPrivateKeyPath,
             metricsLogPath: metricsLogPath,
+            kvCache: kvCache,
             diskKVCache: diskKVCache,
             huggingFaceCache: defaultSettings.huggingFaceCache
         ).validated()
+    }
+
+    private static func promptKVCacheSettings(
+        defaultSettings: MLXServerKVCacheSettings
+    ) throws -> MLXServerKVCacheSettings {
+        FileHandle.standardError.writeString(
+            """
+
+            In-memory KV cache:
+              1. Best Performance - standard full precision cache
+              2. Balanced - quantized after 1024 tokens
+              3. Low Memory - quantized immediately
+              4. Long Sessions - quantized after 2048 tokens
+              5. Custom - manually set mode, bits, group size, and start
+
+            """
+        )
+
+        let defaultProfile = KVCacheProfile.matching(defaultSettings.validated()) ?? .custom
+        let selectedProfile = try promptInt(
+            "KV cache profile",
+            defaultValue: defaultProfile.rawValue,
+            allowedRange: KVCacheProfile.allowedRange
+        )
+
+        guard let profile = KVCacheProfile(rawValue: selectedProfile) else {
+            return defaultSettings.validated()
+        }
+
+        switch profile {
+        case .bestPerformance, .balanced, .lowMemory, .longSessions:
+            return profile.settings
+        case .custom:
+            let useQuantized = try promptYesNo(
+                "Use quantized KV cache?",
+                defaultValue: defaultSettings.mode == .quantized
+            )
+            guard useQuantized else {
+                return MLXServerKVCacheSettings(
+                    mode: .standard,
+                    quantizedBits: defaultSettings.quantizedBits,
+                    quantizedGroupSize: defaultSettings.quantizedGroupSize,
+                    quantizedStart: defaultSettings.quantizedStart
+                ).validated()
+            }
+
+            let quantizedBits = try promptInt(
+                "KV quantized bits",
+                defaultValue: defaultSettings.quantizedBits,
+                allowedRange: 2...8
+            )
+            let quantizedGroupSize = try promptInt(
+                "KV quantized group size",
+                defaultValue: defaultSettings.quantizedGroupSize,
+                allowedRange: 1...256
+            )
+            let quantizedStart = try promptInt(
+                "Quantized start token",
+                defaultValue: defaultSettings.quantizedStart,
+                allowedRange: 0...262_144
+            )
+            return MLXServerKVCacheSettings(
+                mode: .quantized,
+                quantizedBits: quantizedBits,
+                quantizedGroupSize: quantizedGroupSize,
+                quantizedStart: quantizedStart
+            ).validated()
+        }
     }
 
     private static func promptString(
@@ -228,7 +300,7 @@ public enum MLXServerSetupRunner {
                 allowEmpty: false
             )
             guard let parsed = Int(value), allowedRange.contains(parsed) else {
-                FileHandle.standardError.writeString("Valore non valido.\n")
+                FileHandle.standardError.writeString("Invalid value.\n")
                 continue
             }
             return parsed
@@ -248,7 +320,7 @@ public enum MLXServerSetupRunner {
             )
             guard let parsed = Double(value.replacingOccurrences(of: ",", with: ".")),
                   allowedRange.contains(parsed) else {
-                FileHandle.standardError.writeString("Valore non valido.\n")
+                FileHandle.standardError.writeString("Invalid value.\n")
                 continue
             }
             return parsed
@@ -269,7 +341,7 @@ public enum MLXServerSetupRunner {
             if normalized.isEmpty {
                 return defaultValue
             }
-            if ["y", "yes", "s", "si", "sì"].contains(normalized) {
+            if ["y", "yes"].contains(normalized) {
                 return true
             }
             if ["n", "no"].contains(normalized) {
@@ -297,6 +369,50 @@ enum MLXServerSetupError: LocalizedError {
             return "mlx-server --setup requires an interactive terminal."
         case .inputClosed:
             return "Input closed during mlx-server setup."
+        }
+    }
+}
+
+private enum KVCacheProfile: Int, CaseIterable {
+    case bestPerformance = 1
+    case balanced = 2
+    case lowMemory = 3
+    case longSessions = 4
+    case custom = 5
+
+    static var allowedRange: ClosedRange<Int> {
+        guard let first = allCases.first?.rawValue,
+              let last = allCases.last?.rawValue else {
+            return 1...1
+        }
+        return first...last
+    }
+
+    static func matching(_ settings: MLXServerKVCacheSettings) -> Self? {
+        allCases.first { $0 != .custom && $0.settings == settings }
+    }
+
+    var settings: MLXServerKVCacheSettings {
+        switch self {
+        case .bestPerformance:
+            MLXServerKVCacheSettings(mode: .standard)
+        case .balanced:
+            MLXServerKVCacheSettings(
+                mode: .quantized,
+                quantizedStart: 1_024
+            )
+        case .lowMemory:
+            MLXServerKVCacheSettings(
+                mode: .quantized,
+                quantizedStart: 0
+            )
+        case .longSessions:
+            MLXServerKVCacheSettings(
+                mode: .quantized,
+                quantizedStart: 2_048
+            )
+        case .custom:
+            MLXServerKVCacheSettings()
         }
     }
 }

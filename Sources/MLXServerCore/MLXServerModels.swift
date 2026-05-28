@@ -460,9 +460,10 @@ public struct MLXServerModelGenerationDefaults: Codable, Equatable, Sendable {
     }
 
     public func generateParameters(
-        maxTokens: Int? = nil
+        maxTokens: Int? = nil,
+        kvCacheSettings: MLXServerKVCacheSettings = .init()
     ) -> GenerateParameters {
-        GenerateParameters(
+        var parameters = GenerateParameters(
             maxTokens: maxTokens ?? maxOutputTokens,
             temperature: temperature ?? 0.6,
             topP: topP ?? 1.0,
@@ -471,6 +472,8 @@ public struct MLXServerModelGenerationDefaults: Codable, Equatable, Sendable {
             presencePenalty: presencePenalty,
             frequencyPenalty: frequencyPenalty
         )
+        kvCacheSettings.apply(to: &parameters)
+        return parameters
     }
 
     private static func runtimeRepetitionPenalty(_ value: Float?) -> Float? {
@@ -478,6 +481,18 @@ public struct MLXServerModelGenerationDefaults: Codable, Equatable, Sendable {
             return nil
         }
         return value
+    }
+}
+
+public extension MLXServerKVCacheSettings {
+    func apply(to parameters: inout GenerateParameters) {
+        let settings = validated()
+        guard settings.mode == .quantized else {
+            return
+        }
+        parameters.kvBits = settings.quantizedBits
+        parameters.kvGroupSize = settings.quantizedGroupSize
+        parameters.quantizedKVStart = settings.quantizedStart
     }
 }
 

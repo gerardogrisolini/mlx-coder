@@ -24,7 +24,7 @@ public enum MLXCoderSetupRunner {
         AgentOutput.standardError.writeString(
             """
             mlx-coder setup
-            Configuro i file di supporto in:
+            Configuring support files at:
             \(MLXCoderSupportFileService.supportDirectoryURL().path)
 
             """
@@ -35,7 +35,7 @@ public enum MLXCoderSetupRunner {
             do {
                 _ = try AgentSettingsManifestStore.loadRequired(from: settingsURL)
                 let shouldReconfigure = try promptYesNo(
-                    "settings.json esiste gia. Vuoi riconfigurare providers e modelli?",
+                    "settings.json already exists. Reconfigure providers and models?",
                     defaultValue: false
                 )
                 if !shouldReconfigure {
@@ -46,7 +46,7 @@ public enum MLXCoderSetupRunner {
                 }
             } catch {
                 let shouldOverwrite = try promptYesNo(
-                    "settings.json esiste ma non e valido. Vuoi riscriverlo?",
+                    "settings.json exists but is invalid. Rewrite it?",
                     defaultValue: true
                 )
                 guard shouldOverwrite else {
@@ -65,14 +65,14 @@ public enum MLXCoderSetupRunner {
     }
 
     private static func printCompletion() {
-        AgentOutput.standardError.writeString("\nSetup completato.\n\n")
+        AgentOutput.standardError.writeString("\nSetup completed.\n\n")
     }
 
     private static func buildSettingsManifest() async throws -> AgentSettingsManifest {
         var providerInputs: [SetupProviderInput] = []
         repeat {
             providerInputs.append(try await readProvider())
-        } while try promptYesNo("Aggiungere un altro provider?", defaultValue: false)
+        } while try promptYesNo("Add another provider?", defaultValue: false)
 
         let providers = providerInputs.map { input in
             AgentSettingsProviderManifest(
@@ -128,7 +128,7 @@ public enum MLXCoderSetupRunner {
         AgentOutput.standardError.writeString("\nProvider OpenAI-compatible\n")
         let id = UUID()
         let name = try promptString(
-            "Nome provider",
+            "Provider name",
             defaultValue: AgentRemoteProvider.defaultOpenRouterName,
             allowEmpty: false
         )
@@ -139,7 +139,7 @@ public enum MLXCoderSetupRunner {
         )
         let chatEndpoint = try promptEndpoint()
         let apiKey = try promptString(
-            "API key (opzionale)",
+            "API key (optional)",
             defaultValue: nil,
             allowEmpty: true
         )
@@ -205,7 +205,7 @@ public enum MLXCoderSetupRunner {
             return
         } catch {
             AgentOutput.standardError.writeString(
-                "ChatGPT Subscription non e collegato. Apro il login Codex nel browser.\n"
+                "ChatGPT Subscription is not connected. Opening Codex login in the browser.\n"
             )
         }
 
@@ -219,14 +219,14 @@ public enum MLXCoderSetupRunner {
 
         AgentOutput.standardError.writeString(
             """
-            Completa il login nel browser.
-            Se il callback locale non rientra automaticamente, incolla qui la callback URL o il codice.
-            Altrimenti premi invio quando il browser mostra il completamento.
+            Complete login in the browser.
+            If the local callback does not return automatically, paste the callback URL or code here.
+            Otherwise press Return when the browser shows completion.
 
             """
         )
         let callbackInput = try promptString(
-            "Callback URL/codice (opzionale)",
+            "Callback URL/code (optional)",
             defaultValue: nil,
             allowEmpty: true
         )
@@ -235,7 +235,7 @@ public enum MLXCoderSetupRunner {
         }
 
         _ = try await session.waitForCredentials()
-        AgentOutput.standardError.writeString("ChatGPT Subscription collegato.\n")
+        AgentOutput.standardError.writeString("ChatGPT Subscription connected.\n")
 #else
         throw MLXCoderSetupError.chatGPTSubscriptionUnsupported
 #endif
@@ -248,7 +248,7 @@ public enum MLXCoderSetupRunner {
         chatEndpoint: AgentRemoteChatEndpoint,
         apiKey: String?
     ) async throws -> [AgentSettingsModelManifest] {
-        if try promptYesNo("Caricare la lista modelli da /models del server?", defaultValue: true) {
+        if try promptYesNo("Load the model list from the server /models endpoint?", defaultValue: true) {
             do {
                 let catalogModels = try await RemoteModelCatalogClient()
                     .fetchModels(baseURL: baseURL, apiKey: apiKey)
@@ -269,9 +269,9 @@ public enum MLXCoderSetupRunner {
                 }
             } catch {
                 AgentOutput.standardError.writeString(
-                    "Impossibile caricare /models: \(error.localizedDescription)\n"
+                    "Unable to load /models: \(error.localizedDescription)\n"
                 )
-                guard try promptYesNo("Inserire i modelli manualmente?", defaultValue: true) else {
+                guard try promptYesNo("Enter models manually?", defaultValue: true) else {
                     throw error
                 }
             }
@@ -288,7 +288,7 @@ public enum MLXCoderSetupRunner {
                     modelIndex: models.count
                 )
             )
-        } while try promptYesNo("Aggiungere un altro modello per \(providerName)?", defaultValue: false)
+        } while try promptYesNo("Add another model for \(providerName)?", defaultValue: false)
 
         return models
     }
@@ -296,7 +296,7 @@ public enum MLXCoderSetupRunner {
     private static func selectRemoteModels(
         from models: [OpenRouterModelInfo]
     ) throws -> [OpenRouterModelInfo] {
-        AgentOutput.standardError.writeString("\nModelli disponibili da /models:\n")
+        AgentOutput.standardError.writeString("\nModels available from /models:\n")
         for (index, model) in models.enumerated() {
             AgentOutput.standardError.writeString(
                 "  \(index + 1). \(remoteModelListTitle(model))\n"
@@ -304,12 +304,12 @@ public enum MLXCoderSetupRunner {
         }
 
         let value = try promptString(
-            "Scelta modelli (numero, lista 1,3 oppure all)",
+            "Model selection (number, list like 1,3, or all)",
             defaultValue: "1",
             allowEmpty: false
         )
         let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalizedValue == "all" || normalizedValue == "tutti" {
+        if normalizedValue == "all" {
             return models
         }
 
@@ -335,7 +335,7 @@ public enum MLXCoderSetupRunner {
 
     private static func selectChatGPTSubscriptionModels() throws -> [CodexAgentModel.ModelOption] {
         let models = CodexAgentModel.availableModels
-        AgentOutput.standardError.writeString("\nModelli ChatGPT Subscription:\n")
+        AgentOutput.standardError.writeString("\nChatGPT Subscription models:\n")
         for (index, model) in models.enumerated() {
             let context = model.contextWindowTokenLimit.map { "ctx \($0)" } ?? "ctx default"
             AgentOutput.standardError.writeString(
@@ -344,12 +344,12 @@ public enum MLXCoderSetupRunner {
         }
 
         let value = try promptString(
-            "Scelta modelli (numero, lista 1,3 oppure all)",
+            "Model selection (number, list like 1,3, or all)",
             defaultValue: "1",
             allowEmpty: false
         )
         let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalizedValue == "all" || normalizedValue == "tutti" {
+        if normalizedValue == "all" {
             return models
         }
 
@@ -490,7 +490,7 @@ public enum MLXCoderSetupRunner {
         chatEndpoint: AgentRemoteChatEndpoint,
         modelIndex: Int
     ) throws -> AgentSettingsModelManifest {
-        AgentOutput.standardError.writeString("\nModello\n")
+        AgentOutput.standardError.writeString("\nModel\n")
         let defaultModelID = modelIndex == 0 ? AgentRemoteProvider.defaultOpenRouterModelID : nil
         let modelID = try promptString(
             "Model ID",
@@ -498,16 +498,16 @@ public enum MLXCoderSetupRunner {
             allowEmpty: false
         )
         let title = try promptString(
-            "Titolo visualizzato (opzionale)",
+            "Display title (optional)",
             defaultValue: nil,
             allowEmpty: true
         )
         let contextLimit = try promptPositiveInt(
-            "Context window token limit (opzionale)",
+            "Context window token limit (optional)",
             defaultValue: nil
         )
         let maxTokens = try promptPositiveInt(
-            "Max output tokens per richiesta (opzionale)",
+            "Max output tokens per request (optional)",
             defaultValue: nil
         )
         let thinking = try promptThinking()
@@ -544,7 +544,7 @@ public enum MLXCoderSetupRunner {
               2. responses
             """ + "\n"
         )
-        let value = try promptString("Scelta", defaultValue: "1", allowEmpty: false)
+        let value = try promptString("Choice", defaultValue: "1", allowEmpty: false)
         switch value.trimmingCharacters(in: .whitespacesAndNewlines) {
         case "1", "chat", "chat_completions", "chat/completions":
             return .chatCompletions
@@ -563,7 +563,7 @@ public enum MLXCoderSetupRunner {
               2. ChatGPT Subscription
             """ + "\n"
         )
-        let value = try promptString("Scelta", defaultValue: "1", allowEmpty: false)
+        let value = try promptString("Choice", defaultValue: "1", allowEmpty: false)
         switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "1", "remote", "remoteapi", "openai", "mlx", "server":
             return .remoteAPI
@@ -575,18 +575,18 @@ public enum MLXCoderSetupRunner {
     }
 
     private static func promptThinking() throws -> SetupThinkingInput {
-        guard try promptYesNo("Il modello supporta thinking/reasoning?", defaultValue: false) else {
+        guard try promptYesNo("Does the model support thinking/reasoning?", defaultValue: false) else {
             return SetupThinkingInput(options: nil, defaultSelection: nil)
         }
 
         AgentOutput.standardError.writeString(
             """
-            Tipo thinking:
+            Thinking type:
               1. on/off
               2. effort levels (minimal, low, medium, high, xhigh)
             """
         )
-        let value = try promptString("Scelta", defaultValue: "2", allowEmpty: false)
+        let value = try promptString("Choice", defaultValue: "2", allowEmpty: false)
         let options: [AgentThinkingSelection]
         let defaultSelection: AgentThinkingSelection
         switch value.trimmingCharacters(in: .whitespacesAndNewlines) {
@@ -605,11 +605,11 @@ public enum MLXCoderSetupRunner {
     private static func selectDefaultModel(
         from models: [AgentSettingsModelManifest]
     ) throws -> String {
-        AgentOutput.standardError.writeString("\nModello di default:\n")
+        AgentOutput.standardError.writeString("\nDefault model:\n")
         for (index, model) in models.enumerated() {
             AgentOutput.standardError.writeString("  \(index + 1). \(model.displayTitle)\n")
         }
-        let value = try promptString("Scelta", defaultValue: "1", allowEmpty: false)
+        let value = try promptString("Choice", defaultValue: "1", allowEmpty: false)
         guard let index = Int(value),
               models.indices.contains(index - 1) else {
             throw MLXCoderSetupError.invalidChoice(value)
@@ -649,7 +649,7 @@ public enum MLXCoderSetupRunner {
             return defaultValue
         }
         switch value {
-        case "y", "yes", "s", "si":
+        case "y", "yes":
             return true
         case "n", "no":
             return false
@@ -679,16 +679,16 @@ public enum MLXCoderSetupRunner {
     ) {
         if !result.createdFilenames.isEmpty {
             AgentOutput.standardError.writeString(
-                "Creati: \(result.createdFilenames.joined(separator: ", "))\n"
+                "Created: \(result.createdFilenames.joined(separator: ", "))\n"
             )
         }
         if !result.preservedFilenames.isEmpty {
             AgentOutput.standardError.writeString(
-                "Conservati: \(result.preservedFilenames.joined(separator: ", "))\n"
+                "Preserved: \(result.preservedFilenames.joined(separator: ", "))\n"
             )
         }
         if settingsWasWritten && !result.createdFilenames.contains(AgentSettingsManifestStore.settingsFilename) {
-            AgentOutput.standardError.writeString("Aggiornato: settings.json\n")
+            AgentOutput.standardError.writeString("Updated: settings.json\n")
         }
     }
 }

@@ -32,7 +32,7 @@ enum MLXServerAgentProfileSetupRunner {
         FileHandle.standardError.writeString(
             """
             mlx-server agents setup
-            Configuro agents.json in:
+            Configuring agents.json at:
             \(manifestURL.path)
 
             """
@@ -41,14 +41,14 @@ enum MLXServerAgentProfileSetupRunner {
         let existingAgents = try loadExistingAgentsIfPresent(at: manifestURL)
         var agents = try initialAgents(existingAgents: existingAgents)
 
-        if try promptYesNo("Modificare la lista agenti?", defaultValue: false) {
+        if try promptYesNo("Edit the agent list?", defaultValue: false) {
             agents = try editAgents(agents)
         }
 
         let normalizedAgents = ensureDefaultAgent(in: uniqueAgents(agents))
         try AgentProfileStore.save(normalizedAgents)
         FileHandle.standardError.writeString(
-            "\nAggiornato: agents.json (\(normalizedAgents.count) agenti)\n\n"
+            "\nUpdated: agents.json (\(normalizedAgents.count) agents)\n\n"
         )
     }
 
@@ -59,13 +59,13 @@ enum MLXServerAgentProfileSetupRunner {
 
         do {
             let agents = try AgentProfileStore.loadRequired()
-            FileHandle.standardError.writeString("Agenti configurati:\n")
+            FileHandle.standardError.writeString("Configured agents:\n")
             printAgents(agents)
             FileHandle.standardError.writeString("\n")
             return agents
         } catch {
             let shouldOverwrite = try promptYesNo(
-                "agents.json esiste ma non e valido. Vuoi riscriverlo?",
+                "agents.json exists but is invalid. Rewrite it?",
                 defaultValue: true
             )
             guard shouldOverwrite else {
@@ -78,14 +78,14 @@ enum MLXServerAgentProfileSetupRunner {
     private static func initialAgents(existingAgents: [AgentProfile]?) throws -> [AgentProfile] {
         if let existingAgents {
             let useRecommended = try promptYesNo(
-                "Rigenerare i 6 agenti consigliati?",
+                "Regenerate the 6 recommended agents?",
                 defaultValue: false
             )
             return useRecommended ? AgentProfileStore.defaultProfiles() : existingAgents
         }
 
         let useRecommended = try promptYesNo(
-            "Creare i 6 agenti consigliati?",
+            "Create the 6 recommended agents?",
             defaultValue: true
         )
         guard !useRecommended else {
@@ -99,29 +99,29 @@ enum MLXServerAgentProfileSetupRunner {
         var agents: [AgentProfile] = []
         repeat {
             agents.append(try readAgent(defaultAgent: nil))
-        } while try promptYesNo("Aggiungere un altro agente?", defaultValue: false)
+        } while try promptYesNo("Add another agent?", defaultValue: false)
         return agents
     }
 
     private static func editAgents(_ initialAgents: [AgentProfile]) throws -> [AgentProfile] {
         var agents = initialAgents
         while true {
-            FileHandle.standardError.writeString("\nAgenti:\n")
+            FileHandle.standardError.writeString("\nAgents:\n")
             printAgents(agents)
             let choice = try promptString(
-                "Agente da modificare (numero, add, done)",
+                "Agent to edit (number, add, done)",
                 defaultValue: "done",
                 allowEmpty: false
             )
             switch choice.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-            case "done", "fine", "exit", "quit":
+            case "done", "exit", "quit":
                 return agents
-            case "add", "aggiungi", "new", "nuovo":
+            case "add", "new":
                 agents.append(try readAgent(defaultAgent: nil))
             default:
                 guard let index = Int(choice),
                       agents.indices.contains(index - 1) else {
-                    FileHandle.standardError.writeString("Scelta non valida.\n")
+                    FileHandle.standardError.writeString("Invalid selection.\n")
                     continue
                 }
                 agents[index - 1] = try readAgent(defaultAgent: agents[index - 1])
@@ -131,7 +131,7 @@ enum MLXServerAgentProfileSetupRunner {
 
     private static func readAgent(defaultAgent: AgentProfile?) throws -> AgentProfile {
         let name = try promptString(
-            "Nome agente",
+            "Agent name",
             defaultValue: defaultAgent?.name,
             allowEmpty: false
         )
@@ -142,7 +142,7 @@ enum MLXServerAgentProfileSetupRunner {
         ).nilIfBlank
         let tools = parseList(
             try promptString(
-                "Tools (virgola/spazio, none per nessuno)",
+                "Tools (comma/space separated, none for no tools)",
                 defaultValue: (defaultAgent?.tools ?? AgentProfileStore.defaultToolNames)
                     .joined(separator: ", "),
                 allowEmpty: true
@@ -150,18 +150,18 @@ enum MLXServerAgentProfileSetupRunner {
         )
         let skillIDs = parseList(
             try promptString(
-                "Skills (id separati da virgola/spazio, opzionale)",
+                "Skills (comma/space separated ids, optional)",
                 defaultValue: defaultAgent.map { skillList($0.skills) },
                 allowEmpty: true
             )
         )
         let modelProvider = try promptString(
-            "Provider modello dedicato (opzionale)",
+            "Dedicated model provider (optional)",
             defaultValue: defaultAgent?.modelProvider,
             allowEmpty: true
         ).nilIfBlank
         let modelID = try promptString(
-            "Modello dedicato (opzionale)",
+            "Dedicated model (optional)",
             defaultValue: defaultAgent?.modelID,
             allowEmpty: true
         ).nilIfBlank
@@ -181,7 +181,7 @@ enum MLXServerAgentProfileSetupRunner {
 
     private static func promptInstructions(defaultValue: String?) throws -> String? {
         let shouldEdit = try promptYesNo(
-            defaultValue == nil ? "Inserire istruzioni agente?" : "Modificare istruzioni agente?",
+            defaultValue == nil ? "Enter agent instructions?" : "Edit agent instructions?",
             defaultValue: defaultValue == nil
         )
         guard shouldEdit else {
@@ -190,7 +190,7 @@ enum MLXServerAgentProfileSetupRunner {
 
         FileHandle.standardError.writeString(
             """
-            Inserisci le istruzioni. Scrivi solo "." su una riga per terminare.
+            Enter the instructions. Type only "." on a line to finish.
 
             """
         )
@@ -276,7 +276,7 @@ enum MLXServerAgentProfileSetupRunner {
             if normalized.isEmpty {
                 return defaultValue
             }
-            if ["y", "yes", "s", "si", "sì"].contains(normalized) {
+            if ["y", "yes"].contains(normalized) {
                 return true
             }
             if ["n", "no"].contains(normalized) {
@@ -287,7 +287,7 @@ enum MLXServerAgentProfileSetupRunner {
 
     private static func parseList(_ value: String) -> [String] {
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalized.lowercased() == "none" || normalized.lowercased() == "nessuno" {
+        if normalized.lowercased() == "none" {
             return []
         }
         return normalized

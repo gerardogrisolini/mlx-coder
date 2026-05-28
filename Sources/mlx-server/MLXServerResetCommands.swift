@@ -39,10 +39,10 @@ enum MLXServerResetConfigurationCommand {
             }
         }
 
-        FileHandle.standardError.writeString("Reset configurazione completato.\n")
-        printURLs("Rimossi", removed)
+        FileHandle.standardError.writeString("Configuration reset completed.\n")
+        printURLs("Removed", removed)
         if removed.isEmpty {
-            printURLs("Non presenti", missing)
+            printURLs("Missing", missing)
         }
     }
 
@@ -88,7 +88,7 @@ enum MLXServerResetDiskCacheCommand {
         guard fileManager.fileExists(atPath: cacheDirectory.path, isDirectory: &isDirectory),
               isDirectory.boolValue else {
             FileHandle.standardError.writeString(
-                "KV cache su disco non presente: \(cacheDirectory.path)\n"
+                "Disk KV cache not found: \(cacheDirectory.path)\n"
             )
             return
         }
@@ -103,7 +103,7 @@ enum MLXServerResetDiskCacheCommand {
         }
 
         FileHandle.standardError.writeString(
-            "KV cache su disco svuotata: \(cacheDirectory.path)\n"
+            "Disk KV cache cleared: \(cacheDirectory.path)\n"
         )
     }
 }

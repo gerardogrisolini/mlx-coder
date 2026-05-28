@@ -126,6 +126,7 @@ struct MLXServerMain {
             configuration: settings.serverConfiguration,
             runtime: runtime,
             modelCatalog: modelCatalog,
+            kvCacheSettings: settings.kvCache,
             transport: transport,
             metricsLogger: metricsLogger,
             eventLoopThreadCount: settings.webServerThreadCount
@@ -164,7 +165,10 @@ struct MLXServerMain {
         let configuration = try AgentConfiguration(
             hostedModelID: initialModel.id,
             agentName: options.agentName,
-            availableModels: coderModelManifests(from: modelCatalog.models),
+            availableModels: coderModelManifests(
+                from: modelCatalog.models,
+                kvCacheSettings: settings.kvCache
+            ),
             bearerToken: nil,
             runMode: .chat,
             workingDirectory: options.workingDirectory,
@@ -190,8 +194,10 @@ struct MLXServerMain {
     }
 
     private static func coderModelManifests(
-        from models: [MLXServerModelDescriptor]
+        from models: [MLXServerModelDescriptor],
+        kvCacheSettings: MLXServerKVCacheSettings
     ) -> [AgentSettingsModelManifest] {
+        let kvCacheSettings = kvCacheSettings.validated()
         let providerID = UUID(uuidString: "00000000-0000-0000-0000-000000008080")!
         return models.map { model in
             let provider = AgentRemoteProvider(
@@ -215,7 +221,10 @@ struct MLXServerMain {
                     topK: model.generationDefaults.topK,
                     repetitionPenalty: model.generationDefaults.repetitionPenalty.map(Double.init),
                     presencePenalty: model.generationDefaults.presencePenalty.map(Double.init),
-                    frequencyPenalty: model.generationDefaults.frequencyPenalty.map(Double.init)
+                    frequencyPenalty: model.generationDefaults.frequencyPenalty.map(Double.init),
+                    kvBits: kvCacheSettings.kvBits,
+                    kvGroupSize: kvCacheSettings.kvGroupSize,
+                    quantizedKVStart: kvCacheSettings.quantizedKVStart
                 ),
                 thinkingOptions: coderThinkingOptions(from: model.thinking),
                 defaultThinkingSelection: AgentThinkingSelection(
@@ -295,6 +304,7 @@ struct MLXServerMain {
                 userText: trimmedUserText,
                 additionalContext: additionalContext,
                 options: options,
+                kvCacheSettings: settings.kvCache,
                 label: "turn \(turnIndex)",
                 printsOutput: !options.quiet
             )
@@ -324,6 +334,7 @@ struct MLXServerMain {
         userText: String,
         additionalContext: [String: any Sendable],
         options: MLXServerChatOptions,
+        kvCacheSettings: MLXServerKVCacheSettings,
         label: String,
         printsOutput: Bool
     ) async throws -> MLXServerChatTurnOutput {
@@ -331,7 +342,8 @@ struct MLXServerMain {
             model: model,
             messages: messages + [.user(userText)],
             parameters: model.generationDefaults.generateParameters(
-                maxTokens: options.maxTokens
+                maxTokens: options.maxTokens,
+                kvCacheSettings: kvCacheSettings
             ),
             additionalContext: additionalContext,
             retainsReasoningInHistory: false

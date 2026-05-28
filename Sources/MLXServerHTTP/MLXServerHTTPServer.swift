@@ -36,6 +36,7 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
     private let configuration: MLXServerConfiguration
     private let runtime: any MLXServerRuntimeGenerating
     private let modelCatalog: MLXServerModelCatalog
+    private let kvCacheSettings: MLXServerKVCacheSettings
     private let transport: MLXServerHTTPTransportConfiguration
     private let metricsLogger: MLXServerMetricsLogger?
     private let group: MultiThreadedEventLoopGroup
@@ -45,6 +46,7 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
         configuration: MLXServerConfiguration,
         runtime: any MLXServerRuntimeGenerating,
         modelCatalog: MLXServerModelCatalog,
+        kvCacheSettings: MLXServerKVCacheSettings = .init(),
         transport: MLXServerHTTPTransportConfiguration = .init(),
         metricsLogger: MLXServerMetricsLogger? = nil,
         eventLoopThreadCount: Int = MLXServerSettings.defaultWebServerThreadCount
@@ -52,6 +54,7 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
         self.configuration = configuration
         self.runtime = runtime
         self.modelCatalog = modelCatalog
+        self.kvCacheSettings = kvCacheSettings.validated()
         self.transport = transport
         self.metricsLogger = metricsLogger
         self.group = MultiThreadedEventLoopGroup(
@@ -175,7 +178,10 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
         let generationRequest = MLXServerGenerationRequest(
             model: model,
             messages: body.serverMessages,
-            parameters: body.generateParameters(defaults: model.generationDefaults),
+            parameters: body.generateParameters(
+                defaults: model.generationDefaults,
+                kvCacheSettings: kvCacheSettings
+            ),
             tools: body.toolSpecs,
             additionalContext: model.thinking.additionalContext(for: thinkingSelection),
             retainsReasoningInHistory: thinkingSelection.isEnabled && model.thinking.supportsPreserveThinking
@@ -258,7 +264,10 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
         let generationRequest = MLXServerGenerationRequest(
             model: model,
             messages: body.serverMessages,
-            parameters: body.generateParameters(defaults: model.generationDefaults),
+            parameters: body.generateParameters(
+                defaults: model.generationDefaults,
+                kvCacheSettings: kvCacheSettings
+            ),
             tools: body.toolSpecs,
             additionalContext: model.thinking.additionalContext(for: thinkingSelection),
             retainsReasoningInHistory: thinkingSelection.isEnabled && model.thinking.supportsPreserveThinking
@@ -340,7 +349,10 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
         let generationRequest = MLXServerGenerationRequest(
             model: model,
             messages: body.serverMessages,
-            parameters: body.generateParameters(defaults: model.generationDefaults),
+            parameters: body.generateParameters(
+                defaults: model.generationDefaults,
+                kvCacheSettings: kvCacheSettings
+            ),
             tools: body.toolSpecs,
             additionalContext: model.thinking.additionalContext(for: thinkingSelection),
             retainsReasoningInHistory: thinkingSelection.isEnabled && model.thinking.supportsPreserveThinking
@@ -1021,9 +1033,13 @@ private struct OpenAIChatCompletionRequest: Decodable, Sendable {
         configuration.selection(for: reasoningEffort)
     }
 
-    func generateParameters(defaults: MLXServerModelGenerationDefaults) -> GenerateParameters {
+    func generateParameters(
+        defaults: MLXServerModelGenerationDefaults,
+        kvCacheSettings: MLXServerKVCacheSettings
+    ) -> GenerateParameters {
         defaults.generateParameters(
-            maxTokens: maxCompletionTokens ?? maxTokens
+            maxTokens: maxCompletionTokens ?? maxTokens,
+            kvCacheSettings: kvCacheSettings
         )
     }
 }
@@ -1483,9 +1499,13 @@ private struct ResponsesRequest: Decodable, Sendable {
         return configuration.selection(for: reasoning.selectionProtocolValue)
     }
 
-    func generateParameters(defaults: MLXServerModelGenerationDefaults) -> GenerateParameters {
+    func generateParameters(
+        defaults: MLXServerModelGenerationDefaults,
+        kvCacheSettings: MLXServerKVCacheSettings
+    ) -> GenerateParameters {
         defaults.generateParameters(
-            maxTokens: maxOutputTokens
+            maxTokens: maxOutputTokens,
+            kvCacheSettings: kvCacheSettings
         )
     }
 }
@@ -1611,14 +1631,18 @@ private struct ResponsesToolDefinition: Decodable, Sendable {
 }
 
 private struct ResponsesReasoningConfiguration: Decodable, Sendable {
+    var enabled: Bool?
     var effort: String?
     var summary: String?
 
     var emitsThinking: Bool {
+        if enabled == false {
+            return false
+        }
         guard summary != "none", effort != "none" else {
             return false
         }
-        return summary != nil || effort != nil
+        return enabled == true || summary != nil || effort != nil
     }
 
     var selectionProtocolValue: String? {
@@ -2441,9 +2465,13 @@ private struct AnthropicMessagesRequest: Decodable, Sendable {
         return configuration.defaultEnabledSelection()
     }
 
-    func generateParameters(defaults: MLXServerModelGenerationDefaults) -> GenerateParameters {
+    func generateParameters(
+        defaults: MLXServerModelGenerationDefaults,
+        kvCacheSettings: MLXServerKVCacheSettings
+    ) -> GenerateParameters {
         defaults.generateParameters(
-            maxTokens: maxTokens
+            maxTokens: maxTokens,
+            kvCacheSettings: kvCacheSettings
         )
     }
 }

@@ -258,7 +258,7 @@ public actor TerminalWorkspaceToolAccessStore {
             return false
         }
         switch answer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "", "y", "yes", "s", "si":
+        case "", "y", "yes":
             return true
         default:
             return false

@@ -90,6 +90,12 @@ func savesAndLoadsServerSettingsJSON() throws {
         loadOneModelAtATime: true,
         http2PriorKnowledge: true,
         metricsLogPath: " /tmp/mlx-server.metrics.jsonl ",
+        kvCache: MLXServerKVCacheSettings(
+            mode: .quantized,
+            quantizedBits: 4,
+            quantizedGroupSize: 64,
+            quantizedStart: 2_048
+        ),
         diskKVCache: MLXServerDiskKVCacheSettings(
             enabled: true,
             directoryPath: " /tmp/mlx-server-kv ",
@@ -110,6 +116,10 @@ func savesAndLoadsServerSettingsJSON() throws {
     #expect(loaded.loadOneModelAtATime)
     #expect(loaded.http2PriorKnowledge)
     #expect(loaded.metricsLogPath == "/tmp/mlx-server.metrics.jsonl")
+    #expect(loaded.kvCache.mode == .quantized)
+    #expect(loaded.kvCache.quantizedBits == 4)
+    #expect(loaded.kvCache.quantizedGroupSize == 64)
+    #expect(loaded.kvCache.quantizedStart == 2_048)
     #expect(loaded.diskKVCache.directoryPath == "/tmp/mlx-server-kv")
     #expect(loaded.diskKVCache.limitGB == 42)
     #expect(loaded.huggingFaceCache.directoryPath == "/tmp/huggingface/hub")
@@ -137,7 +147,26 @@ func serverSettingsLoadsOlderJSONWithoutHuggingFaceCache() throws {
 
     #expect(settings.huggingFaceCache.directoryPath == nil)
     #expect(settings.huggingFaceCache.bookmark == nil)
+    #expect(settings.kvCache.mode == .standard)
     #expect(settings.webServerThreadCount == MLXServerSettings.defaultWebServerThreadCount)
+}
+
+@Test
+func generationDefaultsApplyQuantizedKVCacheSettings() {
+    let defaults = MLXServerModelGenerationDefaults(maxOutputTokens: 256)
+    let parameters = defaults.generateParameters(
+        kvCacheSettings: MLXServerKVCacheSettings(
+            mode: .quantized,
+            quantizedBits: 4,
+            quantizedGroupSize: 64,
+            quantizedStart: 1_024
+        )
+    )
+
+    #expect(parameters.maxTokens == 256)
+    #expect(parameters.kvBits == 4)
+    #expect(parameters.kvGroupSize == 64)
+    #expect(parameters.quantizedKVStart == 1_024)
 }
 
 @Test

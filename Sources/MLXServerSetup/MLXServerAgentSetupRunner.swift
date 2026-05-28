@@ -33,7 +33,7 @@ public enum MLXServerAgentSetupRunner {
             """
             mlx-server agent setup
 
-            Stato attuale:
+            Current status:
             - Codex CLI: \(enabledLabel(status.codexCLIEnabled))
             - Codex App: \(enabledLabel(status.codexAppEnabled))
             - Codex App in Xcode: \(enabledLabel(status.codexXcodeAppEnabled))
@@ -43,19 +43,19 @@ public enum MLXServerAgentSetupRunner {
         )
 
         let desiredCodexCLI = try promptYesNo(
-            "Abilitare Codex CLI?",
+            "Enable Codex CLI?",
             defaultValue: status.codexCLIEnabled
         )
         let desiredCodexApp = try promptYesNo(
-            "Abilitare Codex App?",
+            "Enable Codex App?",
             defaultValue: status.codexAppEnabled
         )
         let desiredCodexXcodeApp = try promptYesNo(
-            "Abilitare Codex App in Xcode?",
+            "Enable Codex App in Xcode?",
             defaultValue: status.codexXcodeAppEnabled
         )
         let desiredXcodeClaudeCode = try promptYesNo(
-            "Abilitare Claude Code in Xcode?",
+            "Enable Claude Code in Xcode?",
             defaultValue: status.xcodeClaudeCodeEnabled
         )
 
@@ -87,7 +87,7 @@ public enum MLXServerAgentSetupRunner {
             )
         }
 
-        FileHandle.standardError.writeString("\nSetup agent completato.\n\n")
+        FileHandle.standardError.writeString("\nAgent integration setup completed.\n\n")
     }
 
     private static func promptIntegrationConfiguration()
@@ -137,27 +137,27 @@ public enum MLXServerAgentSetupRunner {
             try MLXServerAgentIntegrationService.configureCodexCLIProfile(
                 configuration: configuration
             )
-            FileHandle.standardError.writeString("Aggiornato: Codex CLI\n")
+            FileHandle.standardError.writeString("Updated: Codex CLI\n")
         }
         if codexApp {
             try MLXServerAgentIntegrationService.configureCodexAppProfile(
                 target: .desktop,
                 configuration: configuration
             )
-            FileHandle.standardError.writeString("Aggiornato: Codex App\n")
+            FileHandle.standardError.writeString("Updated: Codex App\n")
         }
         if codexXcodeApp {
             try MLXServerAgentIntegrationService.configureCodexAppProfile(
                 target: .xcode,
                 configuration: configuration
             )
-            FileHandle.standardError.writeString("Aggiornato: Codex App in Xcode\n")
+            FileHandle.standardError.writeString("Updated: Codex App in Xcode\n")
         }
         if xcodeClaudeCode {
             try MLXServerAgentIntegrationService.configureXcodeClaudeCode(
                 configuration: configuration
             )
-            FileHandle.standardError.writeString("Aggiornato: Claude Code in Xcode\n")
+            FileHandle.standardError.writeString("Updated: Claude Code in Xcode\n")
         }
     }
 
@@ -170,7 +170,7 @@ public enum MLXServerAgentSetupRunner {
     private static func promptModelSelection() throws -> ModelSelection {
         guard let manifest = try? MLXServerModelsManifestStore.loadRequired().validated() else {
             let modelID = try promptString(
-                "Modello agent",
+                "Agent model",
                 defaultValue: nil,
                 allowEmpty: false
             )
@@ -180,7 +180,7 @@ public enum MLXServerAgentSetupRunner {
         let enabledModels = manifest.models.filter(\.enabled)
         guard !enabledModels.isEmpty else {
             let modelID = try promptString(
-                "Modello agent",
+                "Agent model",
                 defaultValue: nil,
                 allowEmpty: false
             )
@@ -189,7 +189,7 @@ public enum MLXServerAgentSetupRunner {
 
         let defaultModel = enabledModels.first { $0.id == manifest.defaultModelID }
             ?? enabledModels[0]
-        FileHandle.standardError.writeString("\nModelli configurati:\n")
+        FileHandle.standardError.writeString("\nConfigured models:\n")
         for (index, model) in enabledModels.enumerated() {
             let marker = model.id == defaultModel.id ? " *" : ""
             FileHandle.standardError.writeString("\(index + 1). \(model.id)\(marker)\n")
@@ -198,7 +198,7 @@ public enum MLXServerAgentSetupRunner {
 
         while true {
             let answer = try promptString(
-                "Modello agent",
+                "Agent model",
                 defaultValue: defaultModel.id,
                 allowEmpty: false
             )
@@ -253,7 +253,7 @@ public enum MLXServerAgentSetupRunner {
             if normalized.isEmpty {
                 return defaultValue
             }
-            if ["y", "yes", "s", "si", "sì"].contains(normalized) {
+            if ["y", "yes"].contains(normalized) {
                 return true
             }
             if ["n", "no"].contains(normalized) {
@@ -271,7 +271,7 @@ public enum MLXServerAgentSetupRunner {
     }
 
     private static func enabledLabel(_ isEnabled: Bool) -> String {
-        isEnabled ? "attivo" : "disattivo"
+        isEnabled ? "enabled" : "disabled"
     }
 }
 

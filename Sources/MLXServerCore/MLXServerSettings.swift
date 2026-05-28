@@ -17,6 +17,7 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
     public var tlsCertificatePath: String?
     public var tlsPrivateKeyPath: String?
     public var metricsLogPath: String?
+    public var kvCache: MLXServerKVCacheSettings
     public var diskKVCache: MLXServerDiskKVCacheSettings
     public var huggingFaceCache: MLXServerHuggingFaceCacheSettings
 
@@ -29,6 +30,7 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
         case tlsCertificatePath = "tls_certificate_path"
         case tlsPrivateKeyPath = "tls_private_key_path"
         case metricsLogPath = "metrics_log_path"
+        case kvCache = "kv_cache"
         case diskKVCache = "disk_kv_cache"
         case huggingFaceCache = "huggingface_cache"
     }
@@ -42,6 +44,7 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
         tlsCertificatePath: String? = nil,
         tlsPrivateKeyPath: String? = nil,
         metricsLogPath: String? = nil,
+        kvCache: MLXServerKVCacheSettings = .init(),
         diskKVCache: MLXServerDiskKVCacheSettings = .init(),
         huggingFaceCache: MLXServerHuggingFaceCacheSettings = .init()
     ) {
@@ -53,6 +56,7 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
         self.tlsCertificatePath = tlsCertificatePath
         self.tlsPrivateKeyPath = tlsPrivateKeyPath
         self.metricsLogPath = metricsLogPath
+        self.kvCache = kvCache
         self.diskKVCache = diskKVCache
         self.huggingFaceCache = huggingFaceCache
     }
@@ -76,6 +80,10 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
         tlsCertificatePath = try container.decodeIfPresent(String.self, forKey: .tlsCertificatePath)
         tlsPrivateKeyPath = try container.decodeIfPresent(String.self, forKey: .tlsPrivateKeyPath)
         metricsLogPath = try container.decodeIfPresent(String.self, forKey: .metricsLogPath)
+        kvCache = try container.decodeIfPresent(
+            MLXServerKVCacheSettings.self,
+            forKey: .kvCache
+        ) ?? .init()
         diskKVCache = try container.decodeIfPresent(
             MLXServerDiskKVCacheSettings.self,
             forKey: .diskKVCache
@@ -106,6 +114,7 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
             tlsCertificatePath: normalizedTLSCertificatePath,
             tlsPrivateKeyPath: normalizedTLSPrivateKeyPath,
             metricsLogPath: metricsLogPath?.trimmedNonEmpty,
+            kvCache: kvCache.validated(),
             diskKVCache: try diskKVCache.validated(),
             huggingFaceCache: huggingFaceCache.validated()
         )
@@ -117,6 +126,73 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
 
     public var modelRetentionPolicy: MLXServerModelRetentionPolicy {
         loadOneModelAtATime ? .unloadPreviousModel : .keepLoadedModels
+    }
+}
+
+public enum MLXServerKVCacheMode: String, Codable, CaseIterable, Sendable {
+    case standard
+    case quantized
+}
+
+public struct MLXServerKVCacheSettings: Codable, Equatable, Sendable {
+    public static let defaultQuantizedBits = 4
+    public static let defaultQuantizedGroupSize = 64
+    public static let defaultQuantizedStart = 1_024
+
+    public var mode: MLXServerKVCacheMode
+    public var quantizedBits: Int
+    public var quantizedGroupSize: Int
+    public var quantizedStart: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case mode
+        case quantizedBits = "quantized_bits"
+        case quantizedGroupSize = "quantized_group_size"
+        case quantizedStart = "quantized_start"
+    }
+
+    public init(
+        mode: MLXServerKVCacheMode = .standard,
+        quantizedBits: Int = Self.defaultQuantizedBits,
+        quantizedGroupSize: Int = Self.defaultQuantizedGroupSize,
+        quantizedStart: Int = Self.defaultQuantizedStart
+    ) {
+        self.mode = mode
+        self.quantizedBits = quantizedBits
+        self.quantizedGroupSize = quantizedGroupSize
+        self.quantizedStart = quantizedStart
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mode = try container.decodeIfPresent(MLXServerKVCacheMode.self, forKey: .mode) ?? .standard
+        quantizedBits = try container.decodeIfPresent(Int.self, forKey: .quantizedBits)
+            ?? Self.defaultQuantizedBits
+        quantizedGroupSize = try container.decodeIfPresent(Int.self, forKey: .quantizedGroupSize)
+            ?? Self.defaultQuantizedGroupSize
+        quantizedStart = try container.decodeIfPresent(Int.self, forKey: .quantizedStart)
+            ?? Self.defaultQuantizedStart
+    }
+
+    public func validated() -> Self {
+        Self(
+            mode: mode,
+            quantizedBits: min(max(quantizedBits, 2), 8),
+            quantizedGroupSize: min(max(quantizedGroupSize, 1), 256),
+            quantizedStart: min(max(quantizedStart, 0), 262_144)
+        )
+    }
+
+    public var kvBits: Int? {
+        mode == .quantized ? quantizedBits : nil
+    }
+
+    public var kvGroupSize: Int? {
+        mode == .quantized ? quantizedGroupSize : nil
+    }
+
+    public var quantizedKVStart: Int? {
+        mode == .quantized ? quantizedStart : nil
     }
 }
 

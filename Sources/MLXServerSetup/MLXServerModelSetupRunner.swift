@@ -35,7 +35,7 @@ public enum MLXServerModelSetupRunner {
         FileHandle.standardError.writeString(
             """
             mlx-server models setup
-            Configuro models.json in:
+            Configuring models.json at:
             \(modelsURL.path)
 
             """
@@ -56,7 +56,7 @@ public enum MLXServerModelSetupRunner {
                 try reconfigureExistingModelsIfRequested(in: &manifest)
             } catch {
                 let shouldOverwrite = try promptYesNo(
-                    "models.json esiste ma non e valido. Vuoi riscriverlo?",
+                    "models.json exists but is invalid. Rewrite it?",
                     defaultValue: true
                 )
                 guard shouldOverwrite else {
@@ -68,7 +68,7 @@ public enum MLXServerModelSetupRunner {
         try importCachedModelsIfRequested(into: &manifest)
 
         let shouldConfigureRemoteModel = try promptYesNo(
-            "Cercare e scaricare altri modelli da Hugging Face?",
+            "Search and download more models from Hugging Face?",
             defaultValue: manifest.models.isEmpty
         )
         if shouldConfigureRemoteModel {
@@ -80,12 +80,12 @@ public enum MLXServerModelSetupRunner {
                     askUser: configuredModel.shouldPromptForDefault,
                     in: &manifest
                 )
-            } while try promptYesNo("Aggiungere un altro modello?", defaultValue: false)
+            } while try promptYesNo("Add another model?", defaultValue: false)
         }
 
         try MLXServerModelsManifestStore.save(manifest, to: modelsURL)
-        FileHandle.standardError.writeString("Aggiornato: models.json\n")
-        FileHandle.standardError.writeString("\nSetup modelli completato.\n\n")
+        FileHandle.standardError.writeString("Updated: models.json\n")
+        FileHandle.standardError.writeString("\nModels setup completed.\n\n")
     }
 
     private static func configureModelRetentionPolicy() throws {
@@ -96,12 +96,12 @@ public enum MLXServerModelSetupRunner {
             : MLXServerSettings()
 
         settings.loadOneModelAtATime = try promptYesNo(
-            "Vuoi che il server carichi solo un modello alla volta?",
+            "Should the server load only one model at a time?",
             defaultValue: settings.loadOneModelAtATime
         )
 
         try MLXServerSettingsStore.save(settings, to: settingsURL)
-        FileHandle.standardError.writeString("Aggiornato: settings.json\n\n")
+        FileHandle.standardError.writeString("Updated: settings.json\n\n")
     }
 
     private static func refreshExistingModelRuntimeKinds(in manifest: inout MLXServerModelsManifest) {
@@ -127,7 +127,7 @@ public enum MLXServerModelSetupRunner {
             return
         }
         guard try promptYesNo(
-            "Vuoi riconfigurare i parametri dei modelli gia configurati?",
+            "Reconfigure parameters for already configured models?",
             defaultValue: false
         ) else {
             return
@@ -165,14 +165,14 @@ public enum MLXServerModelSetupRunner {
         }
         guard !importableCandidates.isEmpty else {
             FileHandle.standardError.writeString(
-                "I modelli gia scaricati risultano gia configurati in models.json.\n\n"
+                "Downloaded models are already configured in models.json.\n\n"
             )
             return
         }
 
         FileHandle.standardError.writeString(
             """
-            Trovati modelli gia scaricati nella cache Hugging Face non ancora configurati:
+            Found downloaded models in the Hugging Face cache that are not configured yet:
 
             """
         )
@@ -184,7 +184,7 @@ public enum MLXServerModelSetupRunner {
         FileHandle.standardError.writeString("\n")
 
         guard try promptYesNo(
-            "Vuoi importarli in models.json?",
+            "Import them into models.json?",
             defaultValue: true
         ) else {
             return
@@ -192,7 +192,7 @@ public enum MLXServerModelSetupRunner {
 
         for candidate in importableCandidates {
             guard try promptYesNo(
-                "Importare \(candidate.repositoryID)?",
+                "Import \(candidate.repositoryID)?",
                 defaultValue: true
             ) else {
                 continue
@@ -213,7 +213,7 @@ public enum MLXServerModelSetupRunner {
         let repositoryID = selectedModel.id.rawValue
         let revision = selectedModel.sha ?? "main"
 
-        FileHandle.standardError.writeString("\nScarico \(repositoryID) [\(revision)]...\n")
+        FileHandle.standardError.writeString("\nDownloading \(repositoryID) [\(revision)]...\n")
         let snapshotURL = try await client.downloadSnapshot(
             of: selectedModel.id,
             revision: revision,
@@ -221,7 +221,7 @@ public enum MLXServerModelSetupRunner {
                 Self.printDownloadProgress(progress)
             }
         )
-        FileHandle.standardError.writeString("\nDownload completato: \(snapshotURL.path)\n")
+        FileHandle.standardError.writeString("\nDownload completed: \(snapshotURL.path)\n")
 
         return try configureModelRecord(
             repositoryID: repositoryID,
@@ -268,29 +268,29 @@ public enum MLXServerModelSetupRunner {
             )
         }?.validated() ?? model.thinking.validated()
         let runtimeKind = cachedCandidate.map { inferredRuntimeKind(from: $0) } ?? model.runtimeKind
-        let thinkingLabel = cachedCandidate == nil ? "Thinking corrente" : "Thinking rilevato"
+        let thinkingLabel = cachedCandidate == nil ? "Current thinking" : "Detected thinking"
 
         FileHandle.standardError.writeString(
             """
 
-            Modello configurato: \(model.id)
+            Configured model: \(model.id)
             Repository: \(model.repositoryID)
-            Limite contesto modello: \(contextLimitSummary(modelContextLimit))
-            Parametri correnti: \(generationDefaultsSummary(effectiveDefaults))
+            Model context limit: \(contextLimitSummary(modelContextLimit))
+            Current parameters: \(generationDefaultsSummary(effectiveDefaults))
             \(thinkingLabel): \(thinkingSummary(detectedThinking))
 
             """
         )
 
         guard try promptYesNo(
-            "Vuoi modificare i parametri di questo modello?",
+            "Edit this model's parameters?",
             defaultValue: false
         ) else {
             return model
         }
 
         let id = try promptString(
-            "ID modello esposto dal server",
+            "Model ID exposed by the server",
             defaultValue: model.id,
             allowEmpty: false
         )
@@ -331,16 +331,16 @@ public enum MLXServerModelSetupRunner {
         FileHandle.standardError.writeString(
             """
 
-            Modello: \(repositoryID)
-            Limite contesto modello: \(contextLimitSummary(modelContextLimit))
-            Parametri proposti: \(generationDefaultsSummary(proposedDefaults))
-            Thinking rilevato: \(thinkingSummary(importedThinking))
+            Model: \(repositoryID)
+            Model context limit: \(contextLimitSummary(modelContextLimit))
+            Proposed parameters: \(generationDefaultsSummary(proposedDefaults))
+            Detected thinking: \(thinkingSummary(importedThinking))
 
             """
         )
 
         let shouldConfigureParameters = try promptYesNo(
-            "Vuoi modificare i parametri di questo modello?",
+            "Edit this model's parameters?",
             defaultValue: false
         )
 
@@ -348,7 +348,7 @@ public enum MLXServerModelSetupRunner {
         let generationDefaults: MLXServerModelGenerationDefaults
         if shouldConfigureParameters {
             id = try promptString(
-                "ID modello esposto dal server",
+                "Model ID exposed by the server",
                 defaultValue: repositoryID,
                 allowEmpty: false
             )
@@ -383,8 +383,8 @@ public enum MLXServerModelSetupRunner {
         modelContextLimit: Int?
     ) throws -> MLXServerModelGenerationDefaults {
         let contextPrompt = [
-            "Finestra di contesto",
-            "(limite modello: \(contextLimitSummary(modelContextLimit)); consigliato: \(recommendedContextWindow))"
+            "Context window",
+            "(model limit: \(contextLimitSummary(modelContextLimit)); recommended: \(recommendedContextWindow))"
         ].joined(separator: " ")
         let contextWindow = try promptInt(
             contextPrompt,
@@ -463,7 +463,7 @@ public enum MLXServerModelSetupRunner {
     }
 
     private static func contextLimitSummary(_ modelContextLimit: Int?) -> String {
-        modelContextLimit.map(String.init) ?? "non rilevato"
+        modelContextLimit.map(String.init) ?? "not detected"
     }
 
     private static func contextWindowAllowedRange(modelContextLimit: Int?) -> ClosedRange<Int> {
@@ -531,7 +531,7 @@ public enum MLXServerModelSetupRunner {
     private static func selectHuggingFaceModel(client: HubClient) async throws -> Model {
         while true {
             let query = try promptString(
-                "Ricerca Hugging Face MLX",
+                "Hugging Face MLX search",
                 defaultValue: nil,
                 allowEmpty: true
             ).trimmedNonEmpty
@@ -544,28 +544,28 @@ public enum MLXServerModelSetupRunner {
                 )
             } catch {
                 FileHandle.standardError.writeString(
-                    "Ricerca Hugging Face fallita: \(describeHuggingFaceError(error))\n"
+                    "Hugging Face search failed: \(describeHuggingFaceError(error))\n"
                 )
-                FileHandle.standardError.writeString("Riprova con una ricerca diversa.\n")
+                FileHandle.standardError.writeString("Try a different search.\n")
                 continue
             }
 
             guard !models.isEmpty else {
-                FileHandle.standardError.writeString("Nessun modello MLX trovato.\n")
+                FileHandle.standardError.writeString("No MLX model found.\n")
                 continue
             }
 
             FileHandle.standardError.writeString("\n")
             for (index, model) in models.enumerated() {
-                let downloads = model.downloads.map { "\($0) download" } ?? "download n/d"
-                let likes = model.likes.map { "\($0) like" } ?? "like n/d"
+                let downloads = model.downloads.map { "\($0) download" } ?? "download n/a"
+                let likes = model.likes.map { "\($0) like" } ?? "like n/a"
                 FileHandle.standardError.writeString(
                     "\(index + 1). \(model.id.rawValue) - \(downloads), \(likes)\n"
                 )
             }
 
             let selection = try promptInt(
-                "Seleziona modello",
+                "Select model",
                 defaultValue: 1,
                 allowedRange: 1...models.count
             )
@@ -746,7 +746,7 @@ public enum MLXServerModelSetupRunner {
             return
         }
         if askUser,
-           try promptYesNo("Impostare \(record.id) come modello default?", defaultValue: false) {
+           try promptYesNo("Set \(record.id) as the default model?", defaultValue: false) {
             manifest.defaultModelID = record.id
         }
     }
@@ -755,7 +755,7 @@ public enum MLXServerModelSetupRunner {
         guard !manifest.models.isEmpty else {
             return
         }
-        FileHandle.standardError.writeString("Modelli configurati:\n")
+        FileHandle.standardError.writeString("Configured models:\n")
         for model in manifest.models {
             let marker = model.id == manifest.defaultModelID ? "*" : " "
             FileHandle.standardError.writeString("\(marker) \(model.id) -> \(model.repositoryID)\n")
@@ -799,7 +799,7 @@ public enum MLXServerModelSetupRunner {
                 allowEmpty: false
             )
             guard let parsed = Int(value), allowedRange.contains(parsed) else {
-                FileHandle.standardError.writeString("Valore non valido.\n")
+                FileHandle.standardError.writeString("Invalid value.\n")
                 continue
             }
             return parsed
@@ -819,7 +819,7 @@ public enum MLXServerModelSetupRunner {
             )
             guard let parsed = Float(value.replacingOccurrences(of: ",", with: ".")),
                   allowedRange.contains(parsed) else {
-                FileHandle.standardError.writeString("Valore non valido.\n")
+                FileHandle.standardError.writeString("Invalid value.\n")
                 continue
             }
             return parsed
@@ -844,7 +844,7 @@ public enum MLXServerModelSetupRunner {
             if normalized.isEmpty {
                 return defaultValue
             }
-            if ["y", "yes", "s", "si", "sì"].contains(normalized) {
+            if ["y", "yes"].contains(normalized) {
                 return true
             }
             if ["n", "no"].contains(normalized) {
