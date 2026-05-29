@@ -248,7 +248,7 @@ extension TerminalChat {
     public func writeDiagnostic(_ message: String) {
         if message.hasPrefix("Generation done:") {
             if !didReceiveMetricsForCurrentPrompt {
-                AgentOutput.standardError.writeString("\n\n[mlx-coder] \(compactGenerationSummary(message))\n")
+                writeChatError("\n\n[mlx-coder] \(compactGenerationSummary(message))\n")
             }
             return
         }
@@ -257,7 +257,7 @@ extension TerminalChat {
             return
         }
 
-        AgentOutput.standardError.writeString("\u{1B}[90m[mlx-coder] \(message)\u{1B}[0m\n")
+        writeChatError("\u{1B}[90m[mlx-coder] \(message)\u{1B}[0m\n")
     }
 
     public func writeThought(_ delta: String) {
@@ -273,11 +273,11 @@ extension TerminalChat {
             let title = AgentOutput.standardErrorIsTerminal
                 ? "\u{1B}[90m🤔 Thinking:\u{1B}[0m"
                 : "🤔 Thinking:"
-            AgentOutput.standardError.writeString("\n\(title)\n")
+            writeChatError("\n\(title)\n")
             thoughtOutputEndsWithNewline = true
         }
         let renderedThought = thoughtMarkdownFormatter.consume(delta)
-        AgentOutput.standardError.writeString(
+        writeChatError(
             Self.renderThoughtMarkdown(renderedThought)
         )
         if !renderedThought.isEmpty {
@@ -298,7 +298,7 @@ extension TerminalChat {
             shouldTrimLeadingAssistantContentLineBreaks = false
         }
         let renderedContent = assistantMarkdownFormatter.consume(content)
-        AgentOutput.standardOutput.writeString(renderedContent)
+        writeChatOutput(renderedContent)
         if !renderedContent.isEmpty {
             assistantContentNeedsLineBreakBeforeTool = !renderedContent.hasSuffix("\n")
         }
@@ -306,7 +306,7 @@ extension TerminalChat {
 
     public func finishAssistantContentFormatting() {
         let renderedContent = assistantMarkdownFormatter.finish()
-        AgentOutput.standardOutput.writeString(renderedContent)
+        writeChatOutput(renderedContent)
         if !renderedContent.isEmpty {
             assistantContentNeedsLineBreakBeforeTool = !renderedContent.hasSuffix("\n")
         }
@@ -322,7 +322,7 @@ extension TerminalChat {
                 return "\(prefix)\(line)"
             }
             .joined(separator: "\n")
-        AgentOutput.standardError.writeString("\n\(renderedLines)\n")
+        writeChatError("\n\(renderedLines)\n")
         assistantContentNeedsLineBreakBeforeTool = false
     }
 
@@ -331,13 +331,13 @@ extension TerminalChat {
             return
         }
         let renderedThought = thoughtMarkdownFormatter.finish()
-        AgentOutput.standardError.writeString(
+        writeChatError(
             Self.renderThoughtMarkdown(renderedThought)
         )
         if !renderedThought.isEmpty {
             thoughtOutputEndsWithNewline = renderedThought.hasSuffix("\n")
         }
-        AgentOutput.standardError.writeString(
+        writeChatError(
             Self.thoughtBoundarySeparator(endsWithNewline: thoughtOutputEndsWithNewline)
         )
         shouldTrimLeadingAssistantContentLineBreaks = true
@@ -358,6 +358,55 @@ extension TerminalChat {
         }
         return String(text[firstContentIndex...])
     }
+
+    func writeChatOutput(_ text: String) {
+        AgentOutput.standardOutput.writeString(chatLineInsetApplied(to: text))
+    }
+
+    func writeChatError(_ text: String) {
+        AgentOutput.standardError.writeString(chatLineInsetApplied(to: text))
+    }
+
+    func chatLineInsetApplied(to text: String) -> String {
+        Self.chatLineInsetApplied(
+            to: text,
+            prefix: chatLineInsetPrefix,
+            isAtLineStart: &isAtStartOfChatLine
+        )
+    }
+
+    var chatLineInsetPrefix: String {
+        stdinIsTerminal ? Self.chatLineInsetPrefix : ""
+    }
+
+    static func chatLineInsetApplied(
+        to text: String,
+        prefix: String,
+        isAtLineStart: inout Bool
+    ) -> String {
+        guard !text.isEmpty else {
+            return text
+        }
+
+        var output = ""
+        for character in text {
+            if character == "\n" || character == "\r" {
+                output.append(character)
+                isAtLineStart = true
+                continue
+            }
+            if isAtLineStart {
+                if !prefix.isEmpty {
+                    output += prefix
+                }
+                isAtLineStart = false
+            }
+            output.append(character)
+        }
+        return output
+    }
+
+    static let chatLineInsetPrefix = " "
 
     private static func renderThoughtMarkdown(_ renderedMarkdown: String) -> String {
         guard AgentOutput.standardErrorIsTerminal,
@@ -502,20 +551,27 @@ extension TerminalChat {
 
     public func toggleToolDetailsOutput() {
         if activeCompactToolCallID != nil {
-            AgentOutput.standardError.writeString("\n")
+            writeChatError("\n")
             activeCompactToolCallID = nil
             activeCompactToolRenderedRowCount = 0
         }
         isDetailedToolOutputEnabled.toggle()
-        AgentOutput.standardError.writeString(
+        writeChatError(
             "\n[mlx-coder] Tool details: \(isDetailedToolOutputEnabled ? "full" : "compact")\n"
         )
     }
 
     private func writeCompactToolCallStarted(_ toolCall: DirectAgentToolCall) {
-        let lines = Self.compactToolLines(for: toolCall, statusIcon: "⏳")
+        let lines = Self.compactToolLines(
+            for: toolCall,
+            statusIcon: "⏳",
+            contentInsetWidth: chatLineInsetPrefix.count
+        )
         activeCompactToolCallID = toolCall.id
-        activeCompactToolRenderedRowCount = Self.renderedTerminalRowCount(for: lines)
+        activeCompactToolRenderedRowCount = Self.renderedTerminalRowCount(
+            for: lines,
+            contentInsetWidth: chatLineInsetPrefix.count
+        )
         writeCompactToolLines(lines, leadingNewline: consumeToolLeadingLineBreakRequirement())
     }
 
@@ -527,7 +583,11 @@ extension TerminalChat {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .hasPrefix("Tool error:")
         let icon = failed ? "⚠️" : "✅"
-        let lines = Self.compactToolLines(for: toolCall, statusIcon: icon)
+        let lines = Self.compactToolLines(
+            for: toolCall,
+            statusIcon: icon,
+            contentInsetWidth: chatLineInsetPrefix.count
+        )
         let shouldRewriteActiveLine = activeCompactToolCallID == toolCall.id
             && AgentOutput.standardErrorIsTerminal
         let rewriteRowCount = activeCompactToolRenderedRowCount
@@ -550,16 +610,19 @@ extension TerminalChat {
     ) {
         let reset = "\u{1B}[0m"
         let prefix = leadingNewline ? "\n" : ""
+        let lineInset = chatLineInsetPrefix
         let text = lines
-            .map { "\r\u{1B}[2K\(Self.toolANSIColor)\($0)\(reset)" }
+            .map { "\r\u{1B}[2K\(lineInset)\(Self.toolANSIColor)\($0)\(reset)" }
             .joined(separator: "\n")
         AgentOutput.standardError.writeString("\(prefix)\(text)\(terminator)")
         assistantContentNeedsLineBreakBeforeTool = false
+        isAtStartOfChatLine = terminator.hasSuffix("\n")
     }
 
     private static func compactToolLines(
         for toolCall: DirectAgentToolCall,
-        statusIcon: String
+        statusIcon: String,
+        contentInsetWidth: Int = 0
     ) -> [String] {
         let title = MLXCoderACPBridge.toolTitle(for: toolCall)
         guard let target = MLXCoderACPBridge.displayToolTarget(for: toolCall),
@@ -575,7 +638,11 @@ extension TerminalChat {
         }
         return [
             compactToolHeaderLine("⚙️  \(action):"),
-            compactToolStatusLine(target: target, statusIcon: statusIcon)
+            compactToolStatusLine(
+                target: target,
+                statusIcon: statusIcon,
+                contentInsetWidth: contentInsetWidth
+            )
         ]
     }
 
@@ -583,12 +650,24 @@ extension TerminalChat {
         text
     }
 
-    private static func compactToolStatusLine(target: String, statusIcon: String) -> String {
-        rightAlignedSuffix(text: target, suffix: statusIcon)
+    private static func compactToolStatusLine(
+        target: String,
+        statusIcon: String,
+        contentInsetWidth: Int = 0
+    ) -> String {
+        rightAlignedSuffix(
+            text: target,
+            suffix: statusIcon,
+            contentInsetWidth: contentInsetWidth
+        )
     }
 
-    private static func rightAlignedSuffix(text: String, suffix: String) -> String {
-        let columns = max(20, terminalColumnCount())
+    private static func rightAlignedSuffix(
+        text: String,
+        suffix: String,
+        contentInsetWidth: Int = 0
+    ) -> String {
+        let columns = max(20, terminalColumnCount() - contentInsetWidth)
         let suffixWidth = displayWidth(suffix)
         let textWidthLimit = max(1, columns - suffixWidth - 1)
         let fittedText = fitDisplayWidth(text, width: textWidthLimit)
@@ -596,8 +675,11 @@ extension TerminalChat {
         return fittedText + String(repeating: " ", count: max(1, spacing)) + suffix
     }
 
-    private static func renderedTerminalRowCount(for lines: [String]) -> Int {
-        let columns = max(1, terminalColumnCount())
+    private static func renderedTerminalRowCount(
+        for lines: [String],
+        contentInsetWidth: Int = 0
+    ) -> Int {
+        let columns = max(1, terminalColumnCount() - contentInsetWidth)
         return lines.reduce(0) { result, line in
             let width = max(1, displayWidth(line))
             return result + max(1, (width + columns - 1) / columns)
@@ -638,11 +720,13 @@ extension TerminalChat {
     private func writeToolBlock(_ lines: [String]) {
         let reset = "\u{1B}[0m"
         let prefix = consumeToolLeadingLineBreakRequirement() ? "\n" : ""
+        let lineInset = chatLineInsetPrefix
         let text = lines
-            .map { "\(Self.toolANSIColor)\($0)\(reset)" }
+            .map { "\(lineInset)\(Self.toolANSIColor)\($0)\(reset)" }
             .joined(separator: "\n")
         AgentOutput.standardError.writeString("\(prefix)\(text)\n")
         assistantContentNeedsLineBreakBeforeTool = false
+        isAtStartOfChatLine = true
     }
 
     private func consumeToolLeadingLineBreakRequirement() -> Bool {
@@ -681,7 +765,7 @@ extension TerminalChat {
               metrics.completionTokensPerSecond != nil else {
             return
         }
-        AgentOutput.standardError.writeString(
+        writeChatError(
             "\n[mlx-coder] \(Self.metricsSummary(metrics))\n"
         )
     }

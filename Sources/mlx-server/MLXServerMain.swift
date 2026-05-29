@@ -154,7 +154,7 @@ struct MLXServerMain {
         let runtime = MLXServerRuntime(
             retentionPolicy: settings.modelRetentionPolicy,
             diskKVCacheConfiguration: settings.diskKVCache.configuration,
-            modelLoadLogger: logModelLoadEvent,
+            modelLoadLogger: { logModelLoadEvent($0, linePrefix: " ") },
             modelUnloadLogger: logModelUnloadEvent
         )
         let permissionAuthorizer = LocalExecPermissionAuthorizer()
@@ -285,6 +285,13 @@ struct MLXServerMain {
     }
 
     private static func logModelLoadEvent(_ event: MLXServerModelLoadEvent) {
+        logModelLoadEvent(event, linePrefix: "")
+    }
+
+    private static func logModelLoadEvent(
+        _ event: MLXServerModelLoadEvent,
+        linePrefix: String
+    ) {
         let defaults = event.generationDefaults
         let parameters = event.parameters
         let kvCache = parameters.kvBits.map {
@@ -313,7 +320,9 @@ struct MLXServerMain {
           kv_cache: \(kvCache), prefill_step_size=\(parameters.prefillStepSize)
 
         """
-        FileHandle.standardError.writeString(coloredOperationalLog(message))
+        FileHandle.standardError.writeString(
+            coloredOperationalLog(linePrefixedLog(message, prefix: linePrefix))
+        )
     }
 
     private static func logModelUnloadEvent(_ event: MLXServerModelUnloadEvent) {
@@ -337,6 +346,18 @@ struct MLXServerMain {
             return message
         }
         return "\u{1B}[38;5;75m\(message)\u{1B}[0m"
+    }
+
+    private static func linePrefixedLog(_ message: String, prefix: String) -> String {
+        guard !prefix.isEmpty else {
+            return message
+        }
+        return message
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in
+                line.isEmpty ? "" : prefix + line
+            }
+            .joined(separator: "\n")
     }
 
     private static var isStandardErrorTerminal: Bool {

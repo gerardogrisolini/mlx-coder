@@ -253,24 +253,17 @@ extension TerminalChat {
     }
 
     public func preloadCurrentModel(emitStatus: Bool = true) async throws -> String {
-        if emitStatus && !configuration.verboseLogging {
-            AgentOutput.standardError.writeString("Loading model...\n")
-        }
         let loadedModelID = try await sessionRunner.preloadModel(
             configuration: await currentSessionConfiguration()
         ) { event in
             switch event {
             case let .status(message):
                 if emitStatus && self.configuration.verboseLogging {
-                    AgentOutput.standardError.writeString("[mlx-coder] \(message)\n")
+                    self.writeChatError("[mlx-coder] \(message)\n")
                 }
             case let .modelLoaded(modelID):
                 _ = self.statusBar.update(modelID: modelID)
-                if emitStatus {
-                    self.printModelIfNeeded(modelID)
-                } else {
-                    self.printedModelID = self.loadedModelDisplayTitle(modelID)
-                }
+                self.printedModelID = self.loadedModelDisplayTitle(modelID)
             case .diagnostic, .thought, .metrics, .contextWindow, .content, .toolCallStarted, .toolCallCompleted:
                 break
             }
@@ -287,7 +280,7 @@ extension TerminalChat {
             return
         }
         printedModelID = displayTitle
-        AgentOutput.standardError.writeString("Loaded model: \(displayTitle)\n")
+        _ = statusBar.update(modelID: modelID)
     }
 
     public func loadedModelDisplayTitle(_ modelID: String) -> String {

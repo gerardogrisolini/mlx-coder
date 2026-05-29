@@ -45,6 +45,7 @@ public final class TerminalChat: @unchecked Sendable {
     var thoughtOutputEndsWithNewline = false
     var shouldTrimLeadingAssistantContentLineBreaks = false
     var assistantContentNeedsLineBreakBeforeTool = false
+    var isAtStartOfChatLine = true
     public var assistantMarkdownFormatter = TerminalMarkdownStreamFormatter(
         isEnabled: AgentOutput.standardOutputIsTerminal
     )
@@ -374,7 +375,7 @@ public final class TerminalChat: @unchecked Sendable {
         case "/exit", "/quit":
             return .exitChat
         case "/help":
-            AgentOutput.standardError.writeString(
+            writeChatError(
                 """
                 Type a prompt and press return.
                 /models shows configured models and lets you switch the default agent model.
@@ -398,14 +399,14 @@ public final class TerminalChat: @unchecked Sendable {
             do {
                 try await selectModelInteractively()
             } catch {
-                AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
+                writeChatError("mlx-coder: \(error.localizedDescription)\n")
             }
             return .continueChat
         case let command where command == "/agents" || command.hasPrefix("/agents "):
             do {
                 try await handleAgentsCommand(command)
             } catch {
-                AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
+                writeChatError("mlx-coder: \(error.localizedDescription)\n")
             }
             return .continueChat
         case let command where command == "/tools" || command.hasPrefix("/tools "):
@@ -418,7 +419,7 @@ public final class TerminalChat: @unchecked Sendable {
             do {
                 try handleAttachCommand(command)
             } catch {
-                AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
+                writeChatError("mlx-coder: \(error.localizedDescription)\n")
             }
             return .continueChat
         case "/attachments":
@@ -428,7 +429,7 @@ public final class TerminalChat: @unchecked Sendable {
             do {
                 try handleDetachCommand(command)
             } catch {
-                AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
+                writeChatError("mlx-coder: \(error.localizedDescription)\n")
             }
             return .continueChat
         case let command where command == "/changes" || command.hasPrefix("/changes "):
@@ -450,9 +451,9 @@ public final class TerminalChat: @unchecked Sendable {
                 isSubAgentOverviewVisible = false
                 lastRenderedSubAgentOverviewSignature = nil
                 stopSubAgentOverviewRefreshLoop()
-                AgentOutput.standardError.writeString("Session cleared.\n")
+                writeChatError("Session cleared.\n")
             } catch {
-                AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
+                writeChatError("mlx-coder: \(error.localizedDescription)\n")
             }
             return .continueChat
         default:
@@ -518,7 +519,7 @@ public final class TerminalChat: @unchecked Sendable {
                     switch event {
                     case let .status(message):
                         if self.configuration.verboseLogging {
-                            AgentOutput.standardError.writeString("[mlx-coder] \(message)\n")
+                            self.writeChatError("[mlx-coder] \(message)\n")
                         }
                     case let .diagnostic(message):
                         if self.configuration.verboseLogging {
@@ -567,16 +568,16 @@ public final class TerminalChat: @unchecked Sendable {
             finishAssistantContentFormatting()
             printModelIfNeeded(response.modelID)
             if response.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                AgentOutput.standardOutput.writeString("Done.")
+                writeChatOutput("Done.")
             }
-            AgentOutput.standardOutput.writeString("\n")
+            writeChatOutput("\n")
         case let .failure(failure):
             finishThoughtOutputIfNeeded()
             finishAssistantContentFormatting()
             if failure.isCancellation {
-                AgentOutput.standardError.writeString("\nStopped.\n")
+                writeChatError("\nStopped.\n")
             } else {
-                AgentOutput.standardError.writeString("mlx-coder: \(failure.message)\n")
+                writeChatError("mlx-coder: \(failure.message)\n")
             }
         }
     }
