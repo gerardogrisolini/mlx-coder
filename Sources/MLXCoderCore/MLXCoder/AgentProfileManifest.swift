@@ -118,16 +118,20 @@ public struct AgentProfile: Codable, Hashable, Sendable {
                 )
             case "git":
                 allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("git.") })
-            case "memory", "mem", "remember":
-                allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("memory.") })
+            case "memory", "mem", "remember", "todo", "todos":
+                allowedToolNames.formUnion(
+                    baseToolNames {
+                        $0.hasPrefix("memory.")
+                            || $0.hasPrefix("todo.")
+                    }
+                )
             case "web", "browser":
                 allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("web.") })
-            case "orchestration", "agents", "agent", "subagents", "sub-agents", "tasks", "task", "todo":
+            case "orchestration", "agents", "agent", "subagents", "sub-agents", "tasks", "task":
                 allowedToolNames.formUnion(
                     baseToolNames {
                         $0.hasPrefix("agent.")
                             || $0.hasPrefix("task.")
-                            || $0.hasPrefix("todo.")
                     }
                 )
             case "xcode":
@@ -242,13 +246,11 @@ public enum AgentProfileStore {
     public static let refactorAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000006")!
     public static let manifestFilename = "agents.json"
     public static let defaultToolNames: [String] = [
-        "xcode",
         "bash",
         "git",
         "memory",
         "web",
-        "orchestration",
-        "figma"
+        "orchestration"
     ]
     public static let implementationToolNames: [String] = [
         "xcode",

@@ -66,11 +66,11 @@ public enum TerminalToolGroup: String, CaseIterable, Hashable, Sendable {
         case .git:
             return "git status, history, branches, staging, and commits"
         case .memory:
-            return "global and project MEMORY.md notes"
+            return "memory notes and session todo list"
         case .web:
             return "web tools when provided by the runtime"
         case .orchestration:
-            return "todo, tasks, and sub-agents"
+            return "delegated sub-agents and orchestration tasks"
         case .xcode:
             return "Xcode MCP tools"
         case .figma:
@@ -87,11 +87,11 @@ public enum TerminalToolGroup: String, CaseIterable, Hashable, Sendable {
             return .bash
         case "git":
             return .git
-        case "memory", "mem", "remember":
+        case "memory", "mem", "remember", "todo", "todos":
             return .memory
         case "web", "browser":
             return .web
-        case "orchestration", "agents", "agent", "subagents", "sub-agents", "tasks", "task", "todo":
+        case "orchestration", "agents", "agent", "subagents", "sub-agents", "tasks", "task":
             return .orchestration
         case "xcode":
             return .xcode
@@ -112,12 +112,12 @@ public enum TerminalToolGroup: String, CaseIterable, Hashable, Sendable {
             return toolName.hasPrefix("git.")
         case .memory:
             return toolName.hasPrefix("memory.")
+                || toolName.hasPrefix("todo.")
         case .web:
             return toolName.hasPrefix("web.")
         case .orchestration:
             return toolName.hasPrefix("agent.")
                 || toolName.hasPrefix("task.")
-                || toolName.hasPrefix("todo.")
         case .xcode:
             return DirectMCPToolRuntime.isXcodeToolName(toolName)
         case .figma:
