@@ -28,10 +28,15 @@ enum MLXServerAgentProfileSetupRunner {
             throw MLXServerAgentProfileSetupError.nonInteractiveTerminal
         }
 
+        let globalAgentsResult = try ensureGlobalAgentsFile()
         let manifestURL = AgentProfileStore.agentsManifestURL()
         FileHandle.standardError.writeString(
             """
             mlx-server agents setup
+            Global AGENTS.md:
+            \(globalAgentsResult.url.path)
+            \(globalAgentsResult.created ? "Created" : "Preserved"): AGENTS.md
+
             Configuring agents.json at:
             \(manifestURL.path)
 
@@ -50,6 +55,16 @@ enum MLXServerAgentProfileSetupRunner {
         FileHandle.standardError.writeString(
             "\nUpdated: agents.json (\(normalizedAgents.count) agents)\n\n"
         )
+    }
+
+    private static func ensureGlobalAgentsFile() throws -> (url: URL, created: Bool) {
+        let service = MLXAgentsContextService()
+        let url = service.globalAgentsFileURL()
+        let existedBefore = FileManager.default.fileExists(atPath: url.path)
+        guard let ensuredURL = service.ensureGlobalAgentsFileExists() else {
+            throw MLXServerAgentProfileSetupError.unableToCreateGlobalAgents(url)
+        }
+        return (ensuredURL, !existedBefore)
     }
 
     private static func loadExistingAgentsIfPresent(at url: URL) throws -> [AgentProfile]? {
@@ -312,6 +327,7 @@ enum MLXServerAgentProfileSetupRunner {
 enum MLXServerAgentProfileSetupError: LocalizedError {
     case nonInteractiveTerminal
     case inputClosed
+    case unableToCreateGlobalAgents(URL)
 
     var errorDescription: String? {
         switch self {
@@ -319,6 +335,8 @@ enum MLXServerAgentProfileSetupError: LocalizedError {
             return "mlx-server --setup-agents requires an interactive terminal."
         case .inputClosed:
             return "Input closed during mlx-server agents setup."
+        case let .unableToCreateGlobalAgents(url):
+            return "Unable to create global AGENTS.md at \(url.path)."
         }
     }
 }

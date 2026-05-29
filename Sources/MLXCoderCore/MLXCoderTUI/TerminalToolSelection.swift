@@ -64,7 +64,7 @@ public enum TerminalToolGroup: String, CaseIterable, Hashable, Sendable {
         case .bash:
             return "local files, shell, and search"
         case .git:
-            return "git status, diff, show, and log"
+            return "git status, history, branches, staging, and commits"
         case .memory:
             return "global and project MEMORY.md notes"
         case .web:
@@ -105,7 +105,9 @@ public enum TerminalToolGroup: String, CaseIterable, Hashable, Sendable {
     public func allows(toolName: String) -> Bool {
         switch self {
         case .bash:
-            return toolName.hasPrefix("local.") || toolName.hasPrefix("search.")
+            return toolName.hasPrefix("local.")
+                || toolName.hasPrefix("search.")
+                || toolName.hasPrefix("text.")
         case .git:
             return toolName.hasPrefix("git.")
         case .memory:

@@ -38,6 +38,9 @@ public final class TerminalChat: @unchecked Sendable {
     public var lastRenderedSubAgentOverviewSignature: String?
     public var subAgentOverviewRefreshTask: Task<Void, Never>?
     public var availableSkillsCache: [MLXPromptSkill]?
+    public var isDetailedToolOutputEnabled = false
+    public var activeCompactToolCallID: String?
+    public var activeCompactToolRenderedRowCount = 0
     public var isStreamingThoughtOutput = false
     public var assistantMarkdownFormatter = TerminalMarkdownStreamFormatter(
         isEnabled: AgentOutput.standardOutputIsTerminal
@@ -77,7 +80,7 @@ public final class TerminalChat: @unchecked Sendable {
         Self.effectiveModelID(
             selectedAgent: selectedAgent,
             manualModelIDOverride: manualModelIDOverride
-        )
+        ) ?? configuration.effectiveModelID
     }
 
     public static func effectiveModelID(
@@ -270,6 +273,9 @@ public final class TerminalChat: @unchecked Sendable {
                     }
                 case .cancelRequested:
                     generationTask?.cancel()
+                case .toggleToolDetailsRequested:
+                    self.toggleToolDetailsOutput()
+                    interactiveReader.refreshPanel()
                 case .endOfInput:
                     generationTask?.cancel()
                     break eventLoop
@@ -378,6 +384,7 @@ public final class TerminalChat: @unchecked Sendable {
                 /changes shows the most recent file change summary. Use /changes diff to include patches.
                 /undo reverts the most recent tracked file changes.
                 /subagents shows delegated sub-agent status. Use /subagents off to hide automatic updates.
+                Ctrl+T toggles compact/full tool output.
                 /clear resets the conversation.
                 /exit closes the session.
 

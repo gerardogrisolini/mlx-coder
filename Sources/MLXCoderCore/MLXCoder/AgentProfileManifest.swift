@@ -109,13 +109,19 @@ public struct AgentProfile: Codable, Hashable, Sendable {
         for tool in tools {
             switch tool.selectionKey {
             case "bash", "shell", "local", "files", "file", "search":
-                allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("local.") || $0.hasPrefix("search.") })
+                allowedToolNames.formUnion(
+                    baseToolNames {
+                        $0.hasPrefix("local.")
+                            || $0.hasPrefix("search.")
+                            || $0.hasPrefix("text.")
+                    }
+                )
             case "git":
                 allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("git.") })
             case "memory", "mem", "remember":
                 allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("memory.") })
             case "web", "browser":
-                allowedToolNames.insert("web.")
+                allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("web.") })
             case "orchestration", "agents", "agent", "subagents", "sub-agents", "tasks", "task", "todo":
                 allowedToolNames.formUnion(
                     baseToolNames {

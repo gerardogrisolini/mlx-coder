@@ -55,9 +55,6 @@ public enum AgentToolSelection {
         for selectedGroups: Set<TerminalToolGroup>
     ) -> Set<String> {
         var prefixes = Set<String>()
-        if selectedGroups.contains(.web) {
-            prefixes.insert("web.")
-        }
         if selectedGroups.contains(.xcode) {
             prefixes.insert("xcode.")
         }

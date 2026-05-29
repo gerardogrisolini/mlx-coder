@@ -158,6 +158,65 @@ extension DirectToolExecutor {
         return matches.isEmpty ? "<empty>" : matches.joined(separator: "\n")
     }
 
+    public func head(arguments: [String: Any], cwd: URL) throws -> String {
+        let path = try requiredPath(arguments, cwd: cwd)
+        let lineCount = max(arguments.int("lines") ?? 20, 1)
+        let lines = try String(contentsOf: path, encoding: .utf8)
+            .components(separatedBy: .newlines)
+            .prefix(lineCount)
+        guard !lines.isEmpty else {
+            return "File: \(path.path)\n<empty>"
+        }
+        return (["File: \(path.path)"] + lines.enumerated().map { index, line in
+            "\(index + 1)\t\(line)"
+        }).joined(separator: "\n")
+    }
+
+    public func tail(arguments: [String: Any], cwd: URL) throws -> String {
+        let path = try requiredPath(arguments, cwd: cwd)
+        let lineCount = max(arguments.int("lines") ?? 20, 1)
+        let lines = try String(contentsOf: path, encoding: .utf8)
+            .components(separatedBy: .newlines)
+        guard !lines.isEmpty else {
+            return "File: \(path.path)\n<empty>"
+        }
+
+        let startIndex = max(lines.count - lineCount, 0)
+        let slice = lines[startIndex...]
+        return (["File: \(path.path)"] + slice.enumerated().map { index, line in
+            "\(startIndex + index + 1)\t\(line)"
+        }).joined(separator: "\n")
+    }
+
+    public func sortText(arguments: [String: Any], cwd: URL) throws -> String {
+        let path = try requiredPath(arguments, cwd: cwd)
+        let unique = arguments.bool("unique") ?? false
+        let lines = try String(contentsOf: path, encoding: .utf8)
+            .components(separatedBy: .newlines)
+        let sortedLines = lines.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        let outputLines = unique
+            ? Array(Set(sortedLines)).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            : sortedLines
+        guard !outputLines.isEmpty else {
+            return "File: \(path.path)\n<empty>"
+        }
+        return (["File: \(path.path)"] + outputLines).joined(separator: "\n")
+    }
+
+    public func wordCount(arguments: [String: Any], cwd: URL) throws -> String {
+        let path = try requiredPath(arguments, cwd: cwd)
+        let contents = try String(contentsOf: path, encoding: .utf8)
+        let lines = contents.isEmpty ? 0 : contents.components(separatedBy: .newlines).count
+        let words = contents.split { $0.isWhitespace || $0.isNewline }.count
+        let characters = contents.count
+        return """
+        File: \(path.path)
+        lines: \(lines)
+        words: \(words)
+        characters: \(characters)
+        """
+    }
+
     public func replace(arguments: [String: Any], cwd: URL) throws -> String {
         let path = try requiredPath(arguments, cwd: cwd)
         guard let oldString = arguments.string("oldString", "old_string") else {
@@ -178,9 +237,149 @@ extension DirectToolExecutor {
         return "Updated \(path.path). Replacements: \(replaceAll ? occurrences : 1)."
     }
 
+    public func replaceAll(arguments: [String: Any], cwd: URL) throws -> String {
+        let path = try requiredPath(arguments, cwd: cwd)
+        guard let oldString = arguments.string("oldString", "old_string") else {
+            throw DirectToolError.missingArgument("oldString")
+        }
+        let newString = arguments.string("newString", "new_string") ?? ""
+        let original = try String(contentsOf: path, encoding: .utf8)
+        let occurrences = original.components(separatedBy: oldString).count - 1
+        guard occurrences > 0 else {
+            throw DirectToolError.permissionDenied("oldString was not found in \(path.path).")
+        }
+        let updated = original.replacingOccurrences(of: oldString, with: newString)
+        try updated.write(to: path, atomically: true, encoding: .utf8)
+        return "Replaced \(occurrences) occurrence(s) in \(path.path)."
+    }
+
+    public func multiEdit(arguments: [String: Any], cwd: URL) throws -> String {
+        let path = try requiredPath(arguments, cwd: cwd)
+        guard let rawEdits = arguments["edits"] as? [[String: Any]],
+              !rawEdits.isEmpty else {
+            throw DirectToolError.missingArgument("edits")
+        }
+
+        var contents = try String(contentsOf: path, encoding: .utf8)
+        var totalReplacements = 0
+
+        for (index, edit) in rawEdits.enumerated() {
+            guard let oldString = edit.string("oldString", "old_string")?.nilIfBlank else {
+                throw DirectToolError.missingArgument("edits[\(index)].oldString")
+            }
+            let newString = edit.string("newString", "new_string") ?? ""
+            let replaceAll = edit.bool("replaceAll", "replace_all") ?? false
+            let occurrences = contents.components(separatedBy: oldString).count - 1
+            guard occurrences > 0 else {
+                throw DirectToolError.permissionDenied("oldString was not found in \(path.path): \(oldString)")
+            }
+            if !replaceAll && occurrences != 1 {
+                throw DirectToolError.permissionDenied("oldString matched \(occurrences) times. Set replaceAll=true or provide a unique string.")
+            }
+
+            contents = replaceAll
+                ? contents.replacingOccurrences(of: oldString, with: newString)
+                : contents.replacingFirstOccurrence(of: oldString, with: newString)
+            totalReplacements += replaceAll ? occurrences : 1
+        }
+
+        try contents.write(to: path, atomically: true, encoding: .utf8)
+        return "Edited \(totalReplacements) occurrence(s) across \(rawEdits.count) edit(s) in \(path.path)."
+    }
+
 #if canImport(Darwin) || canImport(Glibc)
+    public func runAuthorizedGit(
+        sessionID: String?,
+        toolCall: DirectAgentToolCall,
+        gitArguments: [String],
+        arguments: [String: Any],
+        cwd: URL
+    ) async -> String {
+        let gitCwd = gitWorkingDirectory(arguments: arguments, cwd: cwd)
+        let command = Self.renderShellCommand(["git"] + gitArguments)
+        if let deniedOutput = await deniedGitMutationOutputIfNeeded(
+            sessionID: sessionID,
+            toolCall: toolCall,
+            command: command,
+            cwd: gitCwd
+        ) {
+            return deniedOutput
+        }
+        return await runGit(gitArguments, arguments: arguments, cwd: cwd)
+    }
+
+    public func deniedGitMutationOutputIfNeeded(
+        sessionID: String?,
+        toolCall: DirectAgentToolCall,
+        command: String,
+        cwd: URL
+    ) async -> String? {
+        guard let authorizationHandler else {
+            return nil
+        }
+
+        let approved = await authorizationHandler(
+            AgentToolAuthorizationRequest(
+                sessionID: sessionID,
+                toolCallID: toolCall.id,
+                toolName: toolCall.name,
+                title: "Run \(command)",
+                kind: "git.mutation",
+                command: command,
+                workingDirectory: cwd.path
+            )
+        )
+        guard !approved else {
+            return nil
+        }
+
+        return """
+        Git command cancelled.
+        The user did not approve this `\(toolCall.name)` request, so no git command was run.
+
+        Working directory:
+        \(cwd.path)
+
+        Command:
+        \(command)
+        """
+    }
+
+    public func gitStashArguments(
+        action: String,
+        arguments: [String: Any]
+    ) throws -> [String] {
+        switch action {
+        case "list":
+            return ["stash", "list"]
+        case "show":
+            return ["stash", "show", "--stat", "--patch", arguments.string("stash")?.nilIfBlank ?? "stash@{0}"]
+        case "push", "save":
+            var gitArgs = ["stash", "push"]
+            if let message = arguments.string("message")?.nilIfBlank {
+                gitArgs.append(contentsOf: ["-m", message])
+            }
+            if arguments.bool("includeUntracked") == true {
+                gitArgs.append("--include-untracked")
+            }
+            if let paths = arguments.stringArray("paths", "path"), !paths.isEmpty {
+                gitArgs.append("--")
+                gitArgs.append(contentsOf: paths)
+            }
+            return gitArgs
+        case "apply", "pop", "drop":
+            var gitArgs = ["stash", action]
+            if let stash = arguments.string("stash")?.nilIfBlank {
+                gitArgs.append(stash)
+            }
+            return gitArgs
+        default:
+            throw DirectToolError.permissionDenied("Unsupported git stash action: \(action).")
+        }
+    }
+
     public func runGit(_ gitArguments: [String], arguments: [String: Any], cwd: URL) async -> String {
-        let gitCwd = resolvePath(arguments.string("workingDirectory", "cwd", "repo_path", "repository_path", "path") ?? ".", cwd: cwd)
+        let gitCwd = gitWorkingDirectory(arguments: arguments, cwd: cwd)
         let result = await runProcess(
             executable: GitExecutableResolver.executableURL().path,
             arguments: gitArguments,
@@ -189,6 +388,23 @@ extension DirectToolExecutor {
             timeout: 60
         )
         return renderProcessResult(result)
+    }
+
+    public func gitWorkingDirectory(arguments: [String: Any], cwd: URL) -> URL {
+        resolvePath(
+            arguments.string("workingDirectory", "cwd", "repoPath", "repo_path", "repositoryPath", "repository_path") ?? ".",
+            cwd: cwd
+        )
+    }
+
+    public static func renderShellCommand(_ words: [String]) -> String {
+        words.map { word in
+            guard !word.isEmpty,
+                  word.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.union(.init(charactersIn: "\"'\\$`!"))) == nil else {
+                return "'\(word.replacingOccurrences(of: "'", with: "'\\''"))'"
+            }
+            return word
+        }.joined(separator: " ")
     }
 
     public func runProcess(
@@ -272,5 +488,16 @@ extension DirectToolExecutor {
         return descriptors.filter { descriptor in
             seen.insert(descriptor.name).inserted
         }
+    }
+}
+
+private extension String {
+    func replacingFirstOccurrence(of target: String, with replacement: String) -> String {
+        guard let range = range(of: target) else {
+            return self
+        }
+        var copy = self
+        copy.replaceSubrange(range, with: replacement)
+        return copy
     }
 }

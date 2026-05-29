@@ -87,7 +87,13 @@ extension TerminalChat {
                 continue
             }
             groupedToolNames.formUnion(groupToolNames)
-            renderedGroups.append("\(group.displayTitle) (\(groupToolNames.count))")
+            let concreteToolNames = groupToolNames.filter { toolName in
+                !toolName.hasSuffix(".")
+            }
+            let toolCount = concreteToolNames.isEmpty
+                ? groupToolNames.count
+                : concreteToolNames.count
+            renderedGroups.append("\(group.displayTitle) (\(toolCount))")
         }
 
         let otherToolCount = uniqueToolNames.subtracting(groupedToolNames).count
@@ -258,8 +264,8 @@ extension TerminalChat {
         if !isStreamingThoughtOutput {
             isStreamingThoughtOutput = true
             let title = AgentOutput.standardErrorIsTerminal
-                ? "\u{1B}[90mthinking:\u{1B}[0m"
-                : "thinking:"
+                ? "\u{1B}[90m🤔 thinking:\u{1B}[0m"
+                : "🤔 thinking:"
             AgentOutput.standardError.writeString("\n\(title)\n")
         }
         AgentOutput.standardError.writeString(
@@ -391,10 +397,15 @@ extension TerminalChat {
     }
 
     public func writeToolCallStarted(_ toolCall: DirectAgentToolCall) {
+        guard isDetailedToolOutputEnabled else {
+            writeCompactToolCallStarted(toolCall)
+            return
+        }
+
         let title = MLXCoderACPBridge.toolTitle(for: toolCall)
         let kind = MLXCoderACPBridge.toolKind(for: toolCall.name)
         var lines = [
-            "[tool] \(title)",
+            "⚙️ \(title)",
             "status: in_progress",
             "kind: \(kind)",
             "id: \(toolCall.id)"
@@ -410,13 +421,19 @@ extension TerminalChat {
         _ toolCall: DirectAgentToolCall,
         result: DirectAgentToolResult
     ) {
+        guard isDetailedToolOutputEnabled,
+              activeCompactToolCallID != toolCall.id else {
+            writeCompactToolCallCompleted(toolCall, result: result)
+            return
+        }
+
         let title = MLXCoderACPBridge.toolTitle(for: toolCall)
         let kind = MLXCoderACPBridge.toolKind(for: toolCall.name)
         let failed = result.output
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .hasPrefix("Tool error:")
         var lines = [
-            "[tool] \(title)",
+            "⚙️ \(title)",
             "status: \(failed ? "failed" : "completed")",
             "kind: \(kind)",
             "id: \(toolCall.id)"
@@ -432,6 +449,138 @@ extension TerminalChat {
         lines.append(contentsOf: Self.indentedBlock(result.output))
 
         writeToolBlock(lines)
+    }
+
+    public func toggleToolDetailsOutput() {
+        if activeCompactToolCallID != nil {
+            AgentOutput.standardError.writeString("\n")
+            activeCompactToolCallID = nil
+            activeCompactToolRenderedRowCount = 0
+        }
+        isDetailedToolOutputEnabled.toggle()
+        AgentOutput.standardError.writeString(
+            "\n[mlx-coder] Tool details: \(isDetailedToolOutputEnabled ? "full" : "compact")\n"
+        )
+    }
+
+    private func writeCompactToolCallStarted(_ toolCall: DirectAgentToolCall) {
+        let lines = Self.compactToolLines(for: toolCall, statusIcon: "⏳")
+        activeCompactToolCallID = toolCall.id
+        activeCompactToolRenderedRowCount = Self.renderedTerminalRowCount(for: lines)
+        writeCompactToolLines(lines)
+    }
+
+    private func writeCompactToolCallCompleted(
+        _ toolCall: DirectAgentToolCall,
+        result: DirectAgentToolResult
+    ) {
+        let failed = result.output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .hasPrefix("Tool error:")
+        let icon = failed ? "⚠️" : "✅"
+        let lines = Self.compactToolLines(for: toolCall, statusIcon: icon)
+        let shouldRewriteActiveLine = activeCompactToolCallID == toolCall.id
+            && AgentOutput.standardErrorIsTerminal
+        let rewriteRowCount = activeCompactToolRenderedRowCount
+        activeCompactToolCallID = nil
+        activeCompactToolRenderedRowCount = 0
+
+        if shouldRewriteActiveLine {
+            AgentOutput.standardError.writeString("\u{1B}[\(max(1, rewriteRowCount))A\r\u{1B}[J")
+        }
+        writeCompactToolLines(lines, leadingNewline: !shouldRewriteActiveLine)
+    }
+
+    private func writeCompactToolLines(
+        _ lines: [String],
+        leadingNewline: Bool = true,
+        terminator: String = "\n"
+    ) {
+        let toolColor = "\u{1B}[38;5;81m"
+        let reset = "\u{1B}[0m"
+        let prefix = leadingNewline ? "\n" : ""
+        let text = lines
+            .map { "\(toolColor)\($0)\(reset)" }
+            .joined(separator: "\n")
+        AgentOutput.standardError.writeString("\(prefix)\(text)\(terminator)")
+    }
+
+    private static func compactToolLines(
+        for toolCall: DirectAgentToolCall,
+        statusIcon: String
+    ) -> [String] {
+        let title = MLXCoderACPBridge.toolTitle(for: toolCall)
+        guard let target = MLXCoderACPBridge.displayToolTarget(for: toolCall),
+              title.hasSuffix(target) else {
+            return [compactToolHeaderLine("⚙️ \(title) \(statusIcon)")]
+        }
+
+        let action = title
+            .dropLast(target.count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !action.isEmpty else {
+            return [compactToolHeaderLine("⚙️ \(title) \(statusIcon)")]
+        }
+        return [
+            compactToolHeaderLine("⚙️ \(action):"),
+            compactToolStatusLine(target: target, statusIcon: statusIcon)
+        ]
+    }
+
+    private static func compactToolHeaderLine(_ text: String) -> String {
+        rightAlignedSuffix(text: text, suffix: "(Ctrl+T to show details)")
+    }
+
+    private static func compactToolStatusLine(target: String, statusIcon: String) -> String {
+        rightAlignedSuffix(text: target, suffix: statusIcon)
+    }
+
+    private static func rightAlignedSuffix(text: String, suffix: String) -> String {
+        let columns = max(20, terminalColumnCount())
+        let suffixWidth = displayWidth(suffix)
+        let textWidthLimit = max(1, columns - suffixWidth - 1)
+        let fittedText = fitDisplayWidth(text, width: textWidthLimit)
+        let spacing = columns - displayWidth(fittedText) - suffixWidth
+        return fittedText + String(repeating: " ", count: max(1, spacing)) + suffix
+    }
+
+    private static func renderedTerminalRowCount(for lines: [String]) -> Int {
+        let columns = max(1, terminalColumnCount())
+        return lines.reduce(0) { result, line in
+            let width = max(1, displayWidth(line))
+            return result + max(1, (width + columns - 1) / columns)
+        }
+    }
+
+    private static func fitDisplayWidth(_ text: String, width: Int) -> String {
+        guard displayWidth(text) > width else {
+            return text
+        }
+        guard width > 3 else {
+            return String(text.prefix(max(0, width)))
+        }
+
+        var output = ""
+        var currentWidth = 0
+        let ellipsisWidth = 3
+        for character in text {
+            let characterWidth = displayWidth(String(character))
+            guard currentWidth + characterWidth <= width - ellipsisWidth else {
+                break
+            }
+            output.append(character)
+            currentWidth += characterWidth
+        }
+        return output + "..."
+    }
+
+    private static func displayWidth(_ text: String) -> Int {
+        text.unicodeScalars.reduce(0) { result, scalar in
+            guard scalar.value >= 0x20 else {
+                return result
+            }
+            return result + (scalar.value >= 0x1100 ? 2 : 1)
+        }
     }
 
     private func writeToolBlock(_ lines: [String]) {

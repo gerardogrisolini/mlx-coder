@@ -139,9 +139,11 @@ struct MLXServerMain {
 
     private static func runCoder(arguments: [String]) async throws {
         let options = try MLXServerCoderOptions(arguments: arguments)
+        try ensureCoderProjectAgentsFileExists(workingDirectory: options.workingDirectory)
         try MLXMetalLibraryBootstrap.prepareIfNeeded()
         let settings = try MLXServerSettingsStore.loadRequired()
         let modelCatalog = try MLXServerModelsManifestStore.loadRequired().catalog
+        let availableAgents = try AgentProfileStore.loadRequired()
         let initialModel = try modelCatalog.resolve(id: options.modelID)
         let runtime = MLXServerRuntime(
             retentionPolicy: settings.modelRetentionPolicy,
@@ -168,7 +170,9 @@ struct MLXServerMain {
         )
         let configuration = try AgentConfiguration(
             hostedModelID: initialModel.id,
+            explicitModelID: options.modelID,
             agentName: options.agentName,
+            availableAgents: availableAgents,
             availableModels: coderModelManifests(
                 from: modelCatalog.models,
                 kvCacheSettings: settings.kvCache
@@ -194,6 +198,28 @@ struct MLXServerMain {
         } catch {
             await sessionRunner.shutdown()
             throw error
+        }
+    }
+
+    private static func ensureCoderProjectAgentsFileExists(workingDirectory: URL) throws {
+        let standardizedWorkingDirectory = workingDirectory.standardizedFileURL
+        let agentsFileURL = standardizedWorkingDirectory
+            .appendingPathComponent(MLXAgentsContextService.filename)
+        guard !FileManager.default.fileExists(atPath: agentsFileURL.path) else {
+            return
+        }
+
+        do {
+            _ = try MLXProjectContextFileService().createDefaultDocument(
+                kind: .agents,
+                at: standardizedWorkingDirectory,
+                projectName: standardizedWorkingDirectory.lastPathComponent
+            )
+        } catch {
+            throw MLXServerMainError.unableToCreateProjectAgents(
+                agentsFileURL,
+                error
+            )
         }
     }
 
@@ -640,6 +666,7 @@ private enum MLXServerMainError: LocalizedError {
     case missingRequiredArgument(String)
     case invalidArgument(String, String)
     case generationMissingMetrics
+    case unableToCreateProjectAgents(URL, Error)
 
     var errorDescription: String? {
         switch self {
@@ -651,6 +678,8 @@ private enum MLXServerMainError: LocalizedError {
             return "Invalid value for \(argument): \(value)."
         case .generationMissingMetrics:
             return "Generation did not receive MLX completion metrics."
+        case let .unableToCreateProjectAgents(url, error):
+            return "Unable to create project AGENTS.md at \(url.path): \(error.localizedDescription)"
         }
     }
 }

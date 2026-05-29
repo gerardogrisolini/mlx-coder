@@ -63,4 +63,31 @@ extension Dictionary where Key == String, Value == Any {
         }
         return nil
     }
+
+    public func stringArray(_ keys: String...) -> [String]? {
+        for key in keys {
+            if let values = self[key] as? [String] {
+                return values
+            }
+            if let values = self[key] as? [Any] {
+                let strings = values.compactMap { value -> String? in
+                    guard let string = value as? String else {
+                        return nil
+                    }
+                    let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return trimmed.isEmpty ? nil : trimmed
+                }
+                if !strings.isEmpty {
+                    return strings
+                }
+            }
+            if let value = self[key] as? String {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    return [trimmed]
+                }
+            }
+        }
+        return nil
+    }
 }

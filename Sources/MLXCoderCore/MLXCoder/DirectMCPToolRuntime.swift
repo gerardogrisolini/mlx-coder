@@ -263,12 +263,7 @@ public actor DirectMCPToolRuntime {
         let executor = XcodeToolExecutor(configuration: configuration)
         do {
             let tools = ToolDescriptor.canonicalized(
-                try await Self.withDiscoveryTimeout(
-                    seconds: 3,
-                    label: "Xcode tools/list"
-                ) {
-                    try await executor.loadTools()
-                }
+                try await executor.loadTools()
             )
             guard !tools.isEmpty else {
                 await executor.disconnect()
@@ -305,12 +300,7 @@ public actor DirectMCPToolRuntime {
         )
         do {
             let tools = ToolDescriptor.canonicalized(
-                try await Self.withDiscoveryTimeout(
-                    seconds: 2,
-                    label: "Figma tools/list"
-                ) {
-                    try await executor.loadTools()
-                }
+                try await executor.loadTools()
             )
             guard !tools.isEmpty else {
                 await executor.disconnect()
@@ -395,45 +385,15 @@ public actor DirectMCPToolRuntime {
         }
         return arguments
     }
-
-    private static func withDiscoveryTimeout<Value: Sendable>(
-        seconds: UInt64,
-        label: String,
-        operation: @escaping @Sendable () async throws -> Value
-    ) async throws -> Value {
-        try await withThrowingTaskGroup(of: Value.self) { group in
-            group.addTask {
-                try await operation()
-            }
-            group.addTask {
-                try await Task.sleep(nanoseconds: seconds * 1_000_000_000)
-                throw DirectMCPToolRuntimeError.discoveryTimedOut(label)
-            }
-
-            do {
-                guard let value = try await group.next() else {
-                    throw DirectMCPToolRuntimeError.discoveryTimedOut(label)
-                }
-                group.cancelAll()
-                return value
-            } catch {
-                group.cancelAll()
-                throw error
-            }
-        }
-    }
 }
 
 private enum DirectMCPToolRuntimeError: LocalizedError {
     case unknownTool(String)
-    case discoveryTimedOut(String)
 
     var errorDescription: String? {
         switch self {
         case let .unknownTool(name):
             return "Unknown MCP tool: \(name)"
-        case let .discoveryTimedOut(label):
-            return "MCP discovery timed out while waiting for \(label)."
         }
     }
 }

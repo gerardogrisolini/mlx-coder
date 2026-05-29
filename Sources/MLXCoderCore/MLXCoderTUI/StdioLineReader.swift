@@ -460,6 +460,7 @@ public final class TerminalRawInput: @unchecked Sendable {
 public enum TerminalPromptInputEvent: Sendable {
     case submitted(String)
     case cancelRequested
+    case toggleToolDetailsRequested
     case endOfInput
 }
 
@@ -495,6 +496,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
         case end
         case clearBeforeCursor
         case clearAfterCursor
+        case toggleToolDetails
         case endOfInput
         case cancel
         case unknown
@@ -617,6 +619,8 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
                     }
                     buffer.removeSubrange(cursorIndex..<buffer.count)
                     redraw(prompt: prompt, buffer: buffer, cursorIndex: cursorIndex)
+                case .toggleToolDetails:
+                    continue
                 case .endOfInput:
                     if buffer.isEmpty {
                         AgentOutput.standardError.writeString("\n")
@@ -725,6 +729,10 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
         panelLock.lock()
         panelQueuedPromptCount = max(0, count)
         panelLock.unlock()
+        renderPanel()
+    }
+
+    public func refreshPanel() {
         renderPanel()
     }
 
@@ -883,6 +891,9 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
             panelCommandSuggestionIndex = 0
             panelLock.unlock()
             renderPanel()
+        case .toggleToolDetails:
+            onEvent(.toggleToolDetailsRequested)
+            renderPanel()
         case .cancel:
             panelLock.lock()
             let isProcessing = panelIsProcessing
@@ -942,8 +953,8 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
             return "↑/↓ select · Tab complete · Enter choose"
         }
         return panelIsProcessing
-            ? "Enter queue · Option+Enter newline · Esc stop"
-            : "Enter send · Option+Enter newline · Esc clear"
+            ? "Enter queue · Option+Enter newline · Ctrl+T tools · Esc stop"
+            : "Enter send · Option+Enter newline · Ctrl+T tools · Esc clear"
     }
 
     private struct CommandSuggestionSelection {
@@ -1126,6 +1137,8 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
             return .clearAfterCursor
         case 0x15:
             return .clearBeforeCursor
+        case 0x14:
+            return .toggleToolDetails
         case 0x0A:
             return .enter
         case 0x0D:

@@ -24,9 +24,9 @@ public struct DirectToolDescriptor: Sendable {
 public enum DirectToolCatalog {
     public static var baseDescriptors: [DirectToolDescriptor] {
 #if canImport(Darwin) || canImport(Glibc)
-        filesystemDescriptors + macOSProcessDescriptors + memoryDescriptors + orchestrationDescriptors + subAgentDescriptors
+        filesystemDescriptors + macOSProcessDescriptors + webDescriptors + memoryDescriptors + orchestrationDescriptors + subAgentDescriptors
 #else
-        filesystemDescriptors + memoryDescriptors + orchestrationDescriptors + subAgentDescriptors
+        filesystemDescriptors + webDescriptors + memoryDescriptors + orchestrationDescriptors + subAgentDescriptors
 #endif
     }
 
@@ -52,14 +52,44 @@ public enum DirectToolCatalog {
             inputSchema: #"{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"maxResults":{"type":"number"},"max_results":{"type":"number"}}}"#
         ),
         DirectToolDescriptor(
+            name: "text.head",
+            description: "Reads the first lines of a local text file.",
+            inputSchema: #"{"type":"object","properties":{"path":{"type":"string"},"lines":{"type":"number"}},"required":["path"]}"#
+        ),
+        DirectToolDescriptor(
+            name: "text.tail",
+            description: "Reads the last lines of a local text file.",
+            inputSchema: #"{"type":"object","properties":{"path":{"type":"string"},"lines":{"type":"number"}},"required":["path"]}"#
+        ),
+        DirectToolDescriptor(
+            name: "text.sort",
+            description: "Sorts the lines of a local text file and returns the sorted output.",
+            inputSchema: #"{"type":"object","properties":{"path":{"type":"string"},"unique":{"type":"boolean"}},"required":["path"]}"#
+        ),
+        DirectToolDescriptor(
+            name: "text.wc",
+            description: "Counts lines, words, and characters in a local text file.",
+            inputSchema: #"{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}"#
+        ),
+        DirectToolDescriptor(
             name: "local.writeFile",
             description: "Creates or overwrites a UTF-8 text file.",
             inputSchema: #"{"type":"object","properties":{"path":{"type":"string"},"file_path":{"type":"string"},"content":{"type":"string"},"createDirectories":{"type":"boolean"}},"required":["file_path","content"]}"#
         ),
         DirectToolDescriptor(
             name: "local.replace",
-            description: "Replaces a string in a UTF-8 text file. By default exactly one occurrence must match.",
+            description: "Replaces all occurrences of oldString with newString in a UTF-8 text file.",
+            inputSchema: #"{"type":"object","properties":{"path":{"type":"string"},"file_path":{"type":"string"},"oldString":{"type":"string"},"old_string":{"type":"string"},"newString":{"type":"string"},"new_string":{"type":"string"}},"required":["path","oldString","newString"]}"#
+        ),
+        DirectToolDescriptor(
+            name: "local.editFile",
+            description: "Applies a targeted string replacement in a file. By default exactly one occurrence must match; set replaceAll=true to update every occurrence.",
             inputSchema: #"{"type":"object","properties":{"path":{"type":"string"},"file_path":{"type":"string"},"oldString":{"type":"string"},"old_string":{"type":"string"},"newString":{"type":"string"},"new_string":{"type":"string"},"replaceAll":{"type":"boolean"},"replace_all":{"type":"boolean"}},"required":["path","oldString","newString"]}"#
+        ),
+        DirectToolDescriptor(
+            name: "local.multiEdit",
+            description: "Applies multiple targeted edits to the same file in order.",
+            inputSchema: #"{"type":"object","properties":{"path":{"type":"string"},"file_path":{"type":"string"},"edits":{"type":"array","items":{"type":"object","properties":{"oldString":{"type":"string"},"old_string":{"type":"string"},"newString":{"type":"string"},"new_string":{"type":"string"},"replaceAll":{"type":"boolean"},"replace_all":{"type":"boolean"}}}}},"required":["path","edits"]}"#
         ),
         DirectToolDescriptor(
             name: "local.append",
@@ -90,6 +120,19 @@ public enum DirectToolCatalog {
             inputSchema: $0.inputSchema
         )
     }
+
+    public static let webDescriptors: [DirectToolDescriptor] = [
+        DirectToolDescriptor(
+            name: "web.search",
+            description: "Searches the public web and returns matching results with titles, URLs, and snippets.",
+            inputSchema: #"{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"domains":{"type":"array","items":{"type":"string"}}},"required":["query"]}"#
+        ),
+        DirectToolDescriptor(
+            name: "web.fetch",
+            description: "Fetches an HTTP or HTTPS URL and returns response metadata plus a UTF-8 text preview.",
+            inputSchema: #"{"type":"object","properties":{"url":{"type":"string"},"maxBytes":{"type":"number"},"timeoutSeconds":{"type":"number"}},"required":["url"]}"#
+        )
+    ]
 
 #if canImport(Darwin) || canImport(Glibc)
     public static let macOSProcessDescriptors: [DirectToolDescriptor] = [
@@ -122,6 +165,56 @@ public enum DirectToolCatalog {
             name: "git.log",
             description: "Runs git log --oneline.",
             inputSchema: #"{"type":"object","properties":{"path":{"type":"string"},"workingDirectory":{"type":"string"},"cwd":{"type":"string"},"limit":{"type":"number"},"n":{"type":"number"}}}"#
+        ),
+        DirectToolDescriptor(
+            name: "git.branch",
+            description: "Lists local, remote, or all branches.",
+            inputSchema: #"{"type":"object","properties":{"workingDirectory":{"type":"string"},"cwd":{"type":"string"},"path":{"type":"string"},"all":{"type":"boolean"},"remotes":{"type":"boolean"},"contains":{"type":"string"}}}"#
+        ),
+        DirectToolDescriptor(
+            name: "git.remote",
+            description: "Lists configured remotes and URLs.",
+            inputSchema: #"{"type":"object","properties":{"workingDirectory":{"type":"string"},"cwd":{"type":"string"},"path":{"type":"string"}}}"#
+        ),
+        DirectToolDescriptor(
+            name: "git.lsFiles",
+            description: "Lists tracked files, optionally including untracked files that are not ignored.",
+            inputSchema: #"{"type":"object","properties":{"workingDirectory":{"type":"string"},"cwd":{"type":"string"},"path":{"type":"string"},"includeUntracked":{"type":"boolean"},"maxResults":{"type":"number"},"max_results":{"type":"number"}}}"#
+        ),
+        DirectToolDescriptor(
+            name: "git.grep",
+            description: "Searches tracked repository files with git grep.",
+            inputSchema: #"{"type":"object","properties":{"pattern":{"type":"string"},"workingDirectory":{"type":"string"},"cwd":{"type":"string"},"path":{"type":"string"},"paths":{"type":"array","items":{"type":"string"}},"maxResults":{"type":"number"},"max_results":{"type":"number"}},"required":["pattern"]}"#
+        ),
+        DirectToolDescriptor(
+            name: "git.blame",
+            description: "Shows git blame for a file, optionally scoped to a line range.",
+            inputSchema: #"{"type":"object","properties":{"file":{"type":"string"},"path":{"type":"string"},"file_path":{"type":"string"},"workingDirectory":{"type":"string"},"cwd":{"type":"string"},"startLine":{"type":"number"},"endLine":{"type":"number"}},"required":["file"]}"#
+        ),
+        DirectToolDescriptor(
+            name: "git.add",
+            description: "Stages files for commit. Pass paths or all=true.",
+            inputSchema: #"{"type":"object","properties":{"workingDirectory":{"type":"string"},"cwd":{"type":"string"},"path":{"type":"string"},"paths":{"type":"array","items":{"type":"string"}},"all":{"type":"boolean"}}}"#
+        ),
+        DirectToolDescriptor(
+            name: "git.restore",
+            description: "Unstages files with staged=true, or discards worktree changes only when worktree=true and discardChanges=true.",
+            inputSchema: #"{"type":"object","properties":{"workingDirectory":{"type":"string"},"cwd":{"type":"string"},"path":{"type":"string"},"paths":{"type":"array","items":{"type":"string"}},"staged":{"type":"boolean"},"worktree":{"type":"boolean"},"discardChanges":{"type":"boolean"}}}"#
+        ),
+        DirectToolDescriptor(
+            name: "git.commit",
+            description: "Creates a git commit from staged changes. Pass message for the commit message.",
+            inputSchema: #"{"type":"object","properties":{"workingDirectory":{"type":"string"},"cwd":{"type":"string"},"path":{"type":"string"},"message":{"type":"string"},"all":{"type":"boolean"}},"required":["message"]}"#
+        ),
+        DirectToolDescriptor(
+            name: "git.stash",
+            description: "Runs git stash list/show/push/apply/pop/drop with structured arguments.",
+            inputSchema: #"{"type":"object","properties":{"workingDirectory":{"type":"string"},"cwd":{"type":"string"},"path":{"type":"string"},"action":{"type":"string"},"message":{"type":"string"},"stash":{"type":"string"},"includeUntracked":{"type":"boolean"},"paths":{"type":"array","items":{"type":"string"}}}}"#
+        ),
+        DirectToolDescriptor(
+            name: "git.switch",
+            description: "Switches branches, optionally creating the branch when create=true.",
+            inputSchema: #"{"type":"object","properties":{"workingDirectory":{"type":"string"},"cwd":{"type":"string"},"path":{"type":"string"},"branch":{"type":"string"},"create":{"type":"boolean"}},"required":["branch"]}"#
         )
     ]
 #endif

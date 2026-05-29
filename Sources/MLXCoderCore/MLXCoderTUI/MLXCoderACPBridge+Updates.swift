@@ -175,7 +175,9 @@ extension MLXCoderACPBridge {
     public static func toolKind(for toolName: String) -> String {
         switch toolName {
         case "local.readFile", "local.ls", "local.pwd",
-             "git.status", "git.diff", "git.show", "git.log":
+             "text.head", "text.tail", "text.sort", "text.wc",
+             "git.status", "git.diff", "git.show", "git.log",
+             "git.branch", "git.remote", "git.lsFiles", "git.grep", "git.blame":
             return "read"
         case "search.grep", "search.glob":
             return "search"
@@ -185,7 +187,7 @@ extension MLXCoderACPBridge {
             return "delete"
         case "local.move":
             return "move"
-        case "local.exec":
+        case "local.exec", "git.add", "git.restore", "git.commit", "git.stash", "git.switch":
             return "execute"
         case "agent.list", "agent.get", "agent.wait":
             return "read"

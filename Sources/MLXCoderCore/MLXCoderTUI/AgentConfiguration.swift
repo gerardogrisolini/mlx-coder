@@ -230,6 +230,7 @@ public struct AgentConfiguration {
 
     public init(
         hostedModelID: String,
+        explicitModelID rawModelID: String? = nil,
         agentName rawAgentName: String? = nil,
         availableAgents: [AgentProfile] = AgentProfileStore.defaultProfiles(),
         availableModels: [AgentSettingsModelManifest] = [],
@@ -248,11 +249,21 @@ public struct AgentConfiguration {
             availableAgents: availableAgents
         )
         let normalizedModelID = hostedModelID.nilIfBlank
+        let requestedModelID = rawModelID?.nilIfBlank
+        let hostedManifest = AgentSettingsManifest(
+            models: availableModels,
+            selectedModelID: normalizedModelID
+        )
+        let effectiveModelID = AgentSettingsStore.resolvedEffectiveModelID(
+            explicitModelID: requestedModelID,
+            agentModelID: selectedAgent?.modelID,
+            manifest: hostedManifest
+        ) ?? normalizedModelID
 
-        self.modelID = normalizedModelID
+        self.modelID = requestedModelID
         self.agentName = requestedAgentName ?? selectedAgent?.displayName
         self.selectedAgent = selectedAgent
-        self.effectiveModelID = normalizedModelID
+        self.effectiveModelID = effectiveModelID
         self.bearerToken = bearerToken?.nilIfBlank
         self.runMode = runMode
         self.workingDirectory = workingDirectory
