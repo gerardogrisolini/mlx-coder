@@ -188,21 +188,24 @@ extension TerminalChat {
 
     private static func renderSubAgentOverviewBox(lines: [String]) -> String {
         let columns = terminalColumnCount()
-        let contentWidth = max(20, columns - 4)
-        let horizontalRule = String(repeating: "─", count: contentWidth + 2)
+        let horizontalInset = terminalBoxHorizontalInset(columns: columns)
+        let boxWidth = max(24, columns - horizontalInset * 2)
+        let contentWidth = max(20, boxWidth - 4)
+        let horizontalRule = String(repeating: "─", count: max(0, boxWidth - 2))
+        let linePrefix = String(repeating: " ", count: horizontalInset)
         let orange = "\u{1B}[38;5;208m"
         let reset = "\u{1B}[0m"
 
         var output = [
-            "\(orange)╭\(horizontalRule)╮\(reset)",
-            "\(orange)│\(reset) \(padded(fitInline("Sub-Agents", width: contentWidth), width: contentWidth)) \(orange)│\(reset)",
-            "\(orange)├\(horizontalRule)┤\(reset)"
+            "\(linePrefix)\(orange)╭\(horizontalRule)╮\(reset)",
+            "\(linePrefix)\(orange)│\(reset) \(padded(fitInline("Sub-Agents", width: contentWidth), width: contentWidth)) \(orange)│\(reset)",
+            "\(linePrefix)\(orange)├\(horizontalRule)┤\(reset)"
         ]
         for line in lines {
             let fittedLine = padded(fitInline(line, width: contentWidth), width: contentWidth)
-            output.append("\(orange)│\(reset) \(fittedLine) \(orange)│\(reset)")
+            output.append("\(linePrefix)\(orange)│\(reset) \(fittedLine) \(orange)│\(reset)")
         }
-        output.append("\(orange)╰\(horizontalRule)╯\(reset)")
+        output.append("\(linePrefix)\(orange)╰\(horizontalRule)╯\(reset)")
         return output.joined(separator: "\n")
     }
 

@@ -19,14 +19,12 @@ extension TerminalChat {
         await printToolSelectionStatus()
     }
 
-    public func printStartupSummary(loadedModelID: String) async {
+    public func printStartupSummary() async {
         let allowedToolNames = await selectedAllowedToolNames()
         didPrintActiveTools = true
 
         var lines = [
             "Version: \(Self.appVersionDescription)",
-            "Loading model...",
-            "Loaded model: \(loadedModelDisplayTitle(loadedModelID))",
             Self.renderSelectedToolGroups(selectedToolGroups)
                 .trimmingCharacters(in: .whitespacesAndNewlines),
             Self.renderActiveTools(Array(allowedToolNames))
@@ -140,21 +138,24 @@ extension TerminalChat {
     public static func renderStartupBox(lines: [String]) -> String {
         let columns = terminalColumnCount()
         let bannerLines = mlxCoderHeaderLines
-        let contentWidth = max(20, columns - 4)
-        let horizontalRule = String(repeating: "─", count: contentWidth + 2)
+        let horizontalInset = terminalBoxHorizontalInset(columns: columns)
+        let boxWidth = max(24, columns - horizontalInset * 2)
+        let contentWidth = max(20, boxWidth - 4)
+        let horizontalRule = String(repeating: "─", count: max(0, boxWidth - 2))
+        let linePrefix = String(repeating: " ", count: horizontalInset)
         let orange = "\u{1B}[38;5;208m"
         let reset = "\u{1B}[0m"
 
         var output = bannerLines.map { line in
-            let fittedLine = padded(fitBannerLine(line, width: contentWidth + 4), width: contentWidth + 4)
+            let fittedLine = padded(fitBannerLine(line, width: boxWidth), width: boxWidth)
             return fittedLine
         }
-        output.append("\(orange)╭\(horizontalRule)╮\(reset)")
+        output.append("\(linePrefix)\(orange)╭\(horizontalRule)╮\(reset)")
         for line in lines {
             let fittedLine = padded(fitInline(line, width: contentWidth), width: contentWidth)
-            output.append("\(orange)│\(reset) \(fittedLine) \(orange)│\(reset)")
+            output.append("\(linePrefix)\(orange)│\(reset) \(fittedLine) \(orange)│\(reset)")
         }
-        output.append("\(orange)╰\(horizontalRule)╯\(reset)")
+        output.append("\(linePrefix)\(orange)╰\(horizontalRule)╯\(reset)")
         return output.joined(separator: "\n")
     }
 
@@ -199,6 +200,10 @@ extension TerminalChat {
         }
 
         return 100
+    }
+
+    public static func terminalBoxHorizontalInset(columns _: Int? = nil) -> Int {
+        return 0
     }
 
     public static func fitInline(_ text: String, width: Int) -> String {
@@ -264,8 +269,8 @@ extension TerminalChat {
         if !isStreamingThoughtOutput {
             isStreamingThoughtOutput = true
             let title = AgentOutput.standardErrorIsTerminal
-                ? "\u{1B}[90m🤔 thinking:\u{1B}[0m"
-                : "🤔 thinking:"
+                ? "\u{1B}[90m🤔 Thinking:\u{1B}[0m"
+                : "🤔 Thinking:"
             AgentOutput.standardError.writeString("\n\(title)\n")
         }
         AgentOutput.standardError.writeString(
@@ -405,7 +410,7 @@ extension TerminalChat {
         let title = MLXCoderACPBridge.toolTitle(for: toolCall)
         let kind = MLXCoderACPBridge.toolKind(for: toolCall.name)
         var lines = [
-            "⚙️ \(title)",
+            "⚙️  \(title) ⏳",
             "status: in_progress",
             "kind: \(kind)",
             "id: \(toolCall.id)"
@@ -432,8 +437,9 @@ extension TerminalChat {
         let failed = result.output
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .hasPrefix("Tool error:")
+        let statusIcon = failed ? "⚠️" : "✅"
         var lines = [
-            "⚙️ \(title)",
+            "⚙️  \(title) \(statusIcon)",
             "status: \(failed ? "failed" : "completed")",
             "kind: \(kind)",
             "id: \(toolCall.id)"
@@ -500,7 +506,7 @@ extension TerminalChat {
         let reset = "\u{1B}[0m"
         let prefix = leadingNewline ? "\n" : ""
         let text = lines
-            .map { "\(toolColor)\($0)\(reset)" }
+            .map { "\r\u{1B}[2K\(toolColor)\($0)\(reset)" }
             .joined(separator: "\n")
         AgentOutput.standardError.writeString("\(prefix)\(text)\(terminator)")
     }
@@ -512,23 +518,23 @@ extension TerminalChat {
         let title = MLXCoderACPBridge.toolTitle(for: toolCall)
         guard let target = MLXCoderACPBridge.displayToolTarget(for: toolCall),
               title.hasSuffix(target) else {
-            return [compactToolHeaderLine("⚙️ \(title) \(statusIcon)")]
+            return [compactToolHeaderLine("⚙️  \(title) \(statusIcon)")]
         }
 
         let action = title
             .dropLast(target.count)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !action.isEmpty else {
-            return [compactToolHeaderLine("⚙️ \(title) \(statusIcon)")]
+            return [compactToolHeaderLine("⚙️  \(title) \(statusIcon)")]
         }
         return [
-            compactToolHeaderLine("⚙️ \(action):"),
+            compactToolHeaderLine("⚙️  \(action):"),
             compactToolStatusLine(target: target, statusIcon: statusIcon)
         ]
     }
 
     private static func compactToolHeaderLine(_ text: String) -> String {
-        rightAlignedSuffix(text: text, suffix: "(Ctrl+T to show details)")
+        text
     }
 
     private static func compactToolStatusLine(target: String, statusIcon: String) -> String {

@@ -425,6 +425,11 @@ public enum MLXServerModelSetupRunner {
             defaultValue: defaults.frequencyPenalty ?? 0,
             allowedRange: -2...2
         )
+        let prefillStepSize = try promptInt(
+            "prefill_step_size",
+            defaultValue: defaults.prefillStepSize ?? MLXServerModelGenerationDefaults.defaultPrefillStepSize,
+            allowedRange: 1...Int.max
+        )
 
         return MLXServerModelGenerationDefaults(
             contextWindow: contextWindow,
@@ -434,7 +439,8 @@ public enum MLXServerModelSetupRunner {
             topK: topK,
             repetitionPenalty: repetitionPenalty,
             presencePenalty: presencePenalty,
-            frequencyPenalty: frequencyPenalty
+            frequencyPenalty: frequencyPenalty,
+            prefillStepSize: prefillStepSize
         )
     }
 
@@ -450,7 +456,9 @@ public enum MLXServerModelSetupRunner {
             topK: importedDefaults.topK,
             repetitionPenalty: importedDefaults.repetitionPenalty,
             presencePenalty: importedDefaults.presencePenalty,
-            frequencyPenalty: importedDefaults.frequencyPenalty
+            frequencyPenalty: importedDefaults.frequencyPenalty,
+            prefillStepSize: importedDefaults.prefillStepSize
+                ?? MLXServerModelGenerationDefaults.defaultPrefillStepSize
         ).validated()
     }
 
@@ -482,7 +490,8 @@ public enum MLXServerModelSetupRunner {
             topK: preferred.topK ?? fallback.topK,
             repetitionPenalty: preferred.repetitionPenalty ?? fallback.repetitionPenalty,
             presencePenalty: preferred.presencePenalty ?? fallback.presencePenalty,
-            frequencyPenalty: preferred.frequencyPenalty ?? fallback.frequencyPenalty
+            frequencyPenalty: preferred.frequencyPenalty ?? fallback.frequencyPenalty,
+            prefillStepSize: preferred.prefillStepSize ?? fallback.prefillStepSize
         ).validated()
     }
 
@@ -497,7 +506,8 @@ public enum MLXServerModelSetupRunner {
             defaults.topK.map { "top_k=\($0)" },
             defaults.repetitionPenalty.map { "repetition_penalty=\(formatFloat($0))" },
             defaults.presencePenalty.map { "presence_penalty=\(formatFloat($0))" },
-            defaults.frequencyPenalty.map { "frequency_penalty=\(formatFloat($0))" }
+            defaults.frequencyPenalty.map { "frequency_penalty=\(formatFloat($0))" },
+            defaults.prefillStepSize.map { "prefill_step_size=\($0)" }
         ].compactMap { $0 }
 
         return values.isEmpty ? "default runtime" : values.joined(separator: ", ")
@@ -1114,7 +1124,8 @@ private enum MLXServerModelParameterImporter {
             topK: generationConfig?.topK,
             repetitionPenalty: generationConfig?.repetitionPenalty,
             presencePenalty: generationConfig?.presencePenalty,
-            frequencyPenalty: generationConfig?.frequencyPenalty
+            frequencyPenalty: generationConfig?.frequencyPenalty,
+            prefillStepSize: MLXServerModelGenerationDefaults.defaultPrefillStepSize
         )
     }
 

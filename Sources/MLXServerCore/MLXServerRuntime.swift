@@ -361,6 +361,20 @@ public actor MLXServerRuntime {
         containers.keys.map(\.displayName).sorted()
     }
 
+    public func preloadModel(
+        model: MLXServerModelDescriptor,
+        runtimeKind: MLXServerModelRuntimeKind? = nil,
+        parameters: GenerateParameters,
+        progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
+    ) async throws {
+        _ = try await container(
+            for: model,
+            runtimeKind: runtimeKind ?? model.runtimeKind,
+            parameters: parameters,
+            progressHandler: progressHandler
+        )
+    }
+
     public func unloadAll() {
         let unloadedModelIDs = Set(containers.keys.map(\.modelID)).sorted()
         containers.removeAll(keepingCapacity: true)

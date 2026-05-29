@@ -112,8 +112,8 @@ public final class TerminalChat: @unchecked Sendable {
         try await createCurrentSession()
         refreshInitialStatusBarContextWindow()
 
-        let loadedModelID = try await preloadCurrentModel(emitStatus: false)
-        await printStartupSummary(loadedModelID: loadedModelID)
+        await printStartupSummary()
+        _ = try await preloadCurrentModel(emitStatus: false)
         let statusBarStarted = statusBar.start()
         defer {
             stopSubAgentOverviewRefreshLoop()

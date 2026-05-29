@@ -11,6 +11,12 @@ import MLXServerHTTP
 import MLXServerSetup
 import Dispatch
 
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+
 @main
 struct MLXServerMain {
     @MainActor
@@ -252,6 +258,8 @@ struct MLXServerMain {
                     repetitionPenalty: model.generationDefaults.repetitionPenalty.map(Double.init),
                     presencePenalty: model.generationDefaults.presencePenalty.map(Double.init),
                     frequencyPenalty: model.generationDefaults.frequencyPenalty.map(Double.init),
+                    prefillStepSize: model.generationDefaults.prefillStepSize
+                        ?? MLXServerModelGenerationDefaults.defaultPrefillStepSize,
                     kvBits: kvCacheSettings.kvBits,
                     kvGroupSize: kvCacheSettings.kvGroupSize,
                     quantizedKVStart: kvCacheSettings.quantizedKVStart
@@ -296,17 +304,16 @@ struct MLXServerMain {
             "frequency=\(formatModelDefault(parameters.frequencyPenalty))",
         ].joined(separator: ", ")
 
-        FileHandle.standardError.writeString(
-            """
-            mlx-server loaded model:
-              model: \(event.modelID)
-              runtime: \(event.runtimeKind.rawValue)
-              generation: \(generationLine)
-              penalties: \(penaltiesLine)
-              kv_cache: \(kvCache), prefill_step_size=\(parameters.prefillStepSize)
+        let message = """
+        mlx-server loaded model:
+          model: \(event.modelID)
+          runtime: \(event.runtimeKind.rawValue)
+          generation: \(generationLine)
+          penalties: \(penaltiesLine)
+          kv_cache: \(kvCache), prefill_step_size=\(parameters.prefillStepSize)
 
-            """
-        )
+        """
+        FileHandle.standardError.writeString(coloredOperationalLog(message))
     }
 
     private static func logModelUnloadEvent(_ event: MLXServerModelUnloadEvent) {
@@ -323,6 +330,17 @@ struct MLXServerMain {
 
     private static func format(_ value: Float) -> String {
         String(format: "%.4g", Double(value))
+    }
+
+    private static func coloredOperationalLog(_ message: String) -> String {
+        guard isStandardErrorTerminal else {
+            return message
+        }
+        return "\u{1B}[38;5;75m\(message)\u{1B}[0m"
+    }
+
+    private static var isStandardErrorTerminal: Bool {
+        isatty(FileHandle.standardError.fileDescriptor) == 1
     }
 
     private static func runChat(
@@ -343,6 +361,15 @@ struct MLXServerMain {
         var pendingInitialPrompt = options.initialPrompt
         var turnResults: [MLXServerChatTurnResult] = []
         var turnIndex = 1
+
+        try await runtime.preloadModel(
+            model: model,
+            runtimeKind: model.runtimeKind,
+            parameters: model.generationDefaults.generateParameters(
+                maxTokens: options.maxTokens,
+                kvCacheSettings: settings.kvCache
+            )
+        )
 
         if !options.quiet {
             FileHandle.standardError.writeString(

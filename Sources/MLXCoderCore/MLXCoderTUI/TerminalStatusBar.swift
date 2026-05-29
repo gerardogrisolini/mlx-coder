@@ -279,11 +279,13 @@ public final class TerminalStatusBar: @unchecked Sendable {
         }
 
         let topRow = max(1, row - reservedBottomRowsLocked() + 1)
+        let startColumn = statusBoxStartColumnLocked()
+        let boxWidth = statusBoxWidthLocked()
         let orange = "\u{1B}[38;5;208m"
         let dim = "\u{1B}[90m"
         let reset = "\u{1B}[0m"
-        let horizontalRule = String(repeating: "─", count: max(0, columns - 2))
-        let contentWidth = max(1, columns - 4)
+        let horizontalRule = String(repeating: "─", count: max(0, boxWidth - 2))
+        let contentWidth = statusBoxContentWidthLocked()
         let inputRows = inputPanelDisplayRowsLocked(
             text: inputPanelState.text,
             cursorIndex: inputPanelState.cursorIndex
@@ -301,7 +303,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
 
         let inputSequence = inputRows.enumerated().map { offset, inputRow in
             [
-                "\u{1B}[\(topRow + offset + 1);1H",
+                "\u{1B}[\(topRow + offset + 1);\(startColumn)H",
                 "\u{1B}[2K",
                 orange,
                 "│",
@@ -316,7 +318,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
         }.joined()
         let suggestionSequence = suggestionRows.enumerated().map { offset, suggestionRow in
             [
-                "\u{1B}[\(topRow + inputRows.count + offset + 1);1H",
+                "\u{1B}[\(topRow + inputRows.count + offset + 1);\(startColumn)H",
                 "\u{1B}[2K",
                 orange,
                 "│",
@@ -334,7 +336,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
         let modeRow = topRow + inputRows.count + suggestionRows.count + 1
         let parts = [
             "\u{1B}7",
-            "\u{1B}[\(topRow);1H",
+            "\u{1B}[\(topRow);\(startColumn)H",
             "\u{1B}[2K",
             orange,
             "╭",
@@ -343,7 +345,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
             reset,
             inputSequence,
             suggestionSequence,
-            "\u{1B}[\(modeRow);1H",
+            "\u{1B}[\(modeRow);\(startColumn)H",
             "\u{1B}[2K",
             orange,
             "│",
@@ -356,7 +358,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
             orange,
             "│",
             reset,
-            "\u{1B}[\(modeRow + 1);1H",
+            "\u{1B}[\(modeRow + 1);\(startColumn)H",
             "\u{1B}[2K",
             orange,
             "├",
@@ -369,15 +371,18 @@ public final class TerminalStatusBar: @unchecked Sendable {
     }
 
     private func statusRenderSequenceLocked() -> String {
+        let startColumn = statusBoxStartColumnLocked()
+        let boxWidth = statusBoxWidthLocked()
+        let contentWidth = statusBoxContentWidthLocked()
         let orange = "\u{1B}[38;5;208m"
         let reset = "\u{1B}[0m"
-        let horizontalRule = String(repeating: "─", count: max(0, columns - 2))
-        let text = Self.fit(statusTextLocked(), width: max(1, columns - 4))
-        let padding = max(0, columns - 4 - text.count)
+        let horizontalRule = String(repeating: "─", count: max(0, boxWidth - 2))
+        let text = Self.fit(statusTextLocked(), width: contentWidth)
+        let padding = max(0, contentWidth - text.count)
         let isAttachedToInputPanel = inputPanelState != nil
         var sequence = "\u{1B}7"
         if !isAttachedToInputPanel {
-            sequence += "\u{1B}[\(max(1, row - 2));1H"
+            sequence += "\u{1B}[\(max(1, row - 2));\(startColumn)H"
                 + "\u{1B}[2K"
                 + orange
                 + "╭"
@@ -385,7 +390,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
                 + "╮"
                 + reset
         }
-        sequence += "\u{1B}[\(max(1, row - 1));1H"
+        sequence += "\u{1B}[\(max(1, row - 1));\(startColumn)H"
             + "\u{1B}[2K"
             + orange
             + "│"
@@ -397,7 +402,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
             + orange
             + "│"
             + reset
-            + "\u{1B}[\(row);1H"
+            + "\u{1B}[\(row);\(startColumn)H"
             + "\u{1B}[2K"
             + orange
             + "╰"
@@ -612,16 +617,32 @@ public final class TerminalStatusBar: @unchecked Sendable {
         Self.inputPanelDisplayRows(
             text: text,
             cursorIndex: cursorIndex,
-            contentWidth: max(1, columns - 4),
+            contentWidth: statusBoxContentWidthLocked(),
             maxRows: maximumInputPanelTextRowsLocked()
         )
     }
 
     private func inputPanelSuggestionRowsLocked(lines: [String]) -> [String] {
-        let contentWidth = max(1, columns - 4)
+        let contentWidth = statusBoxContentWidthLocked()
         return lines.prefix(6).map { line in
             Self.padded(Self.fit(line, width: contentWidth), width: contentWidth)
         }
+    }
+
+    private func statusBoxHorizontalInsetLocked() -> Int {
+        0
+    }
+
+    private func statusBoxStartColumnLocked() -> Int {
+        statusBoxHorizontalInsetLocked() + 1
+    }
+
+    private func statusBoxWidthLocked() -> Int {
+        max(20, columns - statusBoxHorizontalInsetLocked() * 2)
+    }
+
+    private func statusBoxContentWidthLocked() -> Int {
+        max(1, statusBoxWidthLocked() - 4)
     }
 
     private func maximumInputPanelTextRowsLocked() -> Int {

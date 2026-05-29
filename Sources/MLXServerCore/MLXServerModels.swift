@@ -406,6 +406,8 @@ public struct MLXServerModelThinkingConfiguration: Codable, Equatable, Sendable 
 }
 
 public struct MLXServerModelGenerationDefaults: Codable, Equatable, Sendable {
+    public static let defaultPrefillStepSize = 4_096
+
     public var contextWindow: Int?
     public var maxOutputTokens: Int?
     public var temperature: Float?
@@ -414,6 +416,7 @@ public struct MLXServerModelGenerationDefaults: Codable, Equatable, Sendable {
     public var repetitionPenalty: Float?
     public var presencePenalty: Float?
     public var frequencyPenalty: Float?
+    public var prefillStepSize: Int?
 
     private enum CodingKeys: String, CodingKey {
         case contextWindow = "context_window"
@@ -424,6 +427,7 @@ public struct MLXServerModelGenerationDefaults: Codable, Equatable, Sendable {
         case repetitionPenalty = "repetition_penalty"
         case presencePenalty = "presence_penalty"
         case frequencyPenalty = "frequency_penalty"
+        case prefillStepSize = "prefill_step_size"
     }
 
     public init(
@@ -434,7 +438,8 @@ public struct MLXServerModelGenerationDefaults: Codable, Equatable, Sendable {
         topK: Int? = nil,
         repetitionPenalty: Float? = nil,
         presencePenalty: Float? = nil,
-        frequencyPenalty: Float? = nil
+        frequencyPenalty: Float? = nil,
+        prefillStepSize: Int? = nil
     ) {
         self.contextWindow = contextWindow
         self.maxOutputTokens = maxOutputTokens
@@ -444,6 +449,7 @@ public struct MLXServerModelGenerationDefaults: Codable, Equatable, Sendable {
         self.repetitionPenalty = repetitionPenalty
         self.presencePenalty = presencePenalty
         self.frequencyPenalty = frequencyPenalty
+        self.prefillStepSize = prefillStepSize
     }
 
     public func validated() -> Self {
@@ -455,7 +461,8 @@ public struct MLXServerModelGenerationDefaults: Codable, Equatable, Sendable {
             topK: topK.map { max(0, $0) },
             repetitionPenalty: repetitionPenalty.map { max(0, $0) },
             presencePenalty: presencePenalty,
-            frequencyPenalty: frequencyPenalty
+            frequencyPenalty: frequencyPenalty,
+            prefillStepSize: prefillStepSize.map { max(1, $0) }
         )
     }
 
@@ -470,7 +477,8 @@ public struct MLXServerModelGenerationDefaults: Codable, Equatable, Sendable {
             topK: topK ?? 0,
             repetitionPenalty: Self.runtimeRepetitionPenalty(repetitionPenalty),
             presencePenalty: presencePenalty,
-            frequencyPenalty: frequencyPenalty
+            frequencyPenalty: frequencyPenalty,
+            prefillStepSize: prefillStepSize ?? Self.defaultPrefillStepSize
         )
         kvCacheSettings.apply(to: &parameters)
         return parameters
