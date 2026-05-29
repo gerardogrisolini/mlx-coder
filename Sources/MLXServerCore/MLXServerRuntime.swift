@@ -969,6 +969,12 @@ public actor MLXServerRuntime {
         guard !cachedTokenIDs.isEmpty else {
             return
         }
+        guard normalizePromptCacheLength(
+            cache,
+            expectedTokenCount: cachedTokenIDs.count
+        ) else {
+            return
+        }
 
         promptPrefixCacheGeneration += 1
         var states = promptPrefixCaches[key] ?? []

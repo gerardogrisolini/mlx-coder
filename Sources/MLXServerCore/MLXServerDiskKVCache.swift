@@ -161,6 +161,11 @@ final class MLXServerDiskKVCacheStore {
                 removeEntry(cacheURL: urls.cacheURL, metadataURL: urls.metadataURL)
                 return nil
             }
+            if let promptTokenCount = metadata.promptTokenCount,
+               !normalizePromptCacheLength(cache, expectedTokenCount: promptTokenCount) {
+                removeEntry(cacheURL: urls.cacheURL, metadataURL: urls.metadataURL)
+                return nil
+            }
             metadata.lastAccessedAt = Date()
             metadata.byteCount = byteCount(of: urls.cacheURL)
             saveMetadata(metadata, to: urls.metadataURL)
@@ -200,6 +205,13 @@ final class MLXServerDiskKVCacheStore {
                     removeEntry(cacheURL: candidate.cacheURL, metadataURL: candidate.metadataURL)
                     continue
                 }
+                guard normalizePromptCacheLength(
+                    cache,
+                    expectedTokenCount: candidate.storedPromptTokenCount
+                ) else {
+                    removeEntry(cacheURL: candidate.cacheURL, metadataURL: candidate.metadataURL)
+                    continue
+                }
                 let tokensToTrim = candidate.storedPromptTokenCount - candidate.reusablePromptTokenCount
                 if tokensToTrim > 0 {
                     let trimmedTokenCount = trimPromptPrefixCache(cache, numTokens: tokensToTrim)
@@ -208,6 +220,12 @@ final class MLXServerDiskKVCacheStore {
                     }
                 }
                 guard cache.hasPromptState else {
+                    continue
+                }
+                guard normalizePromptCacheLength(
+                    cache,
+                    expectedTokenCount: candidate.reusablePromptTokenCount
+                ) else {
                     continue
                 }
 
@@ -449,20 +467,33 @@ private extension Array where Element == KVCache {
 
 @discardableResult
 private func trimPromptPrefixCache(_ cache: [KVCache], numTokens: Int) -> Int {
-    guard numTokens > 0 else {
-        return 0
+    trimPromptCache(cache, numTokens: numTokens)
+}
+
+@discardableResult
+func normalizePromptCacheLength(
+    _ cache: [KVCache],
+    expectedTokenCount: Int
+) -> Bool {
+    guard expectedTokenCount > 0,
+          cache.hasPromptState,
+          let firstOffset = cache.first?.offset,
+          cache.allSatisfy({ $0.offset == firstOffset }) else {
+        return false
     }
 
-    var didTrim = false
-    for entry in cache where !entry.state.isEmpty {
-        entry.trim(numTokens)
-        didTrim = true
+    if firstOffset == expectedTokenCount {
+        return true
+    }
+    guard firstOffset > expectedTokenCount else {
+        return false
     }
 
-    guard didTrim else {
-        return 0
+    let tokensToTrim = firstOffset - expectedTokenCount
+    guard trimPromptPrefixCache(cache, numTokens: tokensToTrim) == tokensToTrim else {
+        return false
     }
-    return numTokens
+    return cache.allSatisfy { $0.offset == expectedTokenCount }
 }
 
 private struct MLXServerPersistedDiskKVCacheEntry {

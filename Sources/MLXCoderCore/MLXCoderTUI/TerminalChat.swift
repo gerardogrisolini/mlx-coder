@@ -113,7 +113,7 @@ public final class TerminalChat: @unchecked Sendable {
         refreshInitialStatusBarContextWindow()
 
         await printStartupSummary()
-        _ = try await preloadCurrentModel(emitStatus: false)
+        _ = try await preloadCurrentModel(emitStatus: configuration.hostedModels != nil)
         let statusBarStarted = statusBar.start()
         defer {
             stopSubAgentOverviewRefreshLoop()

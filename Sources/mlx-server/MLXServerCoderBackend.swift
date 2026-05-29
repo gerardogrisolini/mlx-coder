@@ -142,6 +142,11 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         guard !didEmitLoadedModel else {
             return model.id
         }
+        try await runtime.preloadModel(
+            model: model,
+            runtimeKind: model.runtimeKind,
+            parameters: generationParameters()
+        )
         didEmitLoadedModel = true
         await onEvent(.modelLoaded(model.id))
         if let contextWindow = model.generationDefaults.contextWindow
