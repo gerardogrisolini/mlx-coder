@@ -430,6 +430,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
                     promptTokensPerSecond: info.promptTokensPerSecond,
                     completionTokenCount: info.generationTokenCount,
                     completionTokensPerSecond: info.tokensPerSecond,
+                    responseDurationSeconds: info.promptTime + info.generateTime,
                     contextTokenCount: contextTokenCount
                 )
             )

@@ -129,8 +129,16 @@ extension DirectToolExecutor {
 #endif
 
     public func glob(arguments: [String: Any], cwd: URL) throws -> String {
-        let pattern = arguments.string("pattern")?.nilIfBlank
-        let root = resolvePath(arguments.string("path") ?? ".", cwd: cwd)
+        var pattern = arguments.string("pattern")?.nilIfBlank
+        let root: URL
+        if arguments.string("path")?.nilIfBlank == nil,
+           let rawPattern = pattern,
+           let patternPath = existingGlobPatternPath(rawPattern, cwd: cwd) {
+            root = patternPath
+            pattern = nil
+        } else {
+            root = resolvePath(arguments.string("path") ?? ".", cwd: cwd)
+        }
         let maxResults = max(1, arguments.int("maxResults", "max_results") ?? 200)
         guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey]) else {
             return "<empty>"
@@ -156,6 +164,22 @@ extension DirectToolExecutor {
             }
         }
         return matches.isEmpty ? "<empty>" : matches.joined(separator: "\n")
+    }
+
+    func existingGlobPatternPath(_ pattern: String, cwd: URL) -> URL? {
+        guard !pattern.contains("*"),
+              !pattern.contains("?"),
+              !pattern.contains("[") else {
+            return nil
+        }
+
+        let url = resolvePath(pattern, cwd: cwd)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return nil
+        }
+        return url
     }
 
     public func head(arguments: [String: Any], cwd: URL) throws -> String {

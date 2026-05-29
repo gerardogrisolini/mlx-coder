@@ -339,9 +339,9 @@ public final class TerminalStatusBar: @unchecked Sendable {
             "\u{1B}[\(topRow);\(startColumn)H",
             "\u{1B}[2K",
             orange,
-            "╭",
+            "┌",
             horizontalRule,
-            "╮",
+            "┐",
             reset,
             inputSequence,
             suggestionSequence,
@@ -385,9 +385,9 @@ public final class TerminalStatusBar: @unchecked Sendable {
             sequence += "\u{1B}[\(max(1, row - 2));\(startColumn)H"
                 + "\u{1B}[2K"
                 + orange
-                + "╭"
+                + "┌"
                 + horizontalRule
-                + "╮"
+                + "┐"
                 + reset
         }
         sequence += "\u{1B}[\(max(1, row - 1));\(startColumn)H"
@@ -405,9 +405,9 @@ public final class TerminalStatusBar: @unchecked Sendable {
             + "\u{1B}[\(row);\(startColumn)H"
             + "\u{1B}[2K"
             + orange
-            + "╰"
+            + "└"
             + horizontalRule
-            + "╯"
+            + "┘"
             + reset
             + "\u{1B}8"
         return sequence

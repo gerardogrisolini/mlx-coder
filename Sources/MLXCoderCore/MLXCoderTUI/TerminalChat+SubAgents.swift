@@ -197,7 +197,7 @@ extension TerminalChat {
         let reset = "\u{1B}[0m"
 
         var output = [
-            "\(linePrefix)\(orange)╭\(horizontalRule)╮\(reset)",
+            "\(linePrefix)\(orange)┌\(horizontalRule)┐\(reset)",
             "\(linePrefix)\(orange)│\(reset) \(padded(fitInline("Sub-Agents", width: contentWidth), width: contentWidth)) \(orange)│\(reset)",
             "\(linePrefix)\(orange)├\(horizontalRule)┤\(reset)"
         ]
@@ -205,7 +205,7 @@ extension TerminalChat {
             let fittedLine = padded(fitInline(line, width: contentWidth), width: contentWidth)
             output.append("\(linePrefix)\(orange)│\(reset) \(fittedLine) \(orange)│\(reset)")
         }
-        output.append("\(linePrefix)\(orange)╰\(horizontalRule)╯\(reset)")
+        output.append("\(linePrefix)\(orange)└\(horizontalRule)┘\(reset)")
         return output.joined(separator: "\n")
     }
 

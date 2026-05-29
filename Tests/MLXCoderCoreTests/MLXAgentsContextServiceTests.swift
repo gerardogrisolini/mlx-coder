@@ -35,6 +35,7 @@ struct MLXAgentsContextServiceTests {
 
         #expect(content.contains("Keep only durable project-specific facts"))
         #expect(content.contains("Use this file to quickly re-enter the project after reopening the folder."))
+        #expect(content.contains("SwiftPM target roots are under `Sources/<target>` and `Tests/<target>`"))
         #expect(content.contains("Use the package manifests listed above"))
         #expect(!content.contains("Use the shared schemes listed above"))
     }

@@ -460,6 +460,9 @@ public struct MLXProjectContextFileService {
         lines.append(limitedListLine("Xcode projects", values: inventory.xcodeProjects))
         lines.append(limitedListLine("Xcode workspaces", values: inventory.xcodeWorkspaces))
         lines.append(limitedListLine("Shared schemes", values: inventory.sharedSchemes))
+        if !inventory.packageManifests.isEmpty {
+            lines.append("- SwiftPM target roots are under `Sources/<target>` and `Tests/<target>`; build diagnostics and target-relative reasoning may omit those container folders.")
+        }
         return lines.joined(separator: "\n")
     }
 

@@ -42,6 +42,9 @@ public final class TerminalChat: @unchecked Sendable {
     public var activeCompactToolCallID: String?
     public var activeCompactToolRenderedRowCount = 0
     public var isStreamingThoughtOutput = false
+    var thoughtOutputEndsWithNewline = false
+    var shouldTrimLeadingAssistantContentLineBreaks = false
+    var assistantContentNeedsLineBreakBeforeTool = false
     public var assistantMarkdownFormatter = TerminalMarkdownStreamFormatter(
         isEnabled: AgentOutput.standardOutputIsTerminal
     )

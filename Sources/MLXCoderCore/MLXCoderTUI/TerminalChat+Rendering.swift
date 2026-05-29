@@ -150,12 +150,12 @@ extension TerminalChat {
             let fittedLine = padded(fitBannerLine(line, width: boxWidth), width: boxWidth)
             return fittedLine
         }
-        output.append("\(linePrefix)\(orange)╭\(horizontalRule)╮\(reset)")
+        output.append("\(linePrefix)\(orange)┌\(horizontalRule)┐\(reset)")
         for line in lines {
             let fittedLine = padded(fitInline(line, width: contentWidth), width: contentWidth)
             output.append("\(linePrefix)\(orange)│\(reset) \(fittedLine) \(orange)│\(reset)")
         }
-        output.append("\(linePrefix)\(orange)╰\(horizontalRule)╯\(reset)")
+        output.append("\(linePrefix)\(orange)└\(horizontalRule)┘\(reset)")
         return output.joined(separator: "\n")
     }
 
@@ -268,29 +268,49 @@ extension TerminalChat {
         finishAssistantContentFormatting()
         if !isStreamingThoughtOutput {
             isStreamingThoughtOutput = true
+            shouldTrimLeadingAssistantContentLineBreaks = false
+            assistantContentNeedsLineBreakBeforeTool = false
             let title = AgentOutput.standardErrorIsTerminal
                 ? "\u{1B}[90m🤔 Thinking:\u{1B}[0m"
                 : "🤔 Thinking:"
             AgentOutput.standardError.writeString("\n\(title)\n")
+            thoughtOutputEndsWithNewline = true
         }
+        let renderedThought = thoughtMarkdownFormatter.consume(delta)
         AgentOutput.standardError.writeString(
-            Self.renderThoughtMarkdown(thoughtMarkdownFormatter.consume(delta))
+            Self.renderThoughtMarkdown(renderedThought)
         )
+        if !renderedThought.isEmpty {
+            thoughtOutputEndsWithNewline = renderedThought.hasSuffix("\n")
+        }
     }
 
     public func writeAssistantContent(_ delta: String) {
         guard !delta.isEmpty else {
             return
         }
-        AgentOutput.standardOutput.writeString(
-            assistantMarkdownFormatter.consume(delta)
-        )
+        var content = delta
+        if shouldTrimLeadingAssistantContentLineBreaks {
+            content = Self.removingLeadingLineBreaks(content)
+            guard !content.isEmpty else {
+                return
+            }
+            shouldTrimLeadingAssistantContentLineBreaks = false
+        }
+        let renderedContent = assistantMarkdownFormatter.consume(content)
+        AgentOutput.standardOutput.writeString(renderedContent)
+        if !renderedContent.isEmpty {
+            assistantContentNeedsLineBreakBeforeTool = !renderedContent.hasSuffix("\n")
+        }
     }
 
     public func finishAssistantContentFormatting() {
-        AgentOutput.standardOutput.writeString(
-            assistantMarkdownFormatter.finish()
-        )
+        let renderedContent = assistantMarkdownFormatter.finish()
+        AgentOutput.standardOutput.writeString(renderedContent)
+        if !renderedContent.isEmpty {
+            assistantContentNeedsLineBreakBeforeTool = !renderedContent.hasSuffix("\n")
+        }
+        shouldTrimLeadingAssistantContentLineBreaks = false
     }
 
     public func writeSubmittedPrompt(_ prompt: String) {
@@ -303,17 +323,40 @@ extension TerminalChat {
             }
             .joined(separator: "\n")
         AgentOutput.standardError.writeString("\n\(renderedLines)\n")
+        assistantContentNeedsLineBreakBeforeTool = false
     }
 
     public func finishThoughtOutputIfNeeded() {
         guard isStreamingThoughtOutput else {
             return
         }
+        let renderedThought = thoughtMarkdownFormatter.finish()
         AgentOutput.standardError.writeString(
-            Self.renderThoughtMarkdown(thoughtMarkdownFormatter.finish())
+            Self.renderThoughtMarkdown(renderedThought)
         )
-        AgentOutput.standardError.writeString("\n")
+        if !renderedThought.isEmpty {
+            thoughtOutputEndsWithNewline = renderedThought.hasSuffix("\n")
+        }
+        AgentOutput.standardError.writeString(
+            Self.thoughtBoundarySeparator(endsWithNewline: thoughtOutputEndsWithNewline)
+        )
+        shouldTrimLeadingAssistantContentLineBreaks = true
+        assistantContentNeedsLineBreakBeforeTool = false
+        thoughtOutputEndsWithNewline = false
         isStreamingThoughtOutput = false
+    }
+
+    static func thoughtBoundarySeparator(endsWithNewline: Bool) -> String {
+        endsWithNewline ? "\n" : "\n\n"
+    }
+
+    static func removingLeadingLineBreaks(_ text: String) -> String {
+        guard let firstContentIndex = text.firstIndex(where: { character in
+            !character.unicodeScalars.allSatisfy(CharacterSet.newlines.contains)
+        }) else {
+            return ""
+        }
+        return String(text[firstContentIndex...])
     }
 
     private static func renderThoughtMarkdown(_ renderedMarkdown: String) -> String {
@@ -473,7 +516,7 @@ extension TerminalChat {
         let lines = Self.compactToolLines(for: toolCall, statusIcon: "⏳")
         activeCompactToolCallID = toolCall.id
         activeCompactToolRenderedRowCount = Self.renderedTerminalRowCount(for: lines)
-        writeCompactToolLines(lines)
+        writeCompactToolLines(lines, leadingNewline: consumeToolLeadingLineBreakRequirement())
     }
 
     private func writeCompactToolCallCompleted(
@@ -494,21 +537,24 @@ extension TerminalChat {
         if shouldRewriteActiveLine {
             AgentOutput.standardError.writeString("\u{1B}[\(max(1, rewriteRowCount))A\r\u{1B}[J")
         }
-        writeCompactToolLines(lines, leadingNewline: !shouldRewriteActiveLine)
+        writeCompactToolLines(
+            lines,
+            leadingNewline: !shouldRewriteActiveLine && consumeToolLeadingLineBreakRequirement()
+        )
     }
 
     private func writeCompactToolLines(
         _ lines: [String],
-        leadingNewline: Bool = true,
+        leadingNewline: Bool = false,
         terminator: String = "\n"
     ) {
-        let toolColor = "\u{1B}[38;5;81m"
         let reset = "\u{1B}[0m"
         let prefix = leadingNewline ? "\n" : ""
         let text = lines
-            .map { "\r\u{1B}[2K\(toolColor)\($0)\(reset)" }
+            .map { "\r\u{1B}[2K\(Self.toolANSIColor)\($0)\(reset)" }
             .joined(separator: "\n")
         AgentOutput.standardError.writeString("\(prefix)\(text)\(terminator)")
+        assistantContentNeedsLineBreakBeforeTool = false
     }
 
     private static func compactToolLines(
@@ -590,13 +636,22 @@ extension TerminalChat {
     }
 
     private func writeToolBlock(_ lines: [String]) {
-        let toolColor = "\u{1B}[38;5;81m"
         let reset = "\u{1B}[0m"
+        let prefix = consumeToolLeadingLineBreakRequirement() ? "\n" : ""
         let text = lines
-            .map { "\(toolColor)\($0)\(reset)" }
+            .map { "\(Self.toolANSIColor)\($0)\(reset)" }
             .joined(separator: "\n")
-        AgentOutput.standardError.writeString("\n\(text)\n")
+        AgentOutput.standardError.writeString("\(prefix)\(text)\n")
+        assistantContentNeedsLineBreakBeforeTool = false
     }
+
+    private func consumeToolLeadingLineBreakRequirement() -> Bool {
+        let shouldWriteLineBreak = assistantContentNeedsLineBreakBeforeTool
+        assistantContentNeedsLineBreakBeforeTool = false
+        return shouldWriteLineBreak
+    }
+
+    private static let toolANSIColor = "\u{1B}[38;5;208m"
 
     private static func toolLocationLines(
         for toolCall: DirectAgentToolCall
