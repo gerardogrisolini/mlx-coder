@@ -19,13 +19,21 @@ enum MLXMetalLibraryBootstrap {
         let source = try findMetalKernelSource()
         let manifest = try MLXMetalLibraryManifest(sourceFiles: source.metalFiles)
 
-        if FileManager.default.fileExists(atPath: outputURL.path),
-           (try? MLXMetalLibraryManifest.load(from: manifestURL)) == manifest {
-            return
+        if FileManager.default.fileExists(atPath: outputURL.path) {
+            if (try? MLXMetalLibraryManifest.load(from: manifestURL)) == manifest {
+                return
+            }
+            if !FileManager.default.fileExists(atPath: manifestURL.path),
+               try isExistingLibraryFresh(outputURL: outputURL, sourceFiles: source.metalFiles) {
+                try manifest.save(to: manifestURL)
+                return
+            }
         }
 
+        writeStatus("mlx-server preparing Metal kernels...\n")
         try compileMetalKernels(from: source, to: outputURL)
         try manifest.save(to: manifestURL)
+        writeStatus("mlx-server prepared Metal kernels.\n")
         #endif
     }
 
@@ -132,6 +140,28 @@ enum MLXMetalLibraryBootstrap {
         return files.sorted { $0.path < $1.path }
     }
 
+    private static func isExistingLibraryFresh(
+        outputURL: URL,
+        sourceFiles: [URL]
+    ) throws -> Bool {
+        let outputValues = try outputURL.resourceValues(
+            forKeys: [.fileSizeKey, .contentModificationDateKey]
+        )
+        guard (outputValues.fileSize ?? 0) > 0,
+              let outputModificationDate = outputValues.contentModificationDate else {
+            return false
+        }
+
+        for sourceFile in sourceFiles {
+            let sourceValues = try sourceFile.resourceValues(forKeys: [.contentModificationDateKey])
+            guard let sourceModificationDate = sourceValues.contentModificationDate,
+                  sourceModificationDate <= outputModificationDate else {
+                return false
+            }
+        }
+        return true
+    }
+
     private static func ancestorURLs(startingAt url: URL) -> [URL] {
         var result: [URL] = []
         var current = url.standardizedFileURL
@@ -205,6 +235,10 @@ enum MLXMetalLibraryBootstrap {
             let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
             throw MLXMetalLibraryBootstrapError.xcrunFailed(arguments.joined(separator: " "), output ?? "")
         }
+    }
+
+    private static func writeStatus(_ message: String) {
+        try? FileHandle.standardError.write(contentsOf: Data(message.utf8))
     }
     #endif
 }

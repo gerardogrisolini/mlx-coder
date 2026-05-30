@@ -132,7 +132,7 @@ extension TerminalChat {
     }
 
     public static func renderSkillSelectionUsage() -> String {
-        "Usage: /skills [all|none|skill-name|skill-number]\n"
+        "Usage: /skills [all|none|skill-name|skill-number|install <github-url|local-path>|<github-url|local-path>]\n"
     }
 
     public static func renderStartupBox(lines: [String]) -> String {
@@ -367,6 +367,24 @@ extension TerminalChat {
         AgentOutput.standardError.writeString(chatLineInsetApplied(to: text))
     }
 
+    func writeSystemMessage(_ text: String) {
+        writeChatError(
+            Self.systemMessageColorApplied(
+                to: text,
+                isEnabled: AgentOutput.standardErrorIsTerminal
+            )
+        )
+    }
+
+    func writeOperationalMessage(_ text: String) {
+        writeChatError(
+            Self.operationalMessageColorApplied(
+                to: text,
+                isEnabled: AgentOutput.standardErrorIsTerminal
+            )
+        )
+    }
+
     func chatLineInsetApplied(to text: String) -> String {
         Self.chatLineInsetApplied(
             to: text,
@@ -407,6 +425,31 @@ extension TerminalChat {
     }
 
     static let chatLineInsetPrefix = " "
+
+    static func systemMessageColorApplied(to text: String, isEnabled: Bool) -> String {
+        guard isEnabled, !text.isEmpty else {
+            return text
+        }
+
+        let color = systemMessageANSIColor
+        let reset = "\u{1B}[0m"
+        return text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in
+                line.isEmpty ? "" : "\(color)\(line)\(reset)"
+            }
+            .joined(separator: "\n")
+    }
+
+    private static let systemMessageANSIColor = "\u{1B}[38;5;179m"
+
+    static func operationalMessageColorApplied(to text: String, isEnabled: Bool) -> String {
+        guard isEnabled, !text.isEmpty else {
+            return text
+        }
+
+        return "\u{1B}[38;5;75m\(text)\u{1B}[0m"
+    }
 
     private static func renderThoughtMarkdown(_ renderedMarkdown: String) -> String {
         guard AgentOutput.standardErrorIsTerminal,
@@ -556,8 +599,8 @@ extension TerminalChat {
             activeCompactToolRenderedRowCount = 0
         }
         isDetailedToolOutputEnabled.toggle()
-        writeChatError(
-            "\n[mlx-coder] Tool details: \(isDetailedToolOutputEnabled ? "full" : "compact")\n"
+        writeSystemMessage(
+            "Tool details: \(isDetailedToolOutputEnabled ? "full" : "compact")\n"
         )
     }
 

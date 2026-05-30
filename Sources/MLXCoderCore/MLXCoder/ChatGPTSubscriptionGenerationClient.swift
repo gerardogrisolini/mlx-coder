@@ -138,7 +138,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
     private struct AgentSession {
         let id: String
         let cwd: String
-        let systemPrompt: String?
+        var systemPrompt: String?
         let cacheKey: String?
         var messages: [[String: Any]]
         var allowedToolNames: Set<String>?
@@ -296,6 +296,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
 
     public func updateSessionOptions(
         id: String,
+        systemPrompt: String?,
         allowedToolNames: Set<String>?,
         thinkingSelection: AgentThinkingSelection?,
         preserveThinking: Bool
@@ -303,9 +304,24 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         guard var session = sessions[id] else {
             return
         }
+        let oldSystemPrompt = session.systemPrompt
+        session.systemPrompt = systemPrompt
+        session.messages = RemoteGenerationClient.replacingSystemPrompt(
+            in: session.messages,
+            cwd: session.cwd,
+            systemPrompt: systemPrompt,
+            allowedToolNames: allowedToolNames
+        )
         session.allowedToolNames = allowedToolNames
         session.thinkingSelection = thinkingSelection
         session.preserveThinking = preserveThinking
+        if oldSystemPrompt != systemPrompt {
+            if let chatGPTSessionID = session.chatGPTSessionID {
+                webSocketPool.closeSession(sessionID: chatGPTSessionID)
+            }
+            session.continuation = nil
+            session.chatGPTSessionID = nil
+        }
         sessions[id] = session
     }
 

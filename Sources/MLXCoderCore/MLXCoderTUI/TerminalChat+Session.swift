@@ -62,8 +62,12 @@ extension TerminalChat {
     }
 
     public func refreshInitialStatusBarContextWindow() {
-        if let hostedModel = hostedModelManifest(for: currentEffectiveModelID()),
-           let maxTokens = hostedModel.configuredContextWindowLimit {
+        let effectiveModelID = currentEffectiveModelID()
+        if let hostedModel = hostedModelManifest(for: effectiveModelID) {
+            _ = statusBar.update(modelID: hostedModel.modelID)
+            guard let maxTokens = hostedModel.configuredContextWindowLimit else {
+                return
+            }
             _ = statusBar.update(
                 contextWindow: DirectAgentContextWindowStatus(
                     usedTokens: 0,
@@ -76,9 +80,16 @@ extension TerminalChat {
         }
 
         guard let selection = AgentSettingsStore.defaultSelection(
-            explicitModelID: currentEffectiveModelID()
-        ),
-              let maxTokens = selection.configuredContextWindowLimit else {
+            explicitModelID: effectiveModelID
+        ) else {
+            if let effectiveModelID {
+                _ = statusBar.update(modelID: effectiveModelID)
+            }
+            return
+        }
+
+        _ = statusBar.update(modelID: selection.modelID)
+        guard let maxTokens = selection.configuredContextWindowLimit else {
             return
         }
 
@@ -161,7 +172,7 @@ extension TerminalChat {
                 )
             )
         } catch {
-            AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
+            writeChatError("mlx-coder: \(error.localizedDescription)\n")
         }
         didPrintActiveTools = false
         return allowedToolNames
@@ -188,7 +199,7 @@ extension TerminalChat {
             .sorted { $0.displayTitle.localizedStandardCompare($1.displayTitle) == .orderedAscending }
             .map(\.displayTitle)
             .joined(separator: ", ")
-        AgentOutput.standardError.writeString(
+        writeSystemMessage(
             """
             Workspace access was not granted for \(configuration.workingDirectory.path).
             Disabled tool groups: \(disabledGroupNames).

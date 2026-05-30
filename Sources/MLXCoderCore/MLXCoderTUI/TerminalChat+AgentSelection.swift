@@ -21,7 +21,7 @@ extension TerminalChat {
             guard stdinIsTerminal else {
                 printAgentSelectionStatus()
                 renderAgentList(agents: try availableAgents())
-                AgentOutput.standardError.writeString(Self.renderAgentSelectionUsage())
+                writeSystemMessage(Self.renderAgentSelectionUsage())
                 return
             }
 
@@ -70,11 +70,9 @@ extension TerminalChat {
         statusBar.reset()
         try await createCurrentSession()
         refreshInitialStatusBarContextWindow()
-        let loadedModelID = try await preloadCurrentModel()
+        _ = try await preloadCurrentModel()
         await printActiveToolsIfNeeded()
-        AgentOutput.standardError.writeString(
-            "Switched to agent: \(agent.displayName). Loaded model: \(loadedModelID). Session reset.\n"
-        )
+        writeSystemMessage("Switched to agent: \(agent.displayName). Session reset.\n")
     }
 
     public func applyAgentProfile(_ agent: AgentProfile) {
@@ -129,26 +127,26 @@ extension TerminalChat {
     }
 
     public func printAgentSelectionStatus() {
-        AgentOutput.standardError.writeString(Self.renderSelectedAgent(selectedAgent))
+        writeSystemMessage(Self.renderSelectedAgent(selectedAgent))
     }
 
     public func renderAgentList(agents: [AgentProfile]) {
         guard !agents.isEmpty else {
-            AgentOutput.standardError.writeString(
+            writeSystemMessage(
                 "No agents configured in \(AgentProfileStore.agentsManifestURL().path).\n"
             )
             return
         }
 
-        AgentOutput.standardError.writeString("\nAvailable agents:\n")
+        writeSystemMessage("\nAvailable agents:\n")
         for (offset, agent) in agents.enumerated() {
             let marker = selectedAgent == agent ? " *" : ""
             let detail = agentSelectionDetail(agent)
-            AgentOutput.standardError.writeString(
+            writeSystemMessage(
                 "  \(offset + 1). \(agent.displayName) - \(detail)\(marker)\n"
             )
         }
-        AgentOutput.standardError.writeString("\n")
+        writeSystemMessage("\n")
     }
 
     public func agentSelectionDetail(_ agent: AgentProfile) -> String {

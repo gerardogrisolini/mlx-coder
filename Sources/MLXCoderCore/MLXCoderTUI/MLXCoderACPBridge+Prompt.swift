@@ -113,6 +113,16 @@ extension MLXCoderACPBridge {
                                 ]
                             ]))
                         }
+                    case let .modelLoadedDetails(details):
+                        if !appMode {
+                            await sendPromptUpdate(JSONValue.acpValue(from: [
+                                "sessionUpdate": "agent_thought_chunk",
+                                "content": [
+                                    "type": "text",
+                                    "text": "Loaded model: \(details.modelID)"
+                                ]
+                            ]))
+                        }
                     case let .metrics(metrics):
                         await sendPromptUpdate(JSONValue.acpValue(from: Self.metricsUpdate(for: metrics)))
                     case let .contextWindow(status):

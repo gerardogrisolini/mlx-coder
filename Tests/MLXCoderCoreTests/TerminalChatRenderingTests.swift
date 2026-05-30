@@ -46,4 +46,15 @@ struct TerminalChatRenderingTests {
             ) == "\n OK"
         )
     }
+
+    @Test
+    func systemMessageColoringWrapsNonBlankLines() {
+        let rendered = TerminalChat.systemMessageColorApplied(
+            to: "Tool details: full\n",
+            isEnabled: true
+        )
+
+        #expect(rendered.hasPrefix("\u{1B}[38;5;179mTool details: full\u{1B}[0m\n"))
+        #expect(rendered.hasSuffix("\n"))
+    }
 }

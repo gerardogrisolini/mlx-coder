@@ -32,12 +32,24 @@ func startsRuntimeWithNoLoadedModels() async {
 }
 
 @Test
+func serverSupportFilesDefaultToHomeMlxServerDirectory() {
+    let supportDirectory = MLXServerUserHomeDirectory.current()
+        .appendingPathComponent(".mlx-server", isDirectory: true)
+        .standardizedFileURL
+
+    #expect(MLXServerSettingsStore.defaultSupportDirectoryURL() == supportDirectory)
+    #expect(MLXServerSettingsStore.settingsURL() == supportDirectory.appendingPathComponent("settings.json"))
+    #expect(MLXServerModelsManifestStore.modelsURL() == supportDirectory.appendingPathComponent("models.json"))
+}
+
+@Test
 func diskKVCacheDefaultsToBalancedLimit() {
     let configuration = MLXServerDiskKVCacheConfiguration()
+    let supportDirectory = MLXServerSettingsStore.defaultSupportDirectoryURL()
 
     #expect(configuration.isEnabled)
     #expect(configuration.limitBytes == MLXServerDiskKVCacheConfiguration.defaultLimitBytes)
-    #expect(configuration.directory.lastPathComponent == "KVCaches")
+    #expect(configuration.directory == supportDirectory.appendingPathComponent("KVCaches", isDirectory: true))
 }
 
 @Test

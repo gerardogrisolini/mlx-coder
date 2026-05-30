@@ -35,7 +35,7 @@ extension TerminalChat {
             }
             manualModelIDOverride = model.id
             manualThinkingSelectionOverride = thinkingSelection
-            AgentOutput.standardError.writeString(
+            writeSystemMessage(
                 "Selected model: \(model.displayTitle)\(thinkingSuffix(thinkingSelection))\n"
             )
             return
@@ -58,7 +58,7 @@ extension TerminalChat {
         }
         manualModelIDOverride = model.id
         manualThinkingSelectionOverride = thinkingSelection
-        AgentOutput.standardError.writeString(
+        writeSystemMessage(
             "Selected model: \(model.displayTitle)\(thinkingSuffix(thinkingSelection))\n"
         )
     }
@@ -72,7 +72,7 @@ extension TerminalChat {
         }
         guard stdinIsTerminal else {
             renderModelList(models: models, message: nil)
-            AgentOutput.standardError.writeString("Model selection requires an interactive terminal.\n")
+            writeSystemMessage("Model selection requires an interactive terminal.\n")
             return
         }
 
@@ -82,7 +82,7 @@ extension TerminalChat {
             models: models,
             message: nil
         ) else {
-            AgentOutput.standardError.writeString("Model unchanged.\n")
+            writeSystemMessage("Model unchanged.\n")
             return
         }
 
@@ -106,12 +106,12 @@ extension TerminalChat {
             statusBar.reset()
             refreshInitialStatusBarContextWindow()
             if previousThinkingSelection == selectedThinkingSelection {
-                AgentOutput.standardError.writeString(
+                writeSystemMessage(
                     "Already using \(selectedModel.displayTitle)\(thinkingSuffix(selectedThinkingSelection)). Session options refreshed.\n"
                 )
                 return
             }
-            AgentOutput.standardError.writeString(
+            writeSystemMessage(
                 "Updated thinking to \(selectedThinkingSelection?.displayTitle ?? "default"). Session cache preserved.\n"
             )
             return
@@ -122,7 +122,7 @@ extension TerminalChat {
         statusBar.reset()
         try await createCurrentSession()
         refreshInitialStatusBarContextWindow()
-        _ = try await preloadCurrentModel(emitStatus: false)
+        _ = try await preloadCurrentModel(emitStatus: configuration.hostedModels != nil)
     }
 
     public func availableModelManifests() -> [AgentSettingsModelManifest] {
@@ -152,22 +152,22 @@ extension TerminalChat {
     ) {
         let selectedModelID = currentEffectiveModelID() ?? AgentSettingsStore.selectedModelID()
         if let message {
-            AgentOutput.standardError.writeString("\(message)\n")
+            writeSystemMessage("\(message)\n")
         }
-        AgentOutput.standardError.writeString("\nAvailable models:\n")
+        writeSystemMessage("\nAvailable models:\n")
         var offset = 1
         for group in AgentModelCatalogPresentation.groupedByProvider(models) {
-            AgentOutput.standardError.writeString("  \(group.title):\n")
+            writeSystemMessage("  \(group.title):\n")
             for model in group.models {
                 let marker = selectedModelID.map(model.matches) == true ? " *" : ""
                 let thinking = modelThinkingSuffix(model)
-                AgentOutput.standardError.writeString(
+                writeSystemMessage(
                     "    \(offset). \(model.displayTitle)\(thinking)\(marker)\n"
                 )
                 offset += 1
             }
         }
-        AgentOutput.standardError.writeString("\n")
+        writeSystemMessage("\n")
     }
 
     public func promptForThinkingSelection(
@@ -264,10 +264,15 @@ extension TerminalChat {
             case let .modelLoaded(modelID):
                 _ = self.statusBar.update(modelID: modelID)
                 self.printedModelID = self.loadedModelDisplayTitle(modelID)
+            case let .modelLoadedDetails(details):
+                if emitStatus {
+                    self.printLoadedModelDetails(details)
+                }
             case .diagnostic, .thought, .metrics, .contextWindow, .content, .toolCallStarted, .toolCallCompleted:
                 break
             }
         }
+        _ = statusBar.update(modelID: loadedModelID)
         if !emitStatus {
             printedModelID = loadedModelDisplayTitle(loadedModelID)
         }
@@ -281,6 +286,38 @@ extension TerminalChat {
         }
         printedModelID = displayTitle
         _ = statusBar.update(modelID: modelID)
+        printLoadedModelDetails(
+            DirectAgentLoadedModelDetails(modelID: modelID)
+        )
+    }
+
+    public func printLoadedModelDetails(_ details: DirectAgentLoadedModelDetails) {
+        let modelID = details.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !modelID.isEmpty else {
+            return
+        }
+
+        let displayTitle = loadedModelDisplayTitle(modelID)
+        printedModelID = displayTitle
+        _ = statusBar.update(modelID: modelID)
+
+        var lines = [
+            "mlx-server loaded model:",
+            "  model: \(modelID)"
+        ]
+        if let runtime = details.runtime {
+            lines.append("  runtime: \(runtime)")
+        }
+        if let generation = details.generation {
+            lines.append("  generation: \(generation)")
+        }
+        if let penalties = details.penalties {
+            lines.append("  penalties: \(penalties)")
+        }
+        if let kvCache = details.kvCache {
+            lines.append("  kv_cache: \(kvCache)")
+        }
+        writeOperationalMessage(lines.joined(separator: "\n") + "\n")
     }
 
     public func loadedModelDisplayTitle(_ modelID: String) -> String {

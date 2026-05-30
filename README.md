@@ -55,10 +55,10 @@ The server is not a desktop app and does not own UI settings. It is the runtime/
 
 ## Configuration Files
 
-The server uses two explicit files. There is no fallback list and no cache-folder scan at request time.
+The server uses two explicit files under `~/.mlx-server/`. There is no fallback list and no cache-folder scan at request time.
 
-- `settings.json`: host, port, TLS, HTTP/2, metrics log, disk KV cache, and model retention policy.
-- `models.json`: the exposed model ids, Hugging Face repositories, generation defaults, and thinking configuration.
+- `~/.mlx-server/settings.json`: host, port, TLS, HTTP/2, metrics log, disk KV cache, and model retention policy.
+- `~/.mlx-server/models.json`: the exposed model ids, Hugging Face repositories, generation defaults, and thinking configuration.
 
 Run setup once:
 
@@ -66,7 +66,7 @@ Run setup once:
 swift run -c release mlx-server --setup
 ```
 
-The setup writes `settings.json` next to the executable for standalone builds and then asks whether to configure models too. If accepted, it starts model setup and writes `models.json`.
+The setup writes `settings.json` under `~/.mlx-server/` and then asks whether to configure models too. If accepted, it starts model setup and writes `models.json` in the same directory.
 
 ## Model Loading
 
@@ -91,7 +91,7 @@ When run directly, model setup also asks whether the server should keep only one
 `mlx-coder` agent profiles are configured through `agents.json`:
 
 ```bash
-swift run -c release mlx-server --setup-agents
+swift run -c release mlx-coder --setup-agents
 ```
 
 The setup can create the six recommended profiles (`Default`, `Bugfix`, `Feature`, `Review`, `Research`, `Refactor`) or a custom list. It also lets you edit tools, skills, model overrides, symbols, and instructions before saving.
@@ -105,16 +105,16 @@ swift run -c release mlx-server --reset
 swift run -c release mlx-server --reset-disk-cache
 ```
 
-`--reset` deletes the local `mlx-server`/`mlx-coder` configuration files managed by the package: `settings.json`, `models.json`, `agents.json`, `AGENTS.md`, and `MEMORY.md`.
+`--reset` deletes the managed configuration files in `~/.mlx-server/` and `~/.mlx-coder/`: `settings.json`, `models.json`, `agents.json`, `AGENTS.md`, and `MEMORY.md`.
 
-`--reset-disk-cache` empties the configured disk KV cache directory. If `settings.json` is missing, it uses the default disk cache location.
+`--reset-disk-cache` empties the configured disk KV cache directory. If `settings.json` is missing, it uses the default `~/.mlx-server/KVCaches` location.
 
 ## Agent Integrations
 
 External agent integrations are configured through a dedicated setup:
 
 ```bash
-swift run -c release mlx-server --join-agents
+swift run -c release mlx-server --setup-agents
 ```
 
 The setup reads the current external configuration files as the source of truth, shows what is already active, then lets you enable or disable:
@@ -137,7 +137,7 @@ swift run -c release mlx-coder --setup
 swift run -c release mlx-coder
 ```
 
-`mlx-coder` keeps its own setup files (`AGENTS.md`, `MEMORY.md`, `agents.json`, and `settings.json`) and can still run as a standalone terminal agent. The server executable can also host the same coder runtime directly:
+`mlx-coder` keeps its own setup files under `~/.mlx-coder/` (`AGENTS.md`, `MEMORY.md`, `agents.json`, and `settings.json`) and can still run as a standalone terminal agent. The server executable can also host the same coder runtime directly:
 
 ```bash
 swift run -c release mlx-server --coder --cwd /path/to/project
@@ -169,7 +169,7 @@ let stream = try await runtime.generate(
 
 ## HTTP API
 
-The server reads runtime settings only from `settings.json`; command line flags do not change host, port, TLS, HTTP/2, metrics logging, model retention, or disk KV cache behavior.
+The server reads runtime settings only from `~/.mlx-server/settings.json`; command line flags do not change host, port, TLS, HTTP/2, metrics logging, model retention, or disk KV cache behavior.
 
 Run the optimized server:
 
@@ -240,10 +240,10 @@ swift run -c release mlx-server --help
 swift run -c release mlx-server --setup
 swift run -c release mlx-server --setup-models
 swift run -c release mlx-server --setup-agents
-swift run -c release mlx-server --join-agents
 swift run -c release mlx-server --reset
 swift run -c release mlx-server --reset-disk-cache
 swift run -c release mlx-coder --setup
+swift run -c release mlx-coder --setup-agents
 swift run -c release mlx-server --chat
 swift run -c release mlx-server --coder --cwd /path/to/project
 swift run -c release mlx-server --chat Ciao --max-tokens 256 --quiet

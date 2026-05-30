@@ -73,12 +73,6 @@ struct MLXServerMain {
             arguments = MLXServerModelSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
         }
 
-        if MLXServerAgentProfileSetupRunner.shouldRunSetup(arguments: arguments) {
-            didRunSetup = true
-            try MLXServerAgentProfileSetupRunner.run(arguments: arguments)
-            arguments = MLXServerAgentProfileSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
-        }
-
         if MLXServerAgentSetupRunner.shouldRunSetup(arguments: arguments) {
             didRunSetup = true
             try MLXServerAgentSetupRunner.run(arguments: arguments)
@@ -154,8 +148,8 @@ struct MLXServerMain {
         let runtime = MLXServerRuntime(
             retentionPolicy: settings.modelRetentionPolicy,
             diskKVCacheConfiguration: settings.diskKVCache.configuration,
-            modelLoadLogger: { logModelLoadEvent($0, linePrefix: " ") },
-            modelUnloadLogger: logModelUnloadEvent
+            modelLoadLogger: nil,
+            modelUnloadLogger: { logModelUnloadEvent($0, linePrefix: " ") }
         )
         let permissionAuthorizer = LocalExecPermissionAuthorizer()
         let sessionRunner = AgentCoreSessionRunner(
@@ -183,6 +177,7 @@ struct MLXServerMain {
                 from: modelCatalog.models,
                 kvCacheSettings: settings.kvCache
             ),
+            cacheAgentProfiles: false,
             bearerToken: nil,
             runMode: .chat,
             workingDirectory: options.workingDirectory,
@@ -326,7 +321,17 @@ struct MLXServerMain {
     }
 
     private static func logModelUnloadEvent(_ event: MLXServerModelUnloadEvent) {
-        FileHandle.standardError.writeString("mlx-server unloaded model: \(event.modelID)\n")
+        logModelUnloadEvent(event, linePrefix: "")
+    }
+
+    private static func logModelUnloadEvent(
+        _ event: MLXServerModelUnloadEvent,
+        linePrefix: String
+    ) {
+        let message = "mlx-server unloaded model: \(event.modelID)\n"
+        FileHandle.standardError.writeString(
+            coloredOperationalLog(linePrefixedLog(message, prefix: linePrefix))
+        )
     }
 
     private static func formatModelDefault(_ value: Int?) -> String {
@@ -741,7 +746,6 @@ private enum MLXServerHelp {
       mlx-server --setup
       mlx-server --setup-models
       mlx-server --setup-agents
-      mlx-server --join-agents
       mlx-server --reset
       mlx-server --reset-disk-cache
       mlx-server
@@ -749,15 +753,15 @@ private enum MLXServerHelp {
                  [--max-output-tokens <count>] [--max-tool-rounds <count>] [--verbose]
       mlx-server --chat [initial text] [--model <id>] [--max-tokens <count>] [--quiet]
 
-    Run mlx-server --setup once to create settings.json. At the end it can launch model setup too.
-    Run mlx-server --setup-models directly to create or update models.json and download MLX models.
-    Run mlx-server --setup-agents to create or update mlx-coder agents.json profiles.
-    Run mlx-server --join-agents to configure Codex CLI, Codex App, Xcode Codex App, and Xcode Claude Code integrations.
-    Run mlx-server --reset to delete local mlx-server/mlx-coder configuration files.
-    Run mlx-server --reset-disk-cache to empty the configured disk KV cache directory.
+    Run mlx-server --setup once to create ~/.mlx-server/settings.json. At the end it can launch model setup too.
+    Run mlx-server --setup-models directly to create or update ~/.mlx-server/models.json and download MLX models.
+    Run mlx-coder --setup-agents to create or update mlx-coder profiles in ~/.mlx-coder/agents.json.
+    Run mlx-server --setup-agents to configure Codex CLI, Codex App, Xcode Codex App, and Xcode Claude Code integrations.
+    Run mlx-server --reset to delete managed files in ~/.mlx-server and ~/.mlx-coder.
+    Run mlx-server --reset-disk-cache to empty the configured disk KV cache directory. Default: ~/.mlx-server/KVCaches.
     Run mlx-server --coder to start the mlx-coder TUI with the local MLXServerRuntime directly, without HTTP or ACP.
     Run mlx-server --chat to start an interactive terminal chat. Press Ctrl+D to exit.
-    The server reads runtime settings from settings.json and models only from models.json.
+    The server reads runtime settings from ~/.mlx-server/settings.json and models only from ~/.mlx-server/models.json.
     """
 }
 

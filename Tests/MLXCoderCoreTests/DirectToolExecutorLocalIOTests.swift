@@ -81,6 +81,7 @@ private actor TestAgentRuntimeBackend: AgentRuntimeBackend {
 
     func updateSessionOptions(
         id _: String,
+        systemPrompt _: String?,
         allowedToolNames _: Set<String>?,
         thinkingSelection _: AgentThinkingSelection?,
         preserveThinking _: Bool

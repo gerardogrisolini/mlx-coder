@@ -119,6 +119,7 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
 
     public func updateSessionOptions(
         id: String,
+        systemPrompt: String?,
         allowedToolNames: Set<String>?,
         thinkingSelection: AgentThinkingSelection?,
         preserveThinking: Bool
@@ -126,6 +127,12 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
         guard var session = sessions[id] else {
             return
         }
+        session.messages = Self.replacingSystemPrompt(
+            in: session.messages,
+            cwd: session.cwd.path,
+            systemPrompt: systemPrompt,
+            allowedToolNames: allowedToolNames
+        )
         session.allowedToolNames = allowedToolNames
         session.thinkingSelection = thinkingSelection
         session.preserveThinking = preserveThinking

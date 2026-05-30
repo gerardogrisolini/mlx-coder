@@ -26,7 +26,7 @@ extension TerminalChat {
         let includeDiff = arguments == "diff" || arguments == "--diff"
 
         guard let summary = lastFileChangeSummary else {
-            AgentOutput.standardError.writeString("No tracked file changes.\n")
+            writeSystemMessage("No tracked file changes.\n")
             return
         }
 
@@ -35,12 +35,12 @@ extension TerminalChat {
 
     public func handleUndoFileChangesCommand() async {
         guard let summary = lastFileChangeSummary else {
-            AgentOutput.standardError.writeString("No tracked file changes to undo.\n")
+            writeSystemMessage("No tracked file changes to undo.\n")
             return
         }
 
         guard summary.canUndo else {
-            AgentOutput.standardError.writeString(
+            writeSystemMessage(
                 "Undo is not available for the latest file change summary.\n"
             )
             return
@@ -52,9 +52,9 @@ extension TerminalChat {
                 baseDirectoryURL: configuration.workingDirectory
             )
             lastFileChangeSummary = nil
-            AgentOutput.standardError.writeString("File changes reverted.\n")
+            writeSystemMessage("File changes reverted.\n")
         } catch {
-            AgentOutput.standardError.writeString(
+            writeChatError(
                 "mlx-coder: unable to undo file changes: \(error.localizedDescription)\n"
             )
         }
@@ -78,7 +78,7 @@ extension TerminalChat {
         lines.append(contentsOf: summary.entries.map(Self.renderFileChangeEntry))
         lines.append(undoText)
 
-        AgentOutput.standardError.writeString(lines.joined(separator: "\n") + "\n")
+        writeSystemMessage(lines.joined(separator: "\n") + "\n")
 
         guard includeDiff else {
             return
@@ -108,7 +108,7 @@ extension TerminalChat {
         }
 
         guard !patches.isEmpty else {
-            AgentOutput.standardError.writeString("No text patches available.\n")
+            writeSystemMessage("No text patches available.\n")
             return
         }
 
@@ -118,12 +118,12 @@ extension TerminalChat {
             .split(separator: "\n", omittingEmptySubsequences: false)
             .map(String.init)
         let visibleLines = patchLines.prefix(maxLines)
-        AgentOutput.standardError.writeString(
+        writeChatError(
             "\n" + visibleLines.joined(separator: "\n") + "\n"
         )
 
         if patchLines.count > maxLines {
-            AgentOutput.standardError.writeString(
+            writeSystemMessage(
                 "... diff truncated at \(maxLines) lines.\n"
             )
         }

@@ -37,10 +37,10 @@ public struct AgentConfiguration {
       --app                  App-hosted mode. Suppresses runtime chatter and requires explicit tool enablement.
 
     Agent runtime:
-      --agent NAME           Agent profile from the mlx-coder Application Support agents.json. Default is used when omitted.
+      --agent NAME           Agent profile from ~/.mlx-coder/agents.json. Default is used when omitted.
       --model MODEL_ID        Model id, remoteapimodel:<uuid>, or remoteapi:<uuid>. Overrides the agent-selected model for this run.
       --cwd PATH              Working directory for local tools. Default: current directory, or home when launched from the executable directory.
-      --skills LIST           Initial chat skill selection by name/number, all, or none. In chat mode use /skills to change it.
+      --skills LIST           Initial chat skill selection by name/number, all, or none. In chat mode use /skills to change or install skills.
       --max-tool-rounds N     Maximum model/tool loop rounds per prompt. Default: 100.
       --max-output-tokens N   Maximum generated tokens per model call. Default: model default.
       --verbose               Show status/tool progress on stderr. Default: quiet chat output.
@@ -48,7 +48,7 @@ public struct AgentConfiguration {
     Tool discovery:
       In chat mode, use /agents to switch agent profiles without restarting the TUI.
       In chat mode, use /tools to enable local, shell, search, git, memory, sub-agent, Xcode, or Figma tools.
-      In chat mode, use /skills to select prompt skills installed by the app.
+      In chat mode, use /skills to select prompt skills installed by the app or install a skill from GitHub or a local folder.
       In chat mode, use /attach to add image or video files to the next prompt.
       In chat mode, use /changes to review tracked file changes and /undo to revert the latest tracked changes.
       In chat mode, use /subagents to show delegated sub-agent status.
@@ -58,7 +58,7 @@ public struct AgentConfiguration {
 
     Environment:
       MLX_CODER_AGENT_MODE           chat, acp, or auto. Auto resolves to chat.
-      MLX_CODER_AGENT_NAME           Agent profile from the mlx-coder Application Support agents.json. Default is used when omitted.
+      MLX_CODER_AGENT_NAME           Agent profile from ~/.mlx-coder/agents.json. Default is used when omitted.
       MLX_CODER_AGENT_MODEL          Model id, remoteapimodel:<uuid>, or remoteapi:<uuid>. Overrides the agent-selected model for this run.
       MLX_CODER_AGENT_CWD            Working directory for local tools.
       MLX_CODER_AGENT_SKILLS         Initial chat skill selection by name/number, all, or none.
@@ -234,6 +234,7 @@ public struct AgentConfiguration {
         agentName rawAgentName: String? = nil,
         availableAgents: [AgentProfile] = AgentProfileStore.defaultProfiles(),
         availableModels: [AgentSettingsModelManifest] = [],
+        cacheAgentProfiles: Bool = true,
         bearerToken: String? = nil,
         runMode: AgentRunMode = .chat,
         workingDirectory: URL,
@@ -274,7 +275,7 @@ public struct AgentConfiguration {
         self.appMode = appMode
         self.printHelp = false
         self.printVersion = false
-        self.hostedAgentProfiles = availableAgents
+        self.hostedAgentProfiles = cacheAgentProfiles ? availableAgents : nil
         self.hostedModels = availableModels
     }
 

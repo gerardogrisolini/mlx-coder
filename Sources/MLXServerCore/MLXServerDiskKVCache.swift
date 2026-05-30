@@ -31,14 +31,9 @@ public struct MLXServerDiskKVCacheConfiguration: Sendable, Equatable {
     public static func defaultDirectory(
         fileManager: FileManager = .default
     ) -> URL {
-        let baseDirectory = fileManager.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? fileManager.temporaryDirectory
-
-        return baseDirectory
-            .appendingPathComponent("mlx-server", isDirectory: true)
+        MLXServerSettingsStore.supportDirectoryURL(fileManager: fileManager)
             .appendingPathComponent("KVCaches", isDirectory: true)
+            .standardizedFileURL
     }
 }
 
@@ -126,6 +121,8 @@ final class MLXServerDiskKVCacheStore {
     fileprivate static let metadataVersion = 3
     private let configuration: MLXServerDiskKVCacheConfiguration
     private let fileManager: FileManager
+    private let ensuredDirectoryLock = NSLock()
+    private var ensuredDirectoryPaths = Set<String>()
 
     init(
         configuration: MLXServerDiskKVCacheConfiguration,
@@ -257,10 +254,7 @@ final class MLXServerDiskKVCacheStore {
             .deletingLastPathComponent()
             .appendingPathComponent("\(identity.entryKey).tmp.safetensors")
 
-        try fileManager.createDirectory(
-            at: urls.cacheURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        try ensureDirectoryExists(urls.cacheURL.deletingLastPathComponent())
         try? fileManager.removeItem(at: temporaryURL)
 
         return MLXServerDiskKVCachePersistenceTarget(
@@ -339,15 +333,34 @@ final class MLXServerDiskKVCacheStore {
         to url: URL
     ) {
         do {
-            try fileManager.createDirectory(
-                at: url.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
+            try ensureDirectoryExists(url.deletingLastPathComponent())
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
             try encoder.encode(metadata).write(to: url, options: .atomic)
         } catch {
         }
+    }
+
+    private func ensureDirectoryExists(_ url: URL) throws {
+        let directoryURL = url.standardizedFileURL
+        let path = directoryURL.path
+
+        ensuredDirectoryLock.lock()
+        let isAlreadyEnsured = ensuredDirectoryPaths.contains(path)
+        ensuredDirectoryLock.unlock()
+
+        guard !isAlreadyEnsured else {
+            return
+        }
+
+        try fileManager.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true
+        )
+
+        ensuredDirectoryLock.lock()
+        ensuredDirectoryPaths.insert(path)
+        ensuredDirectoryLock.unlock()
     }
 
     private func enforceDiskLimit(

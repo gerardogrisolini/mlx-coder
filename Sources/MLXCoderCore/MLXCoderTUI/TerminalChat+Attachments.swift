@@ -12,13 +12,13 @@ extension TerminalChat {
         let rawArguments = String(command.dropFirst("/attach".count))
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawArguments.isEmpty else {
-            AgentOutput.standardError.writeString(Self.renderAttachmentUsage())
+            writeSystemMessage(Self.renderAttachmentUsage())
             return
         }
 
         let paths = try Self.splitAttachmentCommandArguments(rawArguments)
         guard !paths.isEmpty else {
-            AgentOutput.standardError.writeString(Self.renderAttachmentUsage())
+            writeSystemMessage(Self.renderAttachmentUsage())
             return
         }
 
@@ -27,7 +27,7 @@ extension TerminalChat {
         pendingAttachments.append(contentsOf: attachments)
 
         let noun = attachments.count == 1 ? "attachment" : "attachments"
-        AgentOutput.standardError.writeString(
+        writeSystemMessage(
             "Added \(attachments.count) \(noun). \(pendingAttachments.count) pending.\n"
         )
         writePendingAttachments()
@@ -38,18 +38,18 @@ extension TerminalChat {
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !pendingAttachments.isEmpty else {
-            AgentOutput.standardError.writeString("No pending attachments.\n")
+            writeSystemMessage("No pending attachments.\n")
             return
         }
 
         guard !rawArgument.isEmpty else {
-            AgentOutput.standardError.writeString(Self.renderDetachUsage())
+            writeSystemMessage(Self.renderDetachUsage())
             return
         }
 
         if rawArgument.lowercased() == "all" {
             pendingAttachments.removeAll()
-            AgentOutput.standardError.writeString("Removed all pending attachments.\n")
+            writeSystemMessage("Removed all pending attachments.\n")
             return
         }
 
@@ -58,7 +58,7 @@ extension TerminalChat {
         }
 
         let removedAttachment = pendingAttachments.remove(at: index - 1)
-        AgentOutput.standardError.writeString(
+        writeSystemMessage(
             "Removed attachment: \(removedAttachment.originalFilename)\n"
         )
         writePendingAttachments()
@@ -66,14 +66,14 @@ extension TerminalChat {
 
     public func writePendingAttachments() {
         guard !pendingAttachments.isEmpty else {
-            AgentOutput.standardError.writeString("No pending attachments.\n")
+            writeSystemMessage("No pending attachments.\n")
             return
         }
 
         let lines = pendingAttachments.enumerated().map { index, attachment in
             Self.renderAttachmentLine(number: index + 1, attachment: attachment)
         }
-        AgentOutput.standardError.writeString(
+        writeSystemMessage(
             """
             Pending attachments:
             \(lines.joined(separator: "\n"))

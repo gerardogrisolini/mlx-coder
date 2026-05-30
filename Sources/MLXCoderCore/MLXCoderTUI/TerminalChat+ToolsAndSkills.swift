@@ -18,7 +18,7 @@ extension TerminalChat {
         if rawArguments.isEmpty {
             guard stdinIsTerminal else {
                 await printToolSelectionStatus()
-                AgentOutput.standardError.writeString(Self.renderToolSelectionUsage())
+                writeSystemMessage(Self.renderToolSelectionUsage())
                 return
             }
 
@@ -44,8 +44,8 @@ extension TerminalChat {
             let selectedGroups = try Self.parseToolSelection(rawSelection)
             await applyToolSelection(selectedGroups)
         } catch {
-            AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
-            AgentOutput.standardError.writeString(Self.renderToolSelectionUsage())
+            writeChatError("mlx-coder: \(error.localizedDescription)\n")
+            writeSystemMessage(Self.renderToolSelectionUsage())
         }
     }
 
@@ -60,8 +60,8 @@ extension TerminalChat {
         let allowedToolNames = await updateCurrentSessionToolOptions(
             discoverExternalTools: shouldDiscoverExternalTools
         )
-        AgentOutput.standardError.writeString(Self.renderSelectedToolGroups(selectedToolGroups))
-        AgentOutput.standardError.writeString(Self.renderActiveTools(Array(allowedToolNames)))
+        writeSystemMessage(Self.renderSelectedToolGroups(selectedToolGroups))
+        writeSystemMessage(Self.renderActiveTools(Array(allowedToolNames)))
         didPrintActiveTools = true
     }
 
@@ -69,8 +69,8 @@ extension TerminalChat {
         let allowedToolNames = await selectedAllowedToolNames(
             discoverExternalTools: false
         )
-        AgentOutput.standardError.writeString(Self.renderSelectedToolGroups(selectedToolGroups))
-        AgentOutput.standardError.writeString(Self.renderActiveTools(Array(allowedToolNames)))
+        writeSystemMessage(Self.renderSelectedToolGroups(selectedToolGroups))
+        writeSystemMessage(Self.renderActiveTools(Array(allowedToolNames)))
     }
 
     public static func shouldDiscoverExternalTools(
@@ -151,16 +151,40 @@ extension TerminalChat {
         let rawArguments = String(command.dropFirst("/skills".count))
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
+        if Self.isSkillInstallRequest(rawArguments),
+           Self.githubSkillInstallURL(from: rawArguments) == nil,
+           Self.localSkillInstallURL(
+               from: rawArguments,
+               baseDirectory: configuration.workingDirectory
+           ) == nil {
+            writeChatError("mlx-coder: /skills install requires a GitHub URL or local path.\n")
+            writeSystemMessage(Self.renderSkillSelectionUsage())
+            return
+        }
+
+        if let installURL = Self.githubSkillInstallURL(from: rawArguments) {
+            await installSkill(fromGitHubURL: installURL)
+            return
+        }
+
+        if let localURL = Self.localSkillInstallURL(
+            from: rawArguments,
+            baseDirectory: configuration.workingDirectory
+        ) {
+            await installSkill(fromLocalURL: localURL)
+            return
+        }
+
         if rawArguments.isEmpty {
             guard stdinIsTerminal else {
                 printSkillSelectionStatus()
-                AgentOutput.standardError.writeString(Self.renderSkillSelectionUsage())
+                writeSystemMessage(Self.renderSkillSelectionUsage())
                 return
             }
 
             let skillItems = skillCheckboxItems()
             guard !skillItems.isEmpty else {
-                AgentOutput.standardError.writeString("No prompt skills installed by the app.\n")
+                writeSystemMessage("No prompt skills installed by the app.\n")
                 printSkillSelectionStatus()
                 return
             }
@@ -181,6 +205,43 @@ extension TerminalChat {
         await applySkillSelection(rawArguments)
     }
 
+    public func installSkill(fromGitHubURL url: URL) async {
+        writeSystemMessage("Installing skill from \(url.absoluteString)...\n")
+        do {
+            let result = try await MLXPromptSkillInstaller.install(fromGitHubURL: url)
+            await finishInstalledSkill(result)
+        } catch {
+            writeChatError("mlx-coder: \(error.localizedDescription)\n")
+            writeSystemMessage(Self.renderSkillSelectionUsage())
+        }
+    }
+
+    public func installSkill(fromLocalURL url: URL) async {
+        writeSystemMessage("Installing skill from \(url.path)...\n")
+        do {
+            let result = try MLXPromptSkillInstaller.install(fromLocalURL: url)
+            await finishInstalledSkill(result)
+        } catch {
+            writeChatError("mlx-coder: \(error.localizedDescription)\n")
+            writeSystemMessage(Self.renderSkillSelectionUsage())
+        }
+    }
+
+    private func finishInstalledSkill(_ result: MLXPromptSkillInstallResult) async {
+        availableSkillsCache = nil
+        selectedSkillIDs.insert(result.skill.id)
+        do {
+            try await createCurrentSession()
+        } catch {
+            writeChatError("mlx-coder: \(error.localizedDescription)\n")
+        }
+        statusBar.reset()
+        refreshInitialStatusBarContextWindow()
+        writeSystemMessage(
+            "Installed and selected skill: \(result.skill.title)\n"
+        )
+    }
+
     public func applySkillSelection(_ rawSelection: String) async {
         do {
             let selectedSkillIDs = try Self.parseSkillSelection(
@@ -189,8 +250,8 @@ extension TerminalChat {
             )
             await applySkillSelection(selectedSkillIDs)
         } catch {
-            AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
-            AgentOutput.standardError.writeString(Self.renderSkillSelectionUsage())
+            writeChatError("mlx-coder: \(error.localizedDescription)\n")
+            writeSystemMessage(Self.renderSkillSelectionUsage())
         }
     }
 
@@ -199,7 +260,7 @@ extension TerminalChat {
         do {
             try await createCurrentSession()
         } catch {
-            AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
+            writeChatError("mlx-coder: \(error.localizedDescription)\n")
         }
         statusBar.reset()
         refreshInitialStatusBarContextWindow()
@@ -207,7 +268,7 @@ extension TerminalChat {
     }
 
     public func printSkillSelectionStatus() {
-        AgentOutput.standardError.writeString(Self.renderSelectedSkills(selectedPromptSkills()))
+        writeSystemMessage(Self.renderSelectedSkills(selectedPromptSkills()))
     }
 
     public func skillCheckboxItems() -> [TerminalCheckboxMenuItem<String>] {
@@ -242,6 +303,86 @@ extension TerminalChat {
         }
 
         return skills.filter { selectedSkillIDs.contains($0.id) }
+    }
+
+    public static func githubSkillInstallURL(from rawArguments: String) -> URL? {
+        guard let rawValue = skillInstallValue(from: rawArguments),
+              let urlToken = rawValue.split(whereSeparator: \.isWhitespace).first.map(String.init) else {
+            return nil
+        }
+
+        guard let url = URL(string: urlToken),
+              let host = url.host?.lowercased(),
+              host == "github.com" || host == "www.github.com" else {
+            return nil
+        }
+        return url
+    }
+
+    public static func localSkillInstallURL(
+        from rawArguments: String,
+        baseDirectory: URL
+    ) -> URL? {
+        guard let rawValue = skillInstallValue(from: rawArguments) else {
+            return nil
+        }
+
+        if rawValue.lowercased().hasPrefix("file://"),
+           let url = URL(string: rawValue),
+           url.isFileURL {
+            return url.standardizedFileURL
+        }
+
+        if rawValue.hasPrefix("~/") {
+            let expandedPath = NSString(string: rawValue).expandingTildeInPath
+            return URL(fileURLWithPath: expandedPath, isDirectory: true)
+                .standardizedFileURL
+        }
+
+        if rawValue.hasPrefix("/") {
+            return URL(fileURLWithPath: rawValue, isDirectory: true)
+                .standardizedFileURL
+        }
+
+        if rawValue == "."
+            || rawValue == ".."
+            || rawValue.hasPrefix("./")
+            || rawValue.hasPrefix("../") {
+            return baseDirectory
+                .appendingPathComponent(rawValue, isDirectory: true)
+                .standardizedFileURL
+        }
+
+        return nil
+    }
+
+    public static func isSkillInstallRequest(_ rawArguments: String) -> Bool {
+        let tokens = rawArguments
+            .split { $0.isWhitespace }
+        guard let command = tokens.first?.lowercased() else {
+            return false
+        }
+        return ["install", "add"].contains(command)
+    }
+
+    public static func skillInstallValue(from rawArguments: String) -> String? {
+        let trimmedArguments = rawArguments.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedArguments.isEmpty else {
+            return nil
+        }
+
+        guard let commandEndIndex = trimmedArguments.firstIndex(where: \.isWhitespace) else {
+            return isSkillInstallRequest(trimmedArguments) ? nil : trimmedArguments
+        }
+
+        let command = trimmedArguments[..<commandEndIndex].lowercased()
+        guard ["install", "add"].contains(command) else {
+            return trimmedArguments
+        }
+
+        let value = trimmedArguments[commandEndIndex...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
 
     public static func parseSkillSelection(

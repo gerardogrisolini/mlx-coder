@@ -15,6 +15,10 @@ public enum MLXCoderSetupRunner {
         arguments.dropFirst().contains(option)
     }
 
+    public static func argumentsAfterRemovingSetup(arguments: [String]) -> [String] {
+        arguments.filter { $0 != option }
+    }
+
     public static func run(arguments: [String]) async throws {
         _ = arguments
         guard TerminalRawInput.supportsInteractiveInput() else {

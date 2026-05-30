@@ -81,7 +81,15 @@ public final class TerminalChat: @unchecked Sendable {
     }
 
     public func currentEffectiveModelID() -> String? {
-        Self.effectiveModelID(
+        if let hostedModelManifest = hostedModelSelectionManifest() {
+            return AgentSettingsStore.resolvedEffectiveModelID(
+                explicitModelID: manualModelIDOverride,
+                agentModelID: selectedAgent?.modelID,
+                manifest: hostedModelManifest
+            ) ?? configuration.effectiveModelID
+        }
+
+        return Self.effectiveModelID(
             selectedAgent: selectedAgent,
             manualModelIDOverride: manualModelIDOverride
         ) ?? configuration.effectiveModelID
@@ -89,11 +97,23 @@ public final class TerminalChat: @unchecked Sendable {
 
     public static func effectiveModelID(
         selectedAgent: AgentProfile?,
-        manualModelIDOverride: String?
+        manualModelIDOverride: String?,
+        manifest: AgentSettingsManifest? = AgentSettingsManifestStore.load()
     ) -> String? {
         AgentSettingsStore.resolvedEffectiveModelID(
             explicitModelID: manualModelIDOverride,
-            agentModelID: selectedAgent?.modelID
+            agentModelID: selectedAgent?.modelID,
+            manifest: manifest
+        )
+    }
+
+    private func hostedModelSelectionManifest() -> AgentSettingsManifest? {
+        guard let hostedModels = configuration.hostedModels else {
+            return nil
+        }
+        return AgentSettingsManifest(
+            models: hostedModels,
+            selectedModelID: configuration.effectiveModelID
         )
     }
 
@@ -320,7 +340,7 @@ public final class TerminalChat: @unchecked Sendable {
         ),
         TerminalCommandSuggestion(
             command: "/skills",
-            summary: "select prompt skills"
+            summary: "select/install prompt skills"
         ),
         TerminalCommandSuggestion(
             command: "/attach",
@@ -375,13 +395,13 @@ public final class TerminalChat: @unchecked Sendable {
         case "/exit", "/quit":
             return .exitChat
         case "/help":
-            writeChatError(
+            writeSystemMessage(
                 """
                 Type a prompt and press return.
                 /models shows configured models and lets you switch the default agent model.
                 /agents selects an agent profile and resets the session.
                 /tools selects which tool groups are available to the model.
-                /skills selects installed prompt skills for the model.
+                /skills selects installed prompt skills or installs one from GitHub or a local folder.
                 /attach <file> [file ...] attaches image or video files to the next prompt.
                 /attachments shows pending attachments.
                 /detach [all|number] removes pending attachments.
@@ -451,7 +471,7 @@ public final class TerminalChat: @unchecked Sendable {
                 isSubAgentOverviewVisible = false
                 lastRenderedSubAgentOverviewSignature = nil
                 stopSubAgentOverviewRefreshLoop()
-                writeChatError("Session cleared.\n")
+                writeSystemMessage("Session cleared.\n")
             } catch {
                 writeChatError("mlx-coder: \(error.localizedDescription)\n")
             }
@@ -529,6 +549,8 @@ public final class TerminalChat: @unchecked Sendable {
                         self.writeThought(message)
                     case let .modelLoaded(modelID):
                         self.printModelIfNeeded(modelID)
+                    case let .modelLoadedDetails(details):
+                        self.printLoadedModelDetails(details)
                     case let .metrics(metrics):
                         self.didReceiveMetricsForCurrentPrompt = true
                         self.writeMetricsStatus(metrics)

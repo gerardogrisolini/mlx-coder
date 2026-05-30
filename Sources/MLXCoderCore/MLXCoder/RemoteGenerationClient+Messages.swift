@@ -39,6 +39,37 @@ extension RemoteGenerationClient {
         ]
     }
 
+    public static func replacingSystemPrompt(
+        in messages: [[String: Any]],
+        cwd: String,
+        systemPrompt: String?,
+        allowedToolNames: Set<String>?
+    ) -> [[String: Any]] {
+        let prompt = systemPrompt?.nilIfBlank
+            ?? Self.systemPrompt(
+                cwd: cwd,
+                allowedToolNames: allowedToolNames
+            )
+        var updatedMessages = messages
+        if let firstRole = updatedMessages.first?["role"] as? String,
+           firstRole.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "system" {
+            updatedMessages[0] = [
+                "role": "system",
+                "content": prompt
+            ]
+        } else {
+            updatedMessages.insert(
+                [
+                    "role": "system",
+                    "content": prompt
+                ],
+                at: 0
+            )
+        }
+        return updatedMessages
+    }
+
     public static func memoryToolEnabled(_ allowedToolNames: Set<String>?) -> Bool {
         guard let allowedToolNames else {
             return true

@@ -303,24 +303,13 @@ public enum MLXServerSettingsStore {
     }
 
     public static func supportDirectoryURL(fileManager: FileManager = .default) -> URL {
-        if let executableDirectory = executableDirectoryURL(fileManager: fileManager),
-           !isAppBundleExecutableDirectory(executableDirectory) {
-            return executableDirectory
-        }
+        defaultSupportDirectoryURL(fileManager: fileManager)
+    }
 
-        #if os(Linux)
-        return URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+    public static func defaultSupportDirectoryURL(fileManager: FileManager = .default) -> URL {
+        MLXServerUserHomeDirectory.current(fileManager: fileManager)
             .appendingPathComponent(".mlx-server", isDirectory: true)
             .standardizedFileURL
-        #else
-        let baseDirectory = fileManager.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? fileManager.temporaryDirectory
-        return baseDirectory
-            .appendingPathComponent("mlx-server", isDirectory: true)
-            .standardizedFileURL
-        #endif
     }
 
     public static func loadRequired(
@@ -379,40 +368,6 @@ public enum MLXServerSettingsStore {
         try? save(settings, fileManager: fileManager)
     }
 
-    private static func executableDirectoryURL(
-        fileManager: FileManager = .default
-    ) -> URL? {
-        let candidates = [
-            Bundle.main.executableURL,
-            CommandLine.arguments.first.map { URL(fileURLWithPath: $0) }
-        ].compactMap { $0 }
-
-        for candidate in candidates {
-            let directory = candidate
-                .standardizedFileURL
-                .resolvingSymlinksInPath()
-                .deletingLastPathComponent()
-                .standardizedFileURL
-                .resolvingSymlinksInPath()
-
-            var isDirectory: ObjCBool = false
-            guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory),
-                  isDirectory.boolValue else {
-                continue
-            }
-            return directory
-        }
-
-        return nil
-    }
-
-    private static func isAppBundleExecutableDirectory(_ url: URL) -> Bool {
-        let components = url.standardizedFileURL.pathComponents
-        guard components.count >= 3 else {
-            return false
-        }
-        return components.suffix(3).dropFirst().elementsEqual(["Contents", "MacOS"])
-    }
 }
 
 public enum MLXServerSettingsError: LocalizedError, Equatable, Sendable {

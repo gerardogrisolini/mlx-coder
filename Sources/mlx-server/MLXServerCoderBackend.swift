@@ -104,6 +104,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
 
     func updateSessionOptions(
         id: String,
+        systemPrompt: String?,
         allowedToolNames: Set<String>?,
         thinkingSelection: AgentThinkingSelection?,
         preserveThinking: Bool
@@ -111,6 +112,10 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         guard var session = sessions[id] else {
             return
         }
+        session.messages = Self.replacingSystemPrompt(
+            in: session.messages,
+            with: systemPrompt
+        )
         session.allowedToolNames = allowedToolNames
         session.thinkingSelection = thinkingSelection
         session.preserveThinking = preserveThinking
@@ -148,7 +153,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
             parameters: generationParameters()
         )
         didEmitLoadedModel = true
-        await onEvent(.modelLoaded(model.id))
+        await onEvent(.modelLoadedDetails(loadedModelDetails()))
         if let contextWindow = model.generationDefaults.contextWindow
             ?? configuration.configuredContextWindowLimit {
             await onEvent(
@@ -163,6 +168,47 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
             )
         }
         return model.id
+    }
+
+    private func loadedModelDetails() -> DirectAgentLoadedModelDetails {
+        let defaults = model.generationDefaults
+        let parameters = generationParameters()
+        let generationLine = [
+            "context_window=\(Self.formatModelDefault(defaults.contextWindow))",
+            "max_output_tokens=\(Self.formatModelDefault(parameters.maxTokens))",
+            "temperature=\(Self.format(parameters.temperature))",
+            "top_p=\(Self.format(parameters.topP))",
+            "top_k=\(parameters.topK)",
+            "min_p=\(Self.format(parameters.minP))",
+        ].joined(separator: ", ")
+        let penaltiesLine = [
+            "repetition=\(Self.formatModelDefault(parameters.repetitionPenalty))",
+            "presence=\(Self.formatModelDefault(parameters.presencePenalty))",
+            "frequency=\(Self.formatModelDefault(parameters.frequencyPenalty))",
+        ].joined(separator: ", ")
+        let kvCache = parameters.kvBits.map {
+            "quantized(bits=\($0), group=\(parameters.kvGroupSize), start=\(parameters.quantizedKVStart))"
+        } ?? "standard"
+
+        return DirectAgentLoadedModelDetails(
+            modelID: model.id,
+            runtime: model.runtimeKind.rawValue,
+            generation: generationLine,
+            penalties: penaltiesLine,
+            kvCache: "\(kvCache), prefill_step_size=\(parameters.prefillStepSize)"
+        )
+    }
+
+    private static func formatModelDefault(_ value: Int?) -> String {
+        value.map(String.init) ?? "model_default"
+    }
+
+    private static func formatModelDefault(_ value: Float?) -> String {
+        value.map(format) ?? "model_default"
+    }
+
+    private static func format(_ value: Float) -> String {
+        String(format: "%.4g", Double(value))
     }
 
     func activeToolDescriptors() async -> [DirectToolDescriptor] {
@@ -507,6 +553,24 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
             }
         )
         return messages
+    }
+
+    private static func replacingSystemPrompt(
+        in messages: [MLXServerChatMessage],
+        with systemPrompt: String?
+    ) -> [MLXServerChatMessage] {
+        let prompt = systemPrompt?.nilIfBlank
+        var updatedMessages = messages
+        if updatedMessages.first?.role == .system {
+            if let prompt {
+                updatedMessages[0] = .system(prompt)
+            } else {
+                updatedMessages.removeFirst()
+            }
+        } else if let prompt {
+            updatedMessages.insert(.system(prompt), at: 0)
+        }
+        return updatedMessages
     }
 
     private static func agentRuntimeMessage(

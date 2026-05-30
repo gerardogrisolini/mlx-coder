@@ -83,6 +83,7 @@ public actor AgentCoreSessionRunner {
         let backend = try await ensureBackend(configuration: configuration)
         await backend.updateSessionOptions(
             id: configuration.sessionID,
+            systemPrompt: configuration.systemPrompt,
             allowedToolNames: configuration.allowedToolNames,
             thinkingSelection: configuration.thinkingSelection,
             preserveThinking: configuration.preserveThinking

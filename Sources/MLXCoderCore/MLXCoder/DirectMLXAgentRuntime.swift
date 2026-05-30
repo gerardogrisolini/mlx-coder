@@ -119,11 +119,34 @@ public struct DirectAgentContextWindowStatus: Sendable {
     }
 }
 
+public struct DirectAgentLoadedModelDetails: Sendable, Equatable {
+    public let modelID: String
+    public let runtime: String?
+    public let generation: String?
+    public let penalties: String?
+    public let kvCache: String?
+
+    public init(
+        modelID: String,
+        runtime: String? = nil,
+        generation: String? = nil,
+        penalties: String? = nil,
+        kvCache: String? = nil
+    ) {
+        self.modelID = modelID
+        self.runtime = runtime?.nilIfBlank
+        self.generation = generation?.nilIfBlank
+        self.penalties = penalties?.nilIfBlank
+        self.kvCache = kvCache?.nilIfBlank
+    }
+}
+
 public enum DirectAgentEvent: Sendable {
     case status(String)
     case diagnostic(String)
     case thought(String)
     case modelLoaded(String)
+    case modelLoadedDetails(DirectAgentLoadedModelDetails)
     case metrics(DirectAgentGenerationMetrics)
     case contextWindow(DirectAgentContextWindowStatus)
     case content(String)

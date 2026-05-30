@@ -12,7 +12,7 @@ import Glibc
 #endif
 
 public enum MLXServerAgentSetupRunner {
-    public static let option = "--join-agents"
+    public static let option = "--setup-agents"
 
     public static func shouldRunSetup(arguments: [String]) -> Bool {
         arguments.contains(option)
@@ -290,7 +290,7 @@ enum MLXServerAgentSetupError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .nonInteractiveTerminal:
-            return "mlx-server --join-agents requires an interactive terminal."
+            return "mlx-server --setup-agents requires an interactive terminal."
         case .inputClosed:
             return "Input closed during mlx-server agent setup."
         }

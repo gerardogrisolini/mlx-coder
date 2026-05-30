@@ -11,15 +11,31 @@ struct MLXCoderMain {
             return
         }
 
-        if !MLXCoderSetupRunner.shouldRunSetup(arguments: arguments),
+        let didRequestSetup = MLXCoderSetupRunner.shouldRunSetup(arguments: arguments)
+        let didRequestAgentSetup = MLXCoderAgentProfileSetupRunner.shouldRunSetup(arguments: arguments)
+        if !didRequestSetup,
+           !didRequestAgentSetup,
            MLXCoderSetupInspector.status().requiresSetup {
             arguments.append(MLXCoderSetupRunner.option)
         }
 
-        if MLXCoderSetupRunner.shouldRunSetup(arguments: arguments) {
+        if MLXCoderSetupRunner.shouldRunSetup(arguments: arguments)
+            || MLXCoderAgentProfileSetupRunner.shouldRunSetup(arguments: arguments) {
             do {
-                try await MLXCoderSetupRunner.run(arguments: arguments)
-                return
+                var didRunSetup = false
+                if MLXCoderSetupRunner.shouldRunSetup(arguments: arguments) {
+                    didRunSetup = true
+                    try await MLXCoderSetupRunner.run(arguments: arguments)
+                    arguments = MLXCoderSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
+                }
+                if MLXCoderAgentProfileSetupRunner.shouldRunSetup(arguments: arguments) {
+                    didRunSetup = true
+                    try MLXCoderAgentProfileSetupRunner.run(arguments: arguments)
+                    arguments = MLXCoderAgentProfileSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
+                }
+                if didRunSetup, arguments.dropFirst().isEmpty {
+                    return
+                }
             } catch {
                 AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
                 Foundation.exit(1)
@@ -35,13 +51,14 @@ private enum MLXCoderStandaloneHelp {
         AgentConfiguration.helpText
             .replacingOccurrences(
                 of: "mlx-coder [--acp]",
-                with: "mlx-coder [--setup] [--acp]"
+                with: "mlx-coder [--setup] [--setup-agents] [--acp]"
             )
             .replacingOccurrences(
                 of: "  --app                  App-hosted mode. Suppresses runtime chatter and requires explicit tool enablement.",
                 with: """
                   --app                  App-hosted mode. Suppresses runtime chatter and requires explicit tool enablement.
                   --setup                Create standalone support files and configure providers/models, then exit.
+                  --setup-agents         Create or update agent profiles in ~/.mlx-coder/agents.json, then exit.
                 """
             )
     }

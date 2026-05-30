@@ -1,38 +1,33 @@
 //
-//  MLXServerAgentProfileSetupRunner.swift
-//  mlx-server
+//  MLXCoderAgentProfileSetupRunner.swift
+//  MLXCoderSetup
 //
 
 import Foundation
 import MLXCoderCore
-#if os(macOS)
-import Darwin
-#elseif os(Linux)
-import Glibc
-#endif
 
-enum MLXServerAgentProfileSetupRunner {
-    static let option = "--setup-agents"
+public enum MLXCoderAgentProfileSetupRunner {
+    public static let option = "--setup-agents"
 
-    static func shouldRunSetup(arguments: [String]) -> Bool {
-        arguments.contains(option)
+    public static func shouldRunSetup(arguments: [String]) -> Bool {
+        arguments.dropFirst().contains(option)
     }
 
-    static func argumentsAfterRemovingSetup(arguments: [String]) -> [String] {
+    public static func argumentsAfterRemovingSetup(arguments: [String]) -> [String] {
         arguments.filter { $0 != option }
     }
 
-    static func run(arguments: [String]) throws {
+    public static func run(arguments: [String]) throws {
         _ = arguments
-        guard supportsInteractiveInput() else {
-            throw MLXServerAgentProfileSetupError.nonInteractiveTerminal
+        guard TerminalRawInput.supportsInteractiveInput() else {
+            throw MLXCoderAgentProfileSetupError.nonInteractiveTerminal
         }
 
         let globalAgentsResult = try ensureGlobalAgentsFile()
         let manifestURL = AgentProfileStore.agentsManifestURL()
-        FileHandle.standardError.writeString(
+        AgentOutput.standardError.writeString(
             """
-            mlx-server agents setup
+            mlx-coder agents setup
             Global AGENTS.md:
             \(globalAgentsResult.url.path)
             \(globalAgentsResult.created ? "Created" : "Preserved"): AGENTS.md
@@ -52,7 +47,7 @@ enum MLXServerAgentProfileSetupRunner {
 
         let normalizedAgents = ensureDefaultAgent(in: uniqueAgents(agents))
         try AgentProfileStore.save(normalizedAgents)
-        FileHandle.standardError.writeString(
+        AgentOutput.standardError.writeString(
             "\nUpdated: agents.json (\(normalizedAgents.count) agents)\n\n"
         )
     }
@@ -62,7 +57,7 @@ enum MLXServerAgentProfileSetupRunner {
         let url = service.globalAgentsFileURL()
         let existedBefore = FileManager.default.fileExists(atPath: url.path)
         guard let ensuredURL = service.ensureGlobalAgentsFileExists() else {
-            throw MLXServerAgentProfileSetupError.unableToCreateGlobalAgents(url)
+            throw MLXCoderAgentProfileSetupError.unableToCreateGlobalAgents(url)
         }
         return (ensuredURL, !existedBefore)
     }
@@ -74,9 +69,9 @@ enum MLXServerAgentProfileSetupRunner {
 
         do {
             let agents = try AgentProfileStore.loadRequired()
-            FileHandle.standardError.writeString("Configured agents:\n")
+            AgentOutput.standardError.writeString("Configured agents:\n")
             printAgents(agents)
-            FileHandle.standardError.writeString("\n")
+            AgentOutput.standardError.writeString("\n")
             return agents
         } catch {
             let shouldOverwrite = try promptYesNo(
@@ -121,7 +116,7 @@ enum MLXServerAgentProfileSetupRunner {
     private static func editAgents(_ initialAgents: [AgentProfile]) throws -> [AgentProfile] {
         var agents = initialAgents
         while true {
-            FileHandle.standardError.writeString("\nAgents:\n")
+            AgentOutput.standardError.writeString("\nAgents:\n")
             printAgents(agents)
             let choice = try promptString(
                 "Agent to edit (number, add, done)",
@@ -136,7 +131,7 @@ enum MLXServerAgentProfileSetupRunner {
             default:
                 guard let index = Int(choice),
                       agents.indices.contains(index - 1) else {
-                    FileHandle.standardError.writeString("Invalid selection.\n")
+                    AgentOutput.standardError.writeString("Invalid selection.\n")
                     continue
                 }
                 agents[index - 1] = try readAgent(defaultAgent: agents[index - 1])
@@ -203,7 +198,7 @@ enum MLXServerAgentProfileSetupRunner {
             return defaultValue
         }
 
-        FileHandle.standardError.writeString(
+        AgentOutput.standardError.writeString(
             """
             Enter the instructions. Type only "." on a line to finish.
 
@@ -211,9 +206,9 @@ enum MLXServerAgentProfileSetupRunner {
         )
         var lines: [String] = []
         while true {
-            FileHandle.standardError.writeString("> ")
+            AgentOutput.standardError.writeString("> ")
             guard let line = readLine() else {
-                throw MLXServerAgentProfileSetupError.inputClosed
+                throw MLXCoderAgentProfileSetupError.inputClosed
             }
             if line.trimmingCharacters(in: .whitespacesAndNewlines) == "." {
                 break
@@ -227,7 +222,7 @@ enum MLXServerAgentProfileSetupRunner {
         for (index, agent) in agents.enumerated() {
             let tools = agent.tools.isEmpty ? "no tools" : agent.tools.joined(separator: ", ")
             let skills = agent.skills.isEmpty ? "" : " | skills: \(skillList(agent.skills))"
-            FileHandle.standardError.writeString(
+            AgentOutput.standardError.writeString(
                 "  \(index + 1). \(agent.displayName) [\(tools)]\(skills)\n"
             )
         }
@@ -260,9 +255,9 @@ enum MLXServerAgentProfileSetupRunner {
     ) throws -> String {
         while true {
             let suffix = defaultValue.map { " [\($0)]" } ?? ""
-            FileHandle.standardError.writeString("\(prompt)\(suffix): ")
+            AgentOutput.standardError.writeString("\(prompt)\(suffix): ")
             guard let line = readLine() else {
-                throw MLXServerAgentProfileSetupError.inputClosed
+                throw MLXCoderAgentProfileSetupError.inputClosed
             }
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty, let defaultValue {
@@ -283,9 +278,9 @@ enum MLXServerAgentProfileSetupRunner {
     ) throws -> Bool {
         let defaultLabel = defaultValue ? "Y/n" : "y/N"
         while true {
-            FileHandle.standardError.writeString("\(prompt) [\(defaultLabel)]: ")
+            AgentOutput.standardError.writeString("\(prompt) [\(defaultLabel)]: ")
             guard let line = readLine() else {
-                throw MLXServerAgentProfileSetupError.inputClosed
+                throw MLXCoderAgentProfileSetupError.inputClosed
             }
             let normalized = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             if normalized.isEmpty {
@@ -314,17 +309,9 @@ enum MLXServerAgentProfileSetupRunner {
     private static func skillList(_ skills: [AgentProfileSkill]) -> String {
         skills.map(\.id).filter { !$0.isEmpty }.joined(separator: ", ")
     }
-
-    private static func supportsInteractiveInput() -> Bool {
-        #if os(macOS) || os(Linux)
-        return isatty(STDIN_FILENO) == 1
-        #else
-        return true
-        #endif
-    }
 }
 
-enum MLXServerAgentProfileSetupError: LocalizedError {
+enum MLXCoderAgentProfileSetupError: LocalizedError {
     case nonInteractiveTerminal
     case inputClosed
     case unableToCreateGlobalAgents(URL)
@@ -332,9 +319,9 @@ enum MLXServerAgentProfileSetupError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .nonInteractiveTerminal:
-            return "mlx-server --setup-agents requires an interactive terminal."
+            return "mlx-coder --setup-agents requires an interactive terminal."
         case .inputClosed:
-            return "Input closed during mlx-server agents setup."
+            return "Input closed during mlx-coder agents setup."
         case let .unableToCreateGlobalAgents(url):
             return "Unable to create global AGENTS.md at \(url.path)."
         }

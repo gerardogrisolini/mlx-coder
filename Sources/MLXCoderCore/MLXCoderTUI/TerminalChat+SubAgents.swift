@@ -25,9 +25,9 @@ extension TerminalChat {
             isSubAgentOverviewVisible = false
             lastRenderedSubAgentOverviewSignature = nil
             stopSubAgentOverviewRefreshLoop()
-            AgentOutput.standardError.writeString("Sub-agent overview hidden.\n")
+            writeSystemMessage("Sub-agent overview hidden.\n")
         default:
-            AgentOutput.standardError.writeString(
+            writeSystemMessage(
                 "Usage: /subagents [on|off|once]\n"
             )
         }

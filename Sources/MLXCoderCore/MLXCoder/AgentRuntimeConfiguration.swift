@@ -263,6 +263,7 @@ public protocol AgentRuntimeBackend: Actor {
 
     func updateSessionOptions(
         id: String,
+        systemPrompt: String?,
         allowedToolNames: Set<String>?,
         thinkingSelection: AgentThinkingSelection?,
         preserveThinking: Bool

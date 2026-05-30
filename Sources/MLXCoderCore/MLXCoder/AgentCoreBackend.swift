@@ -10,7 +10,7 @@ import Foundation
 public actor AgentCoreBackend {
     private struct SessionSeed {
         let cwd: String
-        let systemPrompt: String?
+        var systemPrompt: String?
         let history: [AgentRuntimeMessage]
         let cacheKey: String?
         var allowedToolNames: Set<String>?
@@ -80,6 +80,7 @@ public actor AgentCoreBackend {
 
     public func updateSessionOptions(
         id: String,
+        systemPrompt: String?,
         allowedToolNames: Set<String>?,
         thinkingSelection: AgentThinkingSelection?,
         preserveThinking: Bool
@@ -88,6 +89,7 @@ public actor AgentCoreBackend {
             return
         }
         let allowedToolNames = normalizedAllowedToolNames(allowedToolNames)
+        seed.systemPrompt = systemPrompt
         seed.allowedToolNames = allowedToolNames
         seed.thinkingSelection = thinkingSelection
         seed.preserveThinking = preserveThinking
@@ -96,6 +98,7 @@ public actor AgentCoreBackend {
         if let backend = activeBackend {
             await backend.updateSessionOptions(
                 id: id,
+                systemPrompt: systemPrompt,
                 allowedToolNames: allowedToolNames,
                 thinkingSelection: thinkingSelection,
                 preserveThinking: preserveThinking
