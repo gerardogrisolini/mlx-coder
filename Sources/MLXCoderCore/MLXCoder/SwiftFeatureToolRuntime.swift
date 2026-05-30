@@ -513,6 +513,15 @@ public struct SwiftFeatureInstallReport: Codable, Sendable {
     public let build: SwiftFeatureBuildReport?
 }
 
+public struct SwiftFeatureDeleteReport: Codable, Sendable {
+    public let ok: Bool
+    public let id: String
+    public let directoryPath: String
+    public let manifestPath: String
+    public let removed: Bool
+    public let wasEnabled: Bool
+}
+
 public struct SwiftFeatureState: Codable, Sendable {
     public static let currentVersion = 1
 
@@ -796,6 +805,7 @@ public actor SwiftFeatureRuntime {
         case "feature.list",
              "feature.enable",
              "feature.disable",
+             "feature.delete",
              "feature.reload",
              "feature.validate",
              "feature.build",
@@ -974,6 +984,10 @@ public actor SwiftFeatureRuntime {
                 action: "disabled",
                 id: id
             )
+        case "feature.delete":
+            let report = try await deleteFeature(arguments: arguments)
+            reloadFeatureBundles()
+            return try renderJSON(report)
         case "feature.reload":
             reloadFeatureBundles()
             return try await renderFeatureList(
@@ -1420,6 +1434,52 @@ public actor SwiftFeatureRuntime {
         )
     }
 
+    private func deleteFeature(
+        arguments: [String: Any]
+    ) async throws -> SwiftFeatureDeleteReport {
+        guard explicitFeatures == nil else {
+            throw DirectToolError.permissionDenied(
+                "Feature delete is unavailable for an explicitly constructed runtime."
+            )
+        }
+
+        let id = try Self.requiredFeatureID(arguments)
+        let bundledIDs = Set(Self.bundledFeatureDefinitions().map(\.id))
+        guard !bundledIDs.contains(id) else {
+            throw DirectToolError.permissionDenied(
+                "Bundled Swift feature '\(id)' cannot be deleted. Use feature.disable instead."
+            )
+        }
+
+        guard let record = SwiftFeatureRegistry.featureRecord(
+            id: id,
+            searchRoots: featureSearchRoots,
+            fileManager: fileManager
+        ),
+            let manifestURL = record.manifestURL else {
+            throw DirectToolError.permissionDenied("Unknown generated Swift feature: \(id).")
+        }
+
+        let rootURLs = featureRootURLs()
+        let directoryURL = manifestURL.deletingLastPathComponent().standardizedFileURL
+        guard rootURLs.contains(where: { Self.path(directoryURL, isDescendantOf: $0) }),
+              !rootURLs.contains(where: { $0.path == directoryURL.path }) else {
+            throw DirectToolError.permissionDenied(
+                "feature.delete can only remove generated feature packages under the configured features directory."
+            )
+        }
+
+        try fileManager.removeItem(at: directoryURL)
+        return SwiftFeatureDeleteReport(
+            ok: true,
+            id: id,
+            directoryPath: directoryURL.path,
+            manifestPath: manifestURL.path,
+            removed: true,
+            wasEnabled: record.manifestEnabled
+        )
+    }
+
     private func reloadFeatureBundles() {
         runtimeDiscoveredToolsByFeatureID.removeAll()
         features = explicitFeatures ?? Self.defaultFeatureBundles(
@@ -1640,9 +1700,15 @@ public actor SwiftFeatureRuntime {
     }
 
     private func featureRootURL() -> URL {
-        (featureSearchRoots?.first ?? SwiftFeatureRegistry.appFeatureRootURL(
+        featureRootURLs().first ?? SwiftFeatureRegistry.appFeatureRootURL(
             fileManager: fileManager
-        )).standardizedFileURL
+        ).standardizedFileURL
+    }
+
+    private func featureRootURLs() -> [URL] {
+        (featureSearchRoots ?? [
+            SwiftFeatureRegistry.appFeatureRootURL(fileManager: fileManager)
+        ]).map(\.standardizedFileURL)
     }
 
     private func resolvedInstallPath(_ rawPath: String) -> URL {

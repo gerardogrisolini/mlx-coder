@@ -241,6 +241,75 @@ struct SwiftFeatureRuntimeTests {
     }
 
     @Test
+    func featureDeleteRemovesGeneratedPackageButRejectsBundledFeatures() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-swift-feature-delete-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: rootURL)
+        }
+        try FileManager.default.createDirectory(
+            at: rootURL,
+            withIntermediateDirectories: true
+        )
+
+        let runtime = SwiftFeatureRuntime(featureSearchRoots: [rootURL])
+        _ = try await runtime.executeManagementTool(
+            toolCall: DirectAgentToolCall(
+                id: "feature-scaffold-delete",
+                name: "feature.scaffold",
+                argumentsObject: [
+                    "id": "throwaway-feature",
+                    "toolName": "throwaway.run"
+                ],
+                argumentsJSON: #"{"id":"throwaway-feature","toolName":"throwaway.run"}"#
+            )
+        )
+        let featureURL = rootURL.appendingPathComponent("throwaway-feature", isDirectory: true)
+        #expect(FileManager.default.fileExists(atPath: featureURL.path))
+
+        let deleteOutput = try await runtime.executeManagementTool(
+            toolCall: DirectAgentToolCall(
+                id: "feature-delete",
+                name: "feature.delete",
+                argumentsObject: ["id": "throwaway-feature"],
+                argumentsJSON: #"{"id":"throwaway-feature"}"#
+            )
+        )
+        let deleteReport = try JSONDecoder().decode(
+            SwiftFeatureDeleteReport.self,
+            from: Data(deleteOutput.utf8)
+        )
+        #expect(deleteReport.ok)
+        #expect(deleteReport.removed)
+        #expect(deleteReport.directoryPath == featureURL.path)
+        #expect(!FileManager.default.fileExists(atPath: featureURL.path))
+
+        let listOutput = try await runtime.executeManagementTool(
+            toolCall: DirectAgentToolCall(
+                id: "feature-list-after-delete",
+                name: "feature.list",
+                argumentsObject: [:],
+                argumentsJSON: "{}"
+            )
+        )
+        #expect(!listOutput.contains("throwaway-feature"))
+
+        do {
+            _ = try await runtime.executeManagementTool(
+                toolCall: DirectAgentToolCall(
+                    id: "feature-delete-bundled",
+                    name: "feature.delete",
+                    argumentsObject: ["id": "mlx-git-tools"],
+                    argumentsJSON: #"{"id":"mlx-git-tools"}"#
+                )
+            )
+            Issue.record("feature.delete unexpectedly removed a bundled feature.")
+        } catch {
+            #expect(error.localizedDescription.contains("cannot be deleted"))
+        }
+    }
+
+    @Test
     func featureScaffoldCreatesMCPBridgePackage() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("mlx-swift-feature-mcp-bridge-\(UUID().uuidString)", isDirectory: true)

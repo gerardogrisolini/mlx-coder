@@ -726,29 +726,16 @@ extension TerminalChat {
         text
     }
 
-    private static func compactToolStatusLine(
+    static func compactToolStatusLine(
         target: String,
         statusIcon: String,
         contentInsetWidth: Int = 0
     ) -> String {
-        rightAlignedSuffix(
-            text: target,
-            suffix: statusIcon,
-            contentInsetWidth: contentInsetWidth
-        )
-    }
-
-    private static func rightAlignedSuffix(
-        text: String,
-        suffix: String,
-        contentInsetWidth: Int = 0
-    ) -> String {
         let columns = max(20, terminalColumnCount() - contentInsetWidth)
-        let suffixWidth = displayWidth(suffix)
+        let suffixWidth = displayWidth(statusIcon)
         let textWidthLimit = max(1, columns - suffixWidth - 1)
-        let fittedText = fitDisplayWidth(text, width: textWidthLimit)
-        let spacing = columns - displayWidth(fittedText) - suffixWidth
-        return fittedText + String(repeating: " ", count: max(1, spacing)) + suffix
+        let fittedTarget = fitDisplayWidth(target, width: textWidthLimit)
+        return "\(fittedTarget) \(statusIcon)"
     }
 
     private static func renderedTerminalRowCount(

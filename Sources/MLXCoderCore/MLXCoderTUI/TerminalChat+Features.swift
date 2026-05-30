@@ -5,10 +5,22 @@
 
 import Foundation
 
+enum TerminalFeatureCommandResult: Sendable {
+    case none
+    case runPrompt(String)
+    case prefillPrompt(String)
+}
+
 extension TerminalChat {
-    public func handleFeatureCommand(_ command: String) async {
+    func handleFeatureCommand(_ command: String) async -> TerminalFeatureCommandResult {
         let rawArguments = String(command.dropFirst("/feature".count))
             .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if Self.featureCommandRequiresActiveBuilder(rawArguments: rawArguments),
+           !(await featureBuilderIsActive()) {
+            writeFailureMessage(Self.renderFeatureBuilderInactiveWarning())
+            return .none
+        }
 
         if rawArguments.isEmpty {
             guard stdinIsTerminal else {
@@ -17,10 +29,9 @@ extension TerminalChat {
                     arguments: ["includeTools": true]
                 )
                 writeSystemMessage(Self.renderFeatureCommandUsage())
-                return
+                return .none
             }
-            await runFeatureWizard()
-            return
+            return await runFeatureWizard()
         }
 
         var tokens = rawArguments.split(separator: " ").map(String.init)
@@ -28,6 +39,7 @@ extension TerminalChat {
         switch action {
         case "list", "ls", "status":
             await printFeatureList()
+            return .none
         case "reload":
             await runFeatureManagementTool(
                 name: "feature.reload",
@@ -35,32 +47,49 @@ extension TerminalChat {
             )
             await updateCurrentSessionToolOptions(discoverExternalTools: false)
             await printFeatureList()
-        case "enable", "disable", "build", "validate":
+            return .none
+        case "enable", "disable", "delete", "build", "validate":
             guard let rawID = tokens.first?.nilIfBlank else {
                 writeFailureMessage("mlx-coder: /feature \(action) requires a feature id, name, or list number.\n")
                 writeSystemMessage(Self.renderFeatureCommandUsage())
-                return
+                return .none
             }
             let id: String
             do {
                 id = try await resolvedFeatureID(rawID)
             } catch {
                 writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
-                return
+                return .none
             }
             let toolName = "feature.\(action)"
-            await runFeatureManagementTool(
+            let didSucceed = await runFeatureManagementTool(
                 name: toolName,
                 arguments: ["id": id]
             )
-            if action == "enable" || action == "disable" || action == "build" {
+            if didSucceed, action == "delete" {
+                selectedToolKeys.remove(TerminalToolSelectionCatalog.featurePackageKey(id: id))
+            }
+            if didSucceed,
+               action == "enable" || action == "disable" || action == "delete" || action == "build" {
                 await updateCurrentSessionToolOptions(discoverExternalTools: false)
                 await printFeatureList()
             }
+            return .none
         default:
             writeFailureMessage("mlx-coder: unknown /feature command '\(action)'.\n")
             writeSystemMessage(Self.renderFeatureCommandUsage())
+            return .none
         }
+    }
+
+    private func featureBuilderIsActive() async -> Bool {
+        let items = await toolSelectionItems()
+        let normalizedKeys = TerminalToolSelectionCatalog.normalizedSelectionKeys(
+            selectedToolKeys,
+            items: items
+        )
+        return items.contains { $0.key == TerminalToolSelectionCatalog.featureBuilderKey }
+            && normalizedKeys.contains(TerminalToolSelectionCatalog.featureBuilderKey)
     }
 
     private func printFeatureList() async {
@@ -79,7 +108,7 @@ extension TerminalChat {
         return try Self.resolvedFeatureID(rawValue, statuses: statuses)
     }
 
-    private func runFeatureWizard() async {
+    private func runFeatureWizard() async -> TerminalFeatureCommandResult {
         guard let template = TerminalCheckboxMenu.selectOne(
             title: "Feature template",
             items: [
@@ -98,12 +127,12 @@ extension TerminalChat {
             reservedBottomRows: statusBar.reservedRowsForOverlay()
         ) else {
             writeSystemMessage("Feature creation cancelled.\n")
-            return
+            return .none
         }
 
         guard let id = promptFeatureLine("Feature id", required: true) else {
             writeSystemMessage("Feature creation cancelled.\n")
-            return
+            return .none
         }
         let defaultDisplayName = Self.featureWizardDisplayName(from: id)
         guard let displayName = promptFeatureLine(
@@ -111,7 +140,7 @@ extension TerminalChat {
             defaultValue: defaultDisplayName
         ) else {
             writeSystemMessage("Feature creation cancelled.\n")
-            return
+            return .none
         }
         let description = promptFeatureLine(
             "Description",
@@ -119,7 +148,7 @@ extension TerminalChat {
         )
         guard let description else {
             writeSystemMessage("Feature creation cancelled.\n")
-            return
+            return .none
         }
 
         var arguments: [String: Any] = [
@@ -136,7 +165,7 @@ extension TerminalChat {
                 defaultValue: defaultToolName
             ) else {
                 writeSystemMessage("Feature creation cancelled.\n")
-                return
+                return .none
             }
             arguments["toolName"] = toolName
         case .mcpBridge:
@@ -147,7 +176,7 @@ extension TerminalChat {
             )
             guard let serviceName else {
                 writeSystemMessage("Feature creation cancelled.\n")
-                return
+                return .none
             }
             arguments["serviceName"] = serviceName
 
@@ -156,7 +185,7 @@ extension TerminalChat {
                 defaultValue: Self.featureWizardPrefix(from: id)
             ) else {
                 writeSystemMessage("Feature creation cancelled.\n")
-                return
+                return .none
             }
             arguments["toolPrefix"] = toolPrefix
 
@@ -178,20 +207,20 @@ extension TerminalChat {
                 reservedBottomRows: statusBar.reservedRowsForOverlay()
             ) else {
                 writeSystemMessage("Feature creation cancelled.\n")
-                return
+                return .none
             }
 
             switch transport {
             case .http:
                 guard let endpointURL = promptFeatureLine("MCP endpoint URL", required: true) else {
                     writeSystemMessage("Feature creation cancelled.\n")
-                    return
+                    return .none
                 }
                 arguments["endpointURL"] = endpointURL
             case .stdio:
                 guard let executablePath = promptFeatureLine("MCP executable path", required: true) else {
                     writeSystemMessage("Feature creation cancelled.\n")
-                    return
+                    return .none
                 }
                 arguments["executablePath"] = executablePath
                 if let rawArguments = promptFeatureLine("Executable arguments", defaultValue: "") {
@@ -219,35 +248,53 @@ extension TerminalChat {
         let shouldSelect = shouldEnable
             ? (promptFeatureYesNo("Select feature for this session?", defaultValue: true) ?? false)
             : false
+        guard let requirements = promptFeatureLine(
+            "Goal / requirements (empty to edit the generated prompt)",
+            required: false
+        ) else {
+            writeSystemMessage("Feature creation cancelled.\n")
+            return .none
+        }
 
-        await createFeatureFromWizard(
+        return await createFeatureFromWizard(
             id: id,
+            displayName: displayName,
             arguments: arguments,
             shouldBuild: shouldBuild,
             shouldEnable: shouldEnable,
-            shouldSelect: shouldSelect
+            shouldSelect: shouldSelect,
+            requirements: requirements.nilIfBlank
         )
     }
 
     private func createFeatureFromWizard(
         id: String,
+        displayName: String,
         arguments: [String: Any],
         shouldBuild: Bool,
         shouldEnable: Bool,
-        shouldSelect: Bool
-    ) async {
-        guard await runFeatureManagementTool(
+        shouldSelect: Bool,
+        requirements: String?
+    ) async -> TerminalFeatureCommandResult {
+        guard let scaffoldOutput = await executeFeatureManagementTool(
             name: "feature.scaffold",
             arguments: arguments
         ) else {
-            return
+            return .none
+        }
+        writeSystemMessage(Self.renderFeatureManagementToolOutput(name: "feature.scaffold", output: scaffoldOutput))
+        guard let scaffoldReport = Self.decodeFeatureOutput(
+            SwiftFeatureScaffoldReport.self,
+            from: scaffoldOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        ) else {
+            return .none
         }
 
         guard await runFeatureManagementTool(
             name: "feature.validate",
             arguments: ["id": id]
         ) else {
-            return
+            return .none
         }
 
         if shouldBuild {
@@ -255,7 +302,7 @@ extension TerminalChat {
                 name: "feature.build",
                 arguments: ["id": id]
             ) else {
-                return
+                return .none
             }
         }
 
@@ -264,7 +311,7 @@ extension TerminalChat {
                 name: "feature.enable",
                 arguments: ["id": id]
             ) else {
-                return
+                return .none
             }
             await updateCurrentSessionToolOptions(discoverExternalTools: false)
         }
@@ -274,6 +321,29 @@ extension TerminalChat {
             nextSelection.insert(TerminalToolSelectionCatalog.featurePackageKey(id: id))
             await applyToolSelection(nextSelection)
         }
+
+        writeSystemMessage(
+            Self.renderFeatureWizardCompletion(
+                id: id,
+                built: shouldBuild,
+                enabled: shouldEnable,
+                selected: shouldSelect
+            )
+        )
+
+        let implementationPrompt = Self.featureImplementationPrompt(
+            id: id,
+            displayName: displayName,
+            directoryPath: scaffoldReport.directoryPath,
+            manifestPath: scaffoldReport.manifestPath,
+            sourcePath: scaffoldReport.sourcePath,
+            toolName: scaffoldReport.toolName,
+            requirements: requirements
+        )
+        if requirements != nil {
+            return .runPrompt(implementationPrompt)
+        }
+        return .prefillPrompt(implementationPrompt)
     }
 
     @discardableResult
@@ -281,8 +351,22 @@ extension TerminalChat {
         name: String,
         arguments: [String: Any]
     ) async -> Bool {
+        guard let output = await executeFeatureManagementTool(
+            name: name,
+            arguments: arguments
+        ) else {
+            return false
+        }
+        writeSystemMessage(Self.renderFeatureManagementToolOutput(name: name, output: output))
+        return Self.featureManagementToolSucceeded(name: name, output: output)
+    }
+
+    private func executeFeatureManagementTool(
+        name: String,
+        arguments: [String: Any]
+    ) async -> String? {
         do {
-            let output = try await SwiftFeatureRuntime().executeManagementTool(
+            return try await SwiftFeatureRuntime().executeManagementTool(
                 toolCall: DirectAgentToolCall(
                     id: "terminal-\(name)-\(UUID().uuidString)",
                     name: name,
@@ -290,11 +374,9 @@ extension TerminalChat {
                     argumentsJSON: jsonString(from: arguments)
                 )
             )
-            writeSystemMessage("\(output.trimmingCharacters(in: .whitespacesAndNewlines))\n")
-            return true
         } catch {
             writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
-            return false
+            return nil
         }
     }
 
@@ -347,7 +429,276 @@ extension TerminalChat {
     }
 
     public static func renderFeatureCommandUsage() -> String {
-        "Usage: /feature [list|reload|enable <id|name|#>|disable <id|name|#>|build <id|name|#>|validate <id|name|#>]\n"
+        "Usage: /feature [list|reload|enable <id|name|#>|disable <id|name|#>|delete <id|name|#>|build <id|name|#>|validate <id|name|#>]\n"
+    }
+
+    public static func renderFeatureBuilderInactiveWarning() -> String {
+        "mlx-coder: Feature Builder is not active. Enable it with /tools feature-builder before using /feature.\n"
+    }
+
+    public static func renderFeatureWizardCompletion(
+        id: String,
+        built: Bool,
+        enabled: Bool,
+        selected: Bool
+    ) -> String {
+        var actions = ["created", "validated"]
+        if built {
+            actions.append("built")
+        }
+        if enabled {
+            actions.append("enabled")
+        }
+        if selected {
+            actions.append("selected")
+        }
+
+        var lines = ["Feature '\(id)' \(actions.joined(separator: ", "))."]
+        if !enabled {
+            lines.append("It is not active yet. Enable it with /feature enable \(id), then select it from /tools.")
+        } else if !selected {
+            lines.append("It is enabled. Select it from /tools to expose its tools in this session.")
+        } else {
+            lines.append("It is active in this session.")
+        }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    public static func featureImplementationPrompt(
+        id: String,
+        displayName: String,
+        directoryPath: String,
+        manifestPath: String,
+        sourcePath: String,
+        toolName: String,
+        requirements: String?
+    ) -> String {
+        var sections = [
+            """
+            Implementa la feature Swift "\(displayName)" (`\(id)`).
+
+            Feature directory:
+            \(directoryPath)
+
+            File principali:
+            - Manifest: \(manifestPath)
+            - Sorgente: \(sourcePath)
+            - Tool: \(toolName)
+
+            Lavora sul pacchetto Swift esistente usando i tool file/text disponibili.
+            Mantieni Swift tools 6.3, aggiorna descrizione e JSON schema del tool se necessario, poi esegui `feature.validate` e `feature.build` per `\(id)`.
+            Se tutto passa, abilita la feature con `feature.enable` e dimmi se devo selezionarla da `/tools` per provarla nella sessione corrente.
+            """
+        ]
+
+        if let requirements {
+            sections.append(
+                """
+
+                Goal / requirements:
+                \(requirements)
+                """
+            )
+        } else {
+            sections.append(
+                """
+
+                Goal / requirements:
+                """
+            )
+        }
+
+        return sections.joined()
+    }
+
+    public static func renderFeatureManagementToolOutput(
+        name: String,
+        output: String
+    ) -> String {
+        let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedOutput.isEmpty else {
+            return ""
+        }
+
+        switch name {
+        case "feature.scaffold":
+            if let report = decodeFeatureOutput(SwiftFeatureScaffoldReport.self, from: trimmedOutput) {
+                return """
+                Created Swift feature '\(report.id)'.
+                  Source: \(report.directoryPath)
+                  Tool: \(report.toolName)
+
+                """
+            }
+        case "feature.validate":
+            if let report = decodeFeatureOutput(SwiftFeatureValidationReport.self, from: trimmedOutput) {
+                return renderFeatureValidationReport(report)
+            }
+        case "feature.build":
+            if let report = decodeFeatureOutput(SwiftFeatureBuildReport.self, from: trimmedOutput) {
+                return renderFeatureBuildReport(report)
+            }
+        case "feature.install":
+            if let report = decodeFeatureOutput(SwiftFeatureInstallReport.self, from: trimmedOutput) {
+                return renderFeatureInstallReport(report)
+            }
+        case "feature.delete":
+            if let report = decodeFeatureOutput(SwiftFeatureDeleteReport.self, from: trimmedOutput) {
+                return renderFeatureDeleteReport(report)
+            }
+        case "feature.list", "feature.reload":
+            return renderFeatureListToolOutput(name: name, output: trimmedOutput)
+        case "feature.enable", "feature.disable":
+            return renderFeatureMutationToolOutput(output: trimmedOutput)
+        default:
+            break
+        }
+
+        return trimmedOutput + "\n"
+    }
+
+    public static func featureManagementToolSucceeded(
+        name: String,
+        output: String
+    ) -> Bool {
+        let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch name {
+        case "feature.validate":
+            return decodeFeatureOutput(SwiftFeatureValidationReport.self, from: trimmedOutput)?.ok ?? true
+        case "feature.build":
+            return decodeFeatureOutput(SwiftFeatureBuildReport.self, from: trimmedOutput)?.ok ?? true
+        case "feature.install":
+            return decodeFeatureOutput(SwiftFeatureInstallReport.self, from: trimmedOutput)?.ok ?? true
+        case "feature.delete":
+            return decodeFeatureOutput(SwiftFeatureDeleteReport.self, from: trimmedOutput)?.ok ?? true
+        default:
+            return true
+        }
+    }
+
+    public static func featureCommandRequiresActiveBuilder(rawArguments: String) -> Bool {
+        let trimmedArguments = rawArguments.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedArguments.isEmpty else {
+            return true
+        }
+        let action = trimmedArguments.split(separator: " ").first?.lowercased() ?? ""
+        return !["list", "ls", "status"].contains(action)
+    }
+
+    private static func renderFeatureValidationReport(
+        _ report: SwiftFeatureValidationReport
+    ) -> String {
+        let id = report.id ?? "unknown"
+        guard report.ok else {
+            var lines = ["Validation failed for Swift feature '\(id)'."]
+            lines.append(contentsOf: report.errors.map { "  Error: \($0)" })
+            return lines.joined(separator: "\n") + "\n"
+        }
+
+        let warnings = report.warnings.filter {
+            !$0.hasPrefix("Executable has not been built yet:")
+        }
+        var lines = ["Validated Swift feature '\(id)'."]
+        if !warnings.isEmpty {
+            lines.append(contentsOf: warnings.map { "  Warning: \($0)" })
+        }
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    private static func renderFeatureBuildReport(
+        _ report: SwiftFeatureBuildReport
+    ) -> String {
+        guard report.ok else {
+            var lines = ["Build failed for Swift feature '\(report.id)' (exit code \(report.exitCode))."]
+            let error = report.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !error.isEmpty {
+                lines.append("  \(truncatedInline(error, limit: 180))")
+            }
+            return lines.joined(separator: "\n") + "\n"
+        }
+
+        return """
+        Built Swift feature '\(report.id)'.
+          Executable: \(report.executablePath)
+
+        """
+    }
+
+    private static func renderFeatureInstallReport(
+        _ report: SwiftFeatureInstallReport
+    ) -> String {
+        guard report.ok else {
+            return "Install failed for Swift feature '\(report.id)'.\n"
+        }
+        var states = ["installed"]
+        if report.built {
+            states.append("built")
+        }
+        if report.enabled {
+            states.append("enabled")
+        }
+        return """
+        Feature '\(report.id)' \(states.joined(separator: ", ")).
+          Destination: \(report.destinationPath)
+
+        """
+    }
+
+    private static func renderFeatureDeleteReport(
+        _ report: SwiftFeatureDeleteReport
+    ) -> String {
+        guard report.ok else {
+            return "Delete failed for Swift feature '\(report.id)'.\n"
+        }
+        return """
+        Deleted Swift feature '\(report.id)'.
+          Removed: \(report.directoryPath)
+
+        """
+    }
+
+    private static func renderFeatureListToolOutput(
+        name: String,
+        output: String
+    ) -> String {
+        let prefix: String?
+        let json: String
+        if let jsonStart = output.firstIndex(of: "{") {
+            let head = output[..<jsonStart].trimmingCharacters(in: .whitespacesAndNewlines)
+            prefix = head.isEmpty ? nil : String(head)
+            json = String(output[jsonStart...])
+        } else {
+            prefix = nil
+            json = output
+        }
+
+        if let payload = decodeFeatureOutput(TerminalFeatureListPayload.self, from: json) {
+            let renderedList = renderFeatureStatusList(payload.features)
+            if let prefix {
+                return "\(prefix)\n\(renderedList)"
+            }
+            return renderedList
+        }
+        return name == "feature.reload"
+            ? "Reloaded Swift features.\n"
+            : output + "\n"
+    }
+
+    private static func renderFeatureMutationToolOutput(output: String) -> String {
+        guard let firstLine = output.split(separator: "\n").first.map(String.init)?.nilIfBlank else {
+            return output + "\n"
+        }
+        return "\(firstLine)\n"
+    }
+
+    private static func decodeFeatureOutput<T: Decodable>(
+        _ type: T.Type,
+        from output: String
+    ) -> T? {
+        guard let data = output.data(using: .utf8) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(type, from: data)
     }
 
     public static func renderFeatureStatusList(
@@ -367,7 +718,7 @@ extension TerminalChat {
                 "  \(offset + 1). \(featureDisplayName(status)) [\(status.id)] - \(state)\(availability), \(source)\(tools)\n"
             )
         }
-        lines.append("\nUse /feature enable <id|name|#> or /feature disable <id|name|#>.\n")
+        lines.append("\nUse /feature enable <id|name|#>, /feature disable <id|name|#>, or /feature delete <id|name|#>.\n")
         return lines.joined()
     }
 
@@ -498,6 +849,10 @@ extension TerminalChat {
         }
         return ""
     }
+}
+
+private struct TerminalFeatureListPayload: Decodable {
+    let features: [SwiftFeatureStatus]
 }
 
 private enum FeatureWizardTemplate: Hashable {

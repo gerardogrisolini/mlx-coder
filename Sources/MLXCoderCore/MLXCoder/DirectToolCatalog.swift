@@ -168,6 +168,11 @@ public enum DirectToolCatalog {
             inputSchema: #"{"type":"object","properties":{"id":{"type":"string"},"featureID":{"type":"string"},"feature_id":{"type":"string"},"name":{"type":"string"}},"required":["id"]}"#
         ),
         DirectToolDescriptor(
+            name: "feature.delete",
+            description: "Deletes a generated Swift feature package by id and reloads the feature runtime. Bundled and core features cannot be deleted.",
+            inputSchema: #"{"type":"object","properties":{"id":{"type":"string"},"featureID":{"type":"string"},"feature_id":{"type":"string"},"name":{"type":"string"}},"required":["id"]}"#
+        ),
+        DirectToolDescriptor(
             name: "feature.reload",
             description: "Reloads Swift feature bundles from bundled executables and generated feature manifests.",
             inputSchema: #"{"type":"object","properties":{"includeTools":{"type":"boolean"},"include_tools":{"type":"boolean"},"includeDisabled":{"type":"boolean"},"include_disabled":{"type":"boolean"},"discoverRuntimeTools":{"type":"boolean"},"discover_runtime_tools":{"type":"boolean"}}}"#

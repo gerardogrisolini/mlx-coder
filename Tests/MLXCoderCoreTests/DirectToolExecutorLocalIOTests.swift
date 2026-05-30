@@ -15,6 +15,7 @@ struct DirectToolExecutorLocalIOTests {
         #expect(baseToolNames.contains("text.wc"))
         #expect(baseToolNames.contains("feature.list"))
         #expect(baseToolNames.contains("feature.enable"))
+        #expect(baseToolNames.contains("feature.delete"))
         #expect(!baseToolNames.contains("search.glob"))
         #expect(!baseToolNames.contains("web.search"))
         #expect(!baseToolNames.contains("git.status"))

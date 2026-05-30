@@ -69,4 +69,16 @@ struct TerminalChatRenderingTests {
         #expect(rendered.contains("\u{1B}[38;5;203mRetry later.\u{1B}[0m\n"))
         #expect(rendered.hasSuffix("\n"))
     }
+
+    @Test
+    func compactToolStatusIconStaysImmediatelyAfterText() {
+        let rendered = TerminalChat.compactToolStatusLine(
+            target: "/tmp/generated-feature/Sources/Feature/main.swift",
+            statusIcon: "✅",
+            contentInsetWidth: 0
+        )
+
+        #expect(rendered.hasSuffix(" ✅"))
+        #expect(!rendered.contains("  ✅"))
+    }
 }

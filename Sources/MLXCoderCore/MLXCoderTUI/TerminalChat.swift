@@ -186,6 +186,8 @@ public final class TerminalChat: @unchecked Sendable {
                 return
             case let .runPrompt(prompt):
                 await runPromptBlocking(prompt)
+            case let .prefillPrompt(prompt):
+                writeSystemMessage("Draft prompt:\n\(prompt)\n")
             }
         }
     }
@@ -275,6 +277,12 @@ public final class TerminalChat: @unchecked Sendable {
                 }
                 writeSubmittedPrompt(prompt)
                 startGeneration(prompt: prompt)
+                return true
+            case let .prefillPrompt(prompt):
+                if shouldSuspendPanel {
+                    _ = startPanelInput()
+                }
+                interactiveReader.setPanelText(prompt)
                 return true
             }
         }
@@ -451,8 +459,14 @@ public final class TerminalChat: @unchecked Sendable {
             await handleToolsCommand(command)
             return .continueChat
         case let command where command == "/feature" || command.hasPrefix("/feature "):
-            await handleFeatureCommand(command)
-            return .continueChat
+            switch await handleFeatureCommand(command) {
+            case .none:
+                return .continueChat
+            case let .runPrompt(prompt):
+                return .runPrompt(prompt)
+            case let .prefillPrompt(prompt):
+                return .prefillPrompt(prompt)
+            }
         case let command where command == "/skills" || command.hasPrefix("/skills "):
             await handleSkillsCommand(command)
             return .continueChat
@@ -638,6 +652,7 @@ private enum TerminalSubmittedLineAction {
     case continueChat
     case exitChat
     case runPrompt(String)
+    case prefillPrompt(String)
 }
 
 private struct TerminalChatGenerationFailure: Sendable {

@@ -55,6 +55,75 @@ struct AgentConfigurationTests {
     }
 
     @Test
+    func defaultAgentProfilesUseFocusedToolSelections() throws {
+        let profiles = Dictionary(
+            uniqueKeysWithValues: AgentProfileStore.defaultProfiles().map { ($0.name, $0) }
+        )
+        let xcodeKey = TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-xcode-tools")
+        let figmaKey = TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-figma-tools")
+        let webKey = TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-web-tools")
+        let featureBuilderKey = TerminalToolSelectionCatalog.featureBuilderKey
+        let defaultProfile = try #require(profiles["Default"])
+        let bugfixProfile = try #require(profiles["Bugfix"])
+        let featureProfile = try #require(profiles["Feature"])
+        let reviewProfile = try #require(profiles["Review"])
+        let researchProfile = try #require(profiles["Research"])
+        let refactorProfile = try #require(profiles["Refactor"])
+
+        for profile in profiles.values {
+            #expect(!profile.tools.contains(xcodeKey))
+            #expect(!profile.tools.contains(figmaKey))
+            #expect(profile.tools.contains("files"))
+            #expect(profile.tools.contains("text"))
+            #expect(profile.tools.contains("memory"))
+        }
+
+        #expect(defaultProfile.tools.contains(featureBuilderKey))
+        #expect(featureProfile.tools.contains(featureBuilderKey))
+        #expect(!bugfixProfile.tools.contains(featureBuilderKey))
+        #expect(!reviewProfile.tools.contains(featureBuilderKey))
+        #expect(!researchProfile.tools.contains(featureBuilderKey))
+        #expect(!refactorProfile.tools.contains(featureBuilderKey))
+
+        #expect(defaultProfile.tools.contains(webKey))
+        #expect(featureProfile.tools.contains(webKey))
+        #expect(researchProfile.tools.contains(webKey))
+        #expect(!bugfixProfile.tools.contains(webKey))
+        #expect(!reviewProfile.tools.contains(webKey))
+        #expect(!refactorProfile.tools.contains(webKey))
+    }
+
+    @Test
+    func agentSelectionDetailsExplainProfileDifferences() throws {
+        let profiles = Dictionary(
+            uniqueKeysWithValues: AgentProfileStore.defaultProfiles().map { ($0.name, $0) }
+        )
+
+        #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Default"])).contains("General coding"))
+        #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Bugfix"])).contains("Focused bug fixes"))
+        #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Feature"])).contains("Build complete features"))
+        #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Review"])).contains("Code review only"))
+        #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Research"])).contains("Research"))
+        #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Refactor"])).contains("Behavior-preserving"))
+
+        let customAgent = AgentProfile(
+            id: "custom",
+            name: "Custom",
+            tools: [
+                "shell",
+                TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-git-tools"),
+                "custom.tool"
+            ],
+            modelID: "mlx-community/custom"
+        )
+        let customDetail = TerminalChat.agentSelectionDetail(customAgent)
+
+        #expect(customDetail.contains("Tools: shell, git, 1 custom"))
+        #expect(customDetail.contains("model: mlx-community/custom"))
+        #expect(!customDetail.contains("feature:mlx-git-tools"))
+    }
+
+    @Test
     func toolSelectionCatalogListsBundledAndGeneratedFeaturePackagesTogether() throws {
         let items = TerminalChat.toolSelectionItems(
             featureStatuses: [
@@ -121,10 +190,158 @@ struct AgentConfigurationTests {
         #expect(allowedToolNames.contains("feature.list"))
         #expect(allowedToolNames.contains("feature.enable"))
         #expect(allowedToolNames.contains("feature.disable"))
+        #expect(allowedToolNames.contains("feature.delete"))
         #expect(allowedToolNames.contains("feature.scaffold"))
         #expect(!allowedToolNames.contains("web.search"))
         #expect(!allowedToolNames.contains("clock.now"))
         #expect(!allowedToolNames.contains(SwiftFeatureRuntime.featurePackageToolsAllowedName))
+    }
+
+    @Test
+    func featureCommandWarnsWhenBuilderIsNotActive() {
+        #expect(TerminalChat.featureCommandRequiresActiveBuilder(rawArguments: ""))
+        #expect(TerminalChat.featureCommandRequiresActiveBuilder(rawArguments: "reload"))
+        #expect(TerminalChat.featureCommandRequiresActiveBuilder(rawArguments: "enable git"))
+        #expect(TerminalChat.featureCommandRequiresActiveBuilder(rawArguments: "delete test1"))
+        #expect(!TerminalChat.featureCommandRequiresActiveBuilder(rawArguments: "list"))
+        #expect(!TerminalChat.featureCommandRequiresActiveBuilder(rawArguments: "status"))
+        #expect(TerminalChat.renderFeatureBuilderInactiveWarning().contains("/tools feature-builder"))
+    }
+
+    @Test
+    func featureWizardOutputsHumanReadableStatusInsteadOfJSON() {
+        let scaffoldOutput = """
+        {
+          "directoryPath" : "/tmp/features/test1",
+          "id" : "test1",
+          "manifestPath" : "/tmp/features/test1/feature.json",
+          "packagePath" : "/tmp/features/test1/Package.swift",
+          "sourcePath" : "/tmp/features/test1/Sources/Test1/main.swift",
+          "toolName" : "test1.run"
+        }
+        """
+        let validationOutput = """
+        {
+          "errors" : [],
+          "executablePath" : "/tmp/features/test1/.build/release/test1",
+          "id" : "test1",
+          "manifestPath" : "/tmp/features/test1/feature.json",
+          "ok" : true,
+          "tools" : [
+            "test1.run"
+          ],
+          "warnings" : [
+            "Executable has not been built yet: /tmp/features/test1/.build/release/test1"
+          ]
+        }
+        """
+        let buildOutput = """
+        {
+          "command" : [
+            "swift",
+            "build"
+          ],
+          "executablePath" : "/tmp/features/test1/.build/release/test1",
+          "exitCode" : 0,
+          "id" : "test1",
+          "ok" : true,
+          "stderr" : "",
+          "stdout" : "Building for production...",
+          "timedOut" : false,
+          "workingDirectory" : "/tmp/features/test1"
+        }
+        """
+        let failedBuildOutput = """
+        {
+          "command" : [
+            "swift",
+            "build"
+          ],
+          "executablePath" : "/tmp/features/test1/.build/release/test1",
+          "exitCode" : 1,
+          "id" : "test1",
+          "ok" : false,
+          "stderr" : "compile error",
+          "stdout" : "",
+          "timedOut" : false,
+          "workingDirectory" : "/tmp/features/test1"
+        }
+        """
+        let deleteOutput = """
+        {
+          "directoryPath" : "/tmp/features/test1",
+          "id" : "test1",
+          "manifestPath" : "/tmp/features/test1/feature.json",
+          "ok" : true,
+          "removed" : true,
+          "wasEnabled" : false
+        }
+        """
+
+        let scaffoldRendered = TerminalChat.renderFeatureManagementToolOutput(
+            name: "feature.scaffold",
+            output: scaffoldOutput
+        )
+        let validationRendered = TerminalChat.renderFeatureManagementToolOutput(
+            name: "feature.validate",
+            output: validationOutput
+        )
+        let buildRendered = TerminalChat.renderFeatureManagementToolOutput(
+            name: "feature.build",
+            output: buildOutput
+        )
+        let deleteRendered = TerminalChat.renderFeatureManagementToolOutput(
+            name: "feature.delete",
+            output: deleteOutput
+        )
+        let completion = TerminalChat.renderFeatureWizardCompletion(
+            id: "test1",
+            built: true,
+            enabled: false,
+            selected: false
+        )
+
+        #expect(scaffoldRendered.contains("Created Swift feature 'test1'."))
+        #expect(scaffoldRendered.contains("Tool: test1.run"))
+        #expect(!scaffoldRendered.contains("{"))
+        #expect(validationRendered.contains("Validated Swift feature 'test1'."))
+        #expect(!validationRendered.contains("Executable has not been built yet"))
+        #expect(buildRendered.contains("Built Swift feature 'test1'."))
+        #expect(!buildRendered.contains("stdout"))
+        #expect(deleteRendered.contains("Deleted Swift feature 'test1'."))
+        #expect(!deleteRendered.contains("{"))
+        #expect(completion.contains("not active yet"))
+        #expect(TerminalChat.featureManagementToolSucceeded(name: "feature.build", output: buildOutput))
+        #expect(!TerminalChat.featureManagementToolSucceeded(name: "feature.build", output: failedBuildOutput))
+    }
+
+    @Test
+    func featureImplementationPromptCarriesScaffoldContextAndRequirements() {
+        let prompt = TerminalChat.featureImplementationPrompt(
+            id: "test1",
+            displayName: "Test1",
+            directoryPath: "/tmp/features/test1",
+            manifestPath: "/tmp/features/test1/feature.json",
+            sourcePath: "/tmp/features/test1/Sources/Test1/main.swift",
+            toolName: "test1.run",
+            requirements: "Return the current git branch as JSON."
+        )
+        let draftPrompt = TerminalChat.featureImplementationPrompt(
+            id: "test1",
+            displayName: "Test1",
+            directoryPath: "/tmp/features/test1",
+            manifestPath: "/tmp/features/test1/feature.json",
+            sourcePath: "/tmp/features/test1/Sources/Test1/main.swift",
+            toolName: "test1.run",
+            requirements: nil
+        )
+
+        #expect(prompt.contains("/tmp/features/test1/Sources/Test1/main.swift"))
+        #expect(prompt.contains("test1.run"))
+        #expect(prompt.contains("Return the current git branch as JSON."))
+        #expect(prompt.contains("feature.validate"))
+        #expect(prompt.contains("feature.build"))
+        #expect(draftPrompt.hasSuffix("Goal / requirements:"))
     }
 
     @Test
@@ -205,7 +422,7 @@ struct AgentConfigurationTests {
 
         #expect(rendered.contains("Xcode [mlx-xcode-tools] - disabled, bundled, discovers tools at runtime"))
         #expect(rendered.contains("Linear [custom-linear] - enabled, generated, 1 tool: linear.issue.list"))
-        #expect(rendered.contains("Use /feature enable <id|name|#> or /feature disable <id|name|#>."))
+        #expect(rendered.contains("Use /feature enable <id|name|#>, /feature disable <id|name|#>, or /feature delete <id|name|#>."))
         #expect(try TerminalChat.resolvedFeatureID("xcode", statuses: statuses) == "mlx-xcode-tools")
         #expect(try TerminalChat.resolvedFeatureID("Linear", statuses: statuses) == "custom-linear")
     }
@@ -290,6 +507,7 @@ struct AgentConfigurationTests {
         #expect(instructions.contains("feature.enable"))
         #expect(instructions.contains("feature.reload"))
         #expect(instructions.contains("feature.install"))
+        #expect(instructions.contains("feature.delete"))
         #expect(instructions.contains("Swift tools 6.3"))
         #expect(instructions.contains("core runtime behavior"))
         #expect(instructions.contains("`local.*` file tools"))

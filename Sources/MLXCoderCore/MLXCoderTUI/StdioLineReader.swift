@@ -732,6 +732,17 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
         renderPanel()
     }
 
+    public func setPanelText(_ text: String, cursorIndex: Int? = nil) {
+        panelLock.lock()
+        panelBuffer = Array(text)
+        panelCursorIndex = min(max(0, cursorIndex ?? panelBuffer.count), panelBuffer.count)
+        panelCommandSuggestionIndex = 0
+        historyIndex = nil
+        draftBeforeHistory.removeAll()
+        panelLock.unlock()
+        renderPanel()
+    }
+
     public func refreshPanel() {
         renderPanel()
     }

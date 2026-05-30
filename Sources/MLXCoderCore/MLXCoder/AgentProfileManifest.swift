@@ -224,58 +224,27 @@ public enum AgentProfileStore {
     public static let researchAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000005")!
     public static let refactorAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000006")!
     public static let manifestFilename = "agents.json"
-    public static let defaultToolNames: [String] = [
+    public static let codingToolNames: [String] = [
         "shell",
         "files",
         TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-search-tools"),
         "text",
         TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-git-tools"),
-        TerminalToolSelectionCatalog.featureBuilderKey,
-        "memory",
-        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-web-tools"),
-        "orchestration"
+        "memory"
     ]
-    public static let implementationToolNames: [String] = [
-        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-xcode-tools"),
-        "shell",
-        "files",
-        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-search-tools"),
-        "text",
-        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-git-tools"),
-        TerminalToolSelectionCatalog.featureBuilderKey,
-        "memory",
-        "orchestration"
-    ]
-    public static let featureToolNames: [String] = [
-        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-xcode-tools"),
-        "shell",
-        "files",
-        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-search-tools"),
-        "text",
-        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-git-tools"),
-        TerminalToolSelectionCatalog.featureBuilderKey,
-        "memory",
+    public static let defaultToolNames: [String] = codingToolNames + [
         TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-web-tools"),
         "orchestration",
-        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-figma-tools")
+        TerminalToolSelectionCatalog.featureBuilderKey
     ]
-    public static let reviewToolNames: [String] = [
-        "shell",
-        "files",
-        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-search-tools"),
-        "text",
-        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-git-tools"),
-        TerminalToolSelectionCatalog.featureBuilderKey,
-        "memory",
-        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-web-tools")
+    public static let implementationToolNames: [String] = codingToolNames
+    public static let featureToolNames: [String] = codingToolNames + [
+        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-web-tools"),
+        "orchestration",
+        TerminalToolSelectionCatalog.featureBuilderKey
     ]
-    public static let researchToolNames: [String] = [
-        "shell",
-        "files",
-        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-search-tools"),
-        "text",
-        TerminalToolSelectionCatalog.featureBuilderKey,
-        "memory",
+    public static let reviewToolNames: [String] = codingToolNames
+    public static let researchToolNames: [String] = codingToolNames + [
         TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-web-tools"),
         "orchestration"
     ]
