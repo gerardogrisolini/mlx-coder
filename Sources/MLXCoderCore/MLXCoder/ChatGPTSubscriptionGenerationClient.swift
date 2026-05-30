@@ -365,6 +365,25 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         await toolExecutor.subAgentSnapshots()
     }
 
+    public func snapshotSession(id: String) -> AgentRuntimeSessionSnapshot? {
+        guard let session = sessions[id] else {
+            return nil
+        }
+        let splitMessages = RemoteGenerationClient.snapshotMessages(
+            from: session.messages
+        )
+        return AgentRuntimeSessionSnapshot(
+            sessionID: id,
+            workingDirectoryPath: session.cwd,
+            systemPrompt: splitMessages.systemPrompt ?? session.systemPrompt,
+            cacheKey: session.cacheKey,
+            history: splitMessages.history,
+            allowedToolNames: session.allowedToolNames,
+            thinkingSelection: session.thinkingSelection,
+            preserveThinking: session.preserveThinking
+        )
+    }
+
     public func sendPrompt(
         sessionID: String,
         prompt: String,

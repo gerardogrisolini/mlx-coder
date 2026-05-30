@@ -43,7 +43,7 @@ extension TerminalChat {
         lines.append(contentsOf: [
             "Working directory: \(configuration.workingDirectory.path)",
             "",
-            "Commands: /help, /models, /agents, /tools, /skills, /attach, /changes, /undo, /subagents, /clear, /exit"
+            "Commands: /help, /models, /agents, /tools, /skills, /sessions, /attach, /changes, /undo, /subagents, /clear, /exit"
         ])
 
         let startupBox = Self.renderStartupBox(lines: lines)
@@ -367,6 +367,15 @@ extension TerminalChat {
         AgentOutput.standardError.writeString(chatLineInsetApplied(to: text))
     }
 
+    func writeFailureMessage(_ text: String) {
+        writeChatError(
+            Self.failureMessageColorApplied(
+                to: text,
+                isEnabled: AgentOutput.standardErrorIsTerminal
+            )
+        )
+    }
+
     func writeSystemMessage(_ text: String) {
         writeChatError(
             Self.systemMessageColorApplied(
@@ -442,6 +451,23 @@ extension TerminalChat {
     }
 
     private static let systemMessageANSIColor = "\u{1B}[38;5;179m"
+
+    static func failureMessageColorApplied(to text: String, isEnabled: Bool) -> String {
+        guard isEnabled, !text.isEmpty else {
+            return text
+        }
+
+        let color = failureMessageANSIColor
+        let reset = "\u{1B}[0m"
+        return text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in
+                line.isEmpty ? "" : "\(color)\(line)\(reset)"
+            }
+            .joined(separator: "\n")
+    }
+
+    private static let failureMessageANSIColor = "\u{1B}[38;5;203m"
 
     static func operationalMessageColorApplied(to text: String, isEnabled: Bool) -> String {
         guard isEnabled, !text.isEmpty else {

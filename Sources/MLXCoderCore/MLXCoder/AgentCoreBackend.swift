@@ -156,6 +156,25 @@ public actor AgentCoreBackend {
         return []
     }
 
+    public func snapshotSession(id sessionID: String) async -> AgentRuntimeSessionSnapshot? {
+        if let snapshot = await activeBackend?.snapshotSession(id: sessionID) {
+            return snapshot
+        }
+        guard let seed = sessions[sessionID] else {
+            return nil
+        }
+        return AgentRuntimeSessionSnapshot(
+            sessionID: sessionID,
+            workingDirectoryPath: seed.cwd,
+            systemPrompt: seed.systemPrompt,
+            cacheKey: seed.cacheKey,
+            history: seed.history,
+            allowedToolNames: seed.allowedToolNames,
+            thinkingSelection: seed.thinkingSelection,
+            preserveThinking: seed.preserveThinking
+        )
+    }
+
     public func sendPrompt(
         sessionID: String,
         prompt: String,

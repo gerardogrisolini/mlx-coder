@@ -18,12 +18,16 @@ public final class TerminalChat: @unchecked Sendable {
     public let reader = StdioLineReader()
     public let interactiveReader = TerminalInteractiveLineReader()
     public let permissionAuthorizer: LocalExecPermissionAuthorizer
-    public let sessionID = "terminal-\(UUID().uuidString.lowercased())"
+    public var sessionID = TerminalChat.newTerminalSessionID()
     public var diskCacheKey: String {
         AgentKVCachePersistencePolicy.terminalDiskCacheKey(
             workingDirectoryPath: configuration.workingDirectory.path
         )
     }
+    public var activeSessionCacheKey: String?
+    public var activeSessionHistory: [AgentRuntimeMessage] = []
+    public var activeSessionSystemPromptOverride: String?
+    public var activeSavedSessionName: String?
     public var printedModelID: String?
     public var didPrintActiveTools = false
     public var didReceiveMetricsForCurrentPrompt = false
@@ -78,6 +82,10 @@ public final class TerminalChat: @unchecked Sendable {
 
     public static func supportsInteractiveStatusBar() -> Bool {
         AgentOutput.standardErrorIsTerminal
+    }
+
+    public static func newTerminalSessionID() -> String {
+        "terminal-\(UUID().uuidString.lowercased())"
     }
 
     public func currentEffectiveModelID() -> String? {
@@ -343,6 +351,10 @@ public final class TerminalChat: @unchecked Sendable {
             summary: "select/install prompt skills"
         ),
         TerminalCommandSuggestion(
+            command: "/sessions",
+            summary: "save/load sessions"
+        ),
+        TerminalCommandSuggestion(
             command: "/attach",
             summary: "attach files",
             requiresArgument: true
@@ -402,6 +414,7 @@ public final class TerminalChat: @unchecked Sendable {
                 /agents selects an agent profile and resets the session.
                 /tools selects which tool groups are available to the model.
                 /skills selects installed prompt skills or installs one from GitHub or a local folder.
+                /sessions saves or restores named session snapshots for this project.
                 /attach <file> [file ...] attaches image or video files to the next prompt.
                 /attachments shows pending attachments.
                 /detach [all|number] removes pending attachments.
@@ -419,14 +432,14 @@ public final class TerminalChat: @unchecked Sendable {
             do {
                 try await selectModelInteractively()
             } catch {
-                writeChatError("mlx-coder: \(error.localizedDescription)\n")
+                writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
             }
             return .continueChat
         case let command where command == "/agents" || command.hasPrefix("/agents "):
             do {
                 try await handleAgentsCommand(command)
             } catch {
-                writeChatError("mlx-coder: \(error.localizedDescription)\n")
+                writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
             }
             return .continueChat
         case let command where command == "/tools" || command.hasPrefix("/tools "):
@@ -435,11 +448,14 @@ public final class TerminalChat: @unchecked Sendable {
         case let command where command == "/skills" || command.hasPrefix("/skills "):
             await handleSkillsCommand(command)
             return .continueChat
+        case let command where command == "/sessions" || command.hasPrefix("/sessions "):
+            await handleSessionsCommand(command)
+            return .continueChat
         case let command where command == "/attach" || command.hasPrefix("/attach "):
             do {
                 try handleAttachCommand(command)
             } catch {
-                writeChatError("mlx-coder: \(error.localizedDescription)\n")
+                writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
             }
             return .continueChat
         case "/attachments":
@@ -449,7 +465,7 @@ public final class TerminalChat: @unchecked Sendable {
             do {
                 try handleDetachCommand(command)
             } catch {
-                writeChatError("mlx-coder: \(error.localizedDescription)\n")
+                writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
             }
             return .continueChat
         case let command where command == "/changes" || command.hasPrefix("/changes "):
@@ -464,6 +480,11 @@ public final class TerminalChat: @unchecked Sendable {
         case "/clear":
             do {
                 await sessionRunner.resetSession(id: sessionID)
+                sessionID = Self.newTerminalSessionID()
+                activeSessionCacheKey = nil
+                activeSessionHistory = []
+                activeSessionSystemPromptOverride = nil
+                activeSavedSessionName = nil
                 try await createCurrentSession()
                 statusBar.reset()
                 refreshInitialStatusBarContextWindow()
@@ -473,7 +494,7 @@ public final class TerminalChat: @unchecked Sendable {
                 stopSubAgentOverviewRefreshLoop()
                 writeSystemMessage("Session cleared.\n")
             } catch {
-                writeChatError("mlx-coder: \(error.localizedDescription)\n")
+                writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
             }
             return .continueChat
         default:
@@ -599,7 +620,7 @@ public final class TerminalChat: @unchecked Sendable {
             if failure.isCancellation {
                 writeChatError("\nStopped.\n")
             } else {
-                writeChatError("mlx-coder: \(failure.message)\n")
+                writeFailureMessage("mlx-coder: \(failure.message)\n")
             }
         }
     }

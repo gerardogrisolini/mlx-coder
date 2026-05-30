@@ -24,10 +24,35 @@ public struct DirectToolDescriptor: Sendable {
 public enum DirectToolCatalog {
     public static var baseDescriptors: [DirectToolDescriptor] {
 #if canImport(Darwin) || canImport(Glibc)
-        filesystemDescriptors + macOSProcessDescriptors + webDescriptors + memoryDescriptors + orchestrationDescriptors + subAgentDescriptors
+        coreLocalFileAndTextDescriptors + coreProcessDescriptors + featureDescriptors + memoryDescriptors + orchestrationDescriptors + subAgentDescriptors
 #else
-        filesystemDescriptors + webDescriptors + memoryDescriptors + orchestrationDescriptors + subAgentDescriptors
+        coreLocalFileAndTextDescriptors + featureDescriptors + memoryDescriptors + orchestrationDescriptors + subAgentDescriptors
 #endif
+    }
+
+    public static var selectableDescriptors: [DirectToolDescriptor] {
+        baseDescriptors + bundledFeatureDescriptors
+    }
+
+    public static var bundledFeatureDescriptors: [DirectToolDescriptor] {
+#if canImport(Darwin) || canImport(Glibc)
+        localSearchDescriptors + webDescriptors + macOSProcessDescriptors.filter { $0.name != "local.exec" }
+#else
+        localSearchDescriptors + webDescriptors
+#endif
+    }
+
+    public static var coreLocalFileAndTextDescriptors: [DirectToolDescriptor] {
+        filesystemDescriptors.filter {
+            $0.name.hasPrefix("local.")
+                || $0.name.hasPrefix("text.")
+        }
+    }
+
+    public static var localSearchDescriptors: [DirectToolDescriptor] {
+        filesystemDescriptors.filter {
+            $0.name.hasPrefix("search.")
+        }
     }
 
     public static let filesystemDescriptors: [DirectToolDescriptor] = [
@@ -134,7 +159,54 @@ public enum DirectToolCatalog {
         )
     ]
 
+    public static let featureDescriptors: [DirectToolDescriptor] = [
+        DirectToolDescriptor(
+            name: "feature.list",
+            description: "Lists Swift feature bundles known to the kernel, including bundled and generated features plus enabled status.",
+            inputSchema: #"{"type":"object","properties":{"includeTools":{"type":"boolean"},"include_tools":{"type":"boolean"},"includeDisabled":{"type":"boolean"},"include_disabled":{"type":"boolean"}}}"#
+        ),
+        DirectToolDescriptor(
+            name: "feature.enable",
+            description: "Enables a Swift feature bundle by id and reloads the feature runtime.",
+            inputSchema: #"{"type":"object","properties":{"id":{"type":"string"},"featureID":{"type":"string"},"feature_id":{"type":"string"},"name":{"type":"string"}},"required":["id"]}"#
+        ),
+        DirectToolDescriptor(
+            name: "feature.disable",
+            description: "Disables a Swift feature bundle by id and reloads the feature runtime.",
+            inputSchema: #"{"type":"object","properties":{"id":{"type":"string"},"featureID":{"type":"string"},"feature_id":{"type":"string"},"name":{"type":"string"}},"required":["id"]}"#
+        ),
+        DirectToolDescriptor(
+            name: "feature.reload",
+            description: "Reloads Swift feature bundles from bundled executables and generated feature manifests.",
+            inputSchema: #"{"type":"object","properties":{"includeTools":{"type":"boolean"},"include_tools":{"type":"boolean"},"includeDisabled":{"type":"boolean"},"include_disabled":{"type":"boolean"}}}"#
+        ),
+        DirectToolDescriptor(
+            name: "feature.validate",
+            description: "Validates a generated Swift feature manifest, tool names, executable state, and SwiftPM package tools version.",
+            inputSchema: #"{"type":"object","properties":{"id":{"type":"string"},"featureID":{"type":"string"},"feature_id":{"type":"string"},"name":{"type":"string"},"path":{"type":"string"},"manifestPath":{"type":"string"},"manifest_path":{"type":"string"}}}"#
+        ),
+        DirectToolDescriptor(
+            name: "feature.build",
+            description: "Builds a generated Swift feature package with SwiftPM and reloads the feature runtime when the executable is produced.",
+            inputSchema: #"{"type":"object","properties":{"id":{"type":"string"},"featureID":{"type":"string"},"feature_id":{"type":"string"},"name":{"type":"string"},"path":{"type":"string"},"manifestPath":{"type":"string"},"manifest_path":{"type":"string"},"timeoutSeconds":{"type":"number"},"timeout":{"type":"number"}}}"#
+        ),
+        DirectToolDescriptor(
+            name: "feature.scaffold",
+            description: "Creates a Swift 6.3 SwiftPM feature package scaffold under the generated features directory.",
+            inputSchema: #"{"type":"object","properties":{"id":{"type":"string"},"displayName":{"type":"string"},"display_name":{"type":"string"},"description":{"type":"string"},"toolName":{"type":"string"},"tool_name":{"type":"string"},"path":{"type":"string"},"directory":{"type":"string"},"directoryPath":{"type":"string"},"directory_path":{"type":"string"},"enabled":{"type":"boolean"},"overwrite":{"type":"boolean"}},"required":["id"]}"#
+        ),
+        DirectToolDescriptor(
+            name: "feature.install",
+            description: "Installs a generated Swift feature package into the mlx-coder feature root, optionally building and enabling it.",
+            inputSchema: #"{"type":"object","properties":{"id":{"type":"string"},"featureID":{"type":"string"},"feature_id":{"type":"string"},"name":{"type":"string"},"path":{"type":"string"},"directory":{"type":"string"},"directoryPath":{"type":"string"},"directory_path":{"type":"string"},"manifestPath":{"type":"string"},"manifest_path":{"type":"string"},"overwrite":{"type":"boolean"},"build":{"type":"boolean"},"enable":{"type":"boolean"},"timeoutSeconds":{"type":"number"},"timeout":{"type":"number"}}}"#
+        )
+    ]
+
 #if canImport(Darwin) || canImport(Glibc)
+    public static var coreProcessDescriptors: [DirectToolDescriptor] {
+        macOSProcessDescriptors.filter { $0.name == "local.exec" }
+    }
+
     public static let macOSProcessDescriptors: [DirectToolDescriptor] = [
         DirectToolDescriptor(
             name: "search.grep",

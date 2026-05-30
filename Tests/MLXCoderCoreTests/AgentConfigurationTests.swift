@@ -5,6 +5,57 @@ import Testing
 @Suite
 struct AgentConfigurationTests {
     @Test
+    func shellFilesSearchAndTextToolGroupsAreDistinct() {
+        #expect(TerminalToolGroup.group(named: "bash") == .shell)
+        #expect(TerminalToolGroup.group(named: "files") == .files)
+        #expect(TerminalToolGroup.group(named: "search") == .search)
+        #expect(TerminalToolGroup.group(named: "text") == .text)
+        #expect(TerminalToolGroup.group(named: "kernel") == .features)
+
+        #expect(TerminalToolGroup.shell.allows(toolName: "local.exec"))
+        #expect(!TerminalToolGroup.files.allows(toolName: "local.exec"))
+        #expect(TerminalToolGroup.files.allows(toolName: "local.readFile"))
+        #expect(!TerminalToolGroup.search.allows(toolName: "local.readFile"))
+        #expect(TerminalToolGroup.search.allows(toolName: "search.grep"))
+        #expect(TerminalToolGroup.text.allows(toolName: "text.wc"))
+        #expect(TerminalToolGroup.features.allows(toolName: "feature.list"))
+    }
+
+    @Test
+    func defaultAgentProfilesEnableSplitLocalToolGroups() {
+        let profile = AgentProfile(
+            id: "default",
+            name: "Default",
+            tools: AgentProfileStore.defaultToolNames
+        )
+        let allowedToolNames = profile.allowedToolNames()
+
+        #expect(allowedToolNames.contains("local.exec"))
+        #expect(allowedToolNames.contains("local.readFile"))
+        #expect(allowedToolNames.contains("search.grep"))
+        #expect(allowedToolNames.contains("text.wc"))
+        #expect(allowedToolNames.contains("feature.list"))
+        #expect(allowedToolNames.contains(SwiftFeatureRuntime.generatedFeatureToolsAllowedName))
+    }
+
+    @Test
+    func defaultAgentInstructionsDescribeDynamicFeatureWorkflow() {
+        let instructions = MLXSystemPromptBuilder.defaultAgentInstructions()
+
+        #expect(instructions.contains("Dynamic Swift feature workflow:"))
+        #expect(instructions.contains("feature.scaffold"))
+        #expect(instructions.contains("feature.validate"))
+        #expect(instructions.contains("feature.build"))
+        #expect(instructions.contains("feature.enable"))
+        #expect(instructions.contains("feature.reload"))
+        #expect(instructions.contains("feature.install"))
+        #expect(instructions.contains("Swift tools 6.3"))
+        #expect(instructions.contains("core runtime behavior"))
+        #expect(instructions.contains("`local.*` file tools"))
+        #expect(instructions.contains("`text.*` tools"))
+    }
+
+    @Test
     func hostedConfigurationCanReloadAgentProfilesFromStore() throws {
         let configuration = try AgentConfiguration(
             hostedModelID: "mlx-community/test",

@@ -56,8 +56,8 @@ public struct AgentToolProvider: Sendable {
     }
 }
 
-public struct AgentRuntimeAttachment: Sendable {
-    public enum Kind: String, Sendable {
+public struct AgentRuntimeAttachment: Codable, Equatable, Sendable {
+    public enum Kind: String, Codable, Sendable {
         case image
         case video
     }
@@ -83,8 +83,24 @@ public struct AgentRuntimeAttachment: Sendable {
     }
 }
 
-public struct AgentRuntimeMessage: Sendable {
-    public enum Role: String, Sendable {
+public struct AgentRuntimeToolCall: Codable, Equatable, Sendable {
+    public let id: String?
+    public let name: String
+    public let argumentsJSON: String
+
+    public init(
+        id: String?,
+        name: String,
+        argumentsJSON: String
+    ) {
+        self.id = id?.nilIfBlank
+        self.name = name.nilIfBlank ?? "tool"
+        self.argumentsJSON = argumentsJSON.nilIfBlank ?? "{}"
+    }
+}
+
+public struct AgentRuntimeMessage: Codable, Equatable, Sendable {
+    public enum Role: String, Codable, Sendable {
         case system
         case user
         case assistant
@@ -94,15 +110,55 @@ public struct AgentRuntimeMessage: Sendable {
     public let role: Role
     public let content: String
     public let attachments: [AgentRuntimeAttachment]
+    public let toolCalls: [AgentRuntimeToolCall]
+    public let toolCallID: String?
+    public let toolName: String?
 
     public init(
         role: Role,
         content: String,
-        attachments: [AgentRuntimeAttachment] = []
+        attachments: [AgentRuntimeAttachment] = [],
+        toolCalls: [AgentRuntimeToolCall] = [],
+        toolCallID: String? = nil,
+        toolName: String? = nil
     ) {
         self.role = role
         self.content = content
         self.attachments = attachments
+        self.toolCalls = toolCalls
+        self.toolCallID = toolCallID?.nilIfBlank
+        self.toolName = toolName?.nilIfBlank
+    }
+}
+
+public struct AgentRuntimeSessionSnapshot: Sendable {
+    public let sessionID: String
+    public let workingDirectoryPath: String
+    public let systemPrompt: String?
+    public let cacheKey: String?
+    public let history: [AgentRuntimeMessage]
+    public let allowedToolNames: Set<String>?
+    public let thinkingSelection: AgentThinkingSelection?
+    public let preserveThinking: Bool
+
+    public init(
+        sessionID: String,
+        workingDirectoryPath: String,
+        systemPrompt: String?,
+        cacheKey: String?,
+        history: [AgentRuntimeMessage],
+        allowedToolNames: Set<String>?,
+        thinkingSelection: AgentThinkingSelection?,
+        preserveThinking: Bool
+    ) {
+        self.sessionID = sessionID.nilIfBlank ?? "agent-core-\(UUID().uuidString.lowercased())"
+        self.workingDirectoryPath = workingDirectoryPath
+        self.systemPrompt = systemPrompt?.nilIfBlank
+        self.cacheKey = cacheKey?.nilIfBlank
+        self.history = history
+        self.allowedToolNames = allowedToolNames
+        self.thinkingSelection = thinkingSelection
+        self.preserveThinking = preserveThinking
     }
 }
 
@@ -292,6 +348,8 @@ public protocol AgentRuntimeBackend: Actor {
         attachments: [AgentRuntimeAttachment],
         onEvent: @escaping @Sendable (DirectAgentEvent) async -> Void
     ) async throws -> DirectAgentResponse
+
+    func snapshotSession(id: String) -> AgentRuntimeSessionSnapshot?
 }
 
 extension AgentRuntimeBackend {
@@ -303,6 +361,10 @@ extension AgentRuntimeBackend {
 
     public func subAgentSnapshots() async -> [DirectSubAgentRuntime.AgentSnapshot] {
         []
+    }
+
+    public func snapshotSession(id _: String) -> AgentRuntimeSessionSnapshot? {
+        nil
     }
 }
 

@@ -37,7 +37,7 @@ public enum AgentToolSelection {
         }
 
         var toolNames = Set(
-            (DirectToolCatalog.baseDescriptors + additionalDescriptors)
+            (DirectToolCatalog.selectableDescriptors + additionalDescriptors)
                 .map(\.name)
                 .filter { toolName in
                     selectedGroups.contains { $0.allows(toolName: toolName) }
@@ -46,6 +46,9 @@ public enum AgentToolSelection {
 
         if includeDynamicGroupPrefixes {
             toolNames.formUnion(dynamicToolPrefixes(for: selectedGroups))
+        }
+        if selectedGroups.contains(.features) {
+            toolNames.insert(SwiftFeatureRuntime.generatedFeatureToolsAllowedName)
         }
 
         return toolNames

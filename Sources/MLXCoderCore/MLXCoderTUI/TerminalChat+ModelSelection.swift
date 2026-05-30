@@ -87,6 +87,7 @@ extension TerminalChat {
         }
 
         let selectedThinkingSelection = promptForThinkingSelection(model: selectedModel)
+        activeSessionSystemPromptOverride = nil
         if configuration.hostedModels == nil {
             try AgentSettingsStore.saveSelectedModelID(
                 selectedModel.id,

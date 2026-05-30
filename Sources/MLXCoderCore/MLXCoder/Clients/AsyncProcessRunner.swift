@@ -35,6 +35,7 @@ public enum AsyncProcessRunner {
         arguments: [String],
         workingDirectory: URL? = nil,
         environment: [String: String]? = nil,
+        stdinData: Data? = nil,
         timeout: TimeInterval? = nil,
         stdoutLineLimit: Int? = nil
     ) async throws -> AsyncProcessResult {
@@ -51,8 +52,12 @@ public enum AsyncProcessRunner {
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
+        let stdinPipe = stdinData.map { _ in Pipe() }
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        if let stdinPipe {
+            process.standardInput = stdinPipe
+        }
 
         let exitObserver = AsyncProcessExitObserver()
         process.terminationHandler = { _ in
@@ -66,6 +71,13 @@ public enum AsyncProcessRunner {
         } catch {
             process.terminationHandler = nil
             throw error
+        }
+
+        if let stdinData,
+           let stdinPipe {
+            let writer = stdinPipe.fileHandleForWriting
+            try? writer.write(contentsOf: stdinData)
+            try? writer.close()
         }
 
         let stdoutReader = Task.detached { () -> (Data, Bool) in
@@ -109,6 +121,7 @@ public enum AsyncProcessRunner {
         _ = arguments
         _ = workingDirectory
         _ = environment
+        _ = stdinData
         _ = timeout
         _ = stdoutLineLimit
         throw AsyncProcessRunnerError.unsupportedPlatform

@@ -54,7 +54,7 @@ extension TerminalChat {
             lastFileChangeSummary = nil
             writeSystemMessage("File changes reverted.\n")
         } catch {
-            writeChatError(
+            writeFailureMessage(
                 "mlx-coder: unable to undo file changes: \(error.localizedDescription)\n"
             )
         }

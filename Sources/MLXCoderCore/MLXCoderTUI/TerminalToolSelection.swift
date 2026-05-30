@@ -32,8 +32,12 @@ public enum TerminalChatError: LocalizedError {
 }
 
 public enum TerminalToolGroup: String, CaseIterable, Hashable, Sendable {
-    case bash
+    case shell
+    case files
+    case search
+    case text
     case git
+    case features
     case memory
     case web
     case orchestration
@@ -42,10 +46,18 @@ public enum TerminalToolGroup: String, CaseIterable, Hashable, Sendable {
 
     public var displayTitle: String {
         switch self {
-        case .bash:
-            return "Bash"
+        case .shell:
+            return "Shell"
+        case .files:
+            return "Files"
+        case .search:
+            return "Search"
+        case .text:
+            return "Text"
         case .git:
             return "Git"
+        case .features:
+            return "Features"
         case .memory:
             return "Memory"
         case .web:
@@ -61,10 +73,18 @@ public enum TerminalToolGroup: String, CaseIterable, Hashable, Sendable {
 
     public var description: String {
         switch self {
-        case .bash:
-            return "local files, shell, and search"
+        case .shell:
+            return "local shell command execution"
+        case .files:
+            return "local file reads, writes, edits, and moves"
+        case .search:
+            return "local glob and grep search"
+        case .text:
+            return "local text utilities"
         case .git:
             return "git status, history, branches, staging, and commits"
+        case .features:
+            return "kernel feature management and generated Swift feature tools"
         case .memory:
             return "memory notes and session todo list"
         case .web:
@@ -83,10 +103,18 @@ public enum TerminalToolGroup: String, CaseIterable, Hashable, Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         switch normalizedName {
-        case "bash", "shell", "local", "files", "file", "search":
-            return .bash
+        case "bash", "shell", "sh", "zsh", "exec":
+            return .shell
+        case "files", "file", "local", "filesystem", "fs":
+            return .files
+        case "search", "grep", "glob":
+            return .search
+        case "text", "txt":
+            return .text
         case "git":
             return .git
+        case "features", "feature", "kernel":
+            return .features
         case "memory", "mem", "remember", "todo", "todos":
             return .memory
         case "web", "browser":
@@ -104,12 +132,19 @@ public enum TerminalToolGroup: String, CaseIterable, Hashable, Sendable {
 
     public func allows(toolName: String) -> Bool {
         switch self {
-        case .bash:
+        case .shell:
+            return toolName == "local.exec"
+        case .files:
             return toolName.hasPrefix("local.")
-                || toolName.hasPrefix("search.")
-                || toolName.hasPrefix("text.")
+                && toolName != "local.exec"
+        case .search:
+            return toolName.hasPrefix("search.")
+        case .text:
+            return toolName.hasPrefix("text.")
         case .git:
             return toolName.hasPrefix("git.")
+        case .features:
+            return toolName.hasPrefix("feature.")
         case .memory:
             return toolName.hasPrefix("memory.")
                 || toolName.hasPrefix("todo.")

@@ -44,7 +44,7 @@ extension TerminalChat {
             let selectedGroups = try Self.parseToolSelection(rawSelection)
             await applyToolSelection(selectedGroups)
         } catch {
-            writeChatError("mlx-coder: \(error.localizedDescription)\n")
+            writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
             writeSystemMessage(Self.renderToolSelectionUsage())
         }
     }
@@ -52,6 +52,7 @@ extension TerminalChat {
     public func applyToolSelection(_ selectedGroups: Set<TerminalToolGroup>) async {
         let previousGroups = selectedToolGroups
         selectedToolGroups = selectedGroups
+        activeSessionSystemPromptOverride = nil
         await ensureWorkspaceAccessIfNeeded()
         let shouldDiscoverExternalTools = Self.shouldDiscoverExternalTools(
             previousGroups: previousGroups,
@@ -157,7 +158,7 @@ extension TerminalChat {
                from: rawArguments,
                baseDirectory: configuration.workingDirectory
            ) == nil {
-            writeChatError("mlx-coder: /skills install requires a GitHub URL or local path.\n")
+            writeFailureMessage("mlx-coder: /skills install requires a GitHub URL or local path.\n")
             writeSystemMessage(Self.renderSkillSelectionUsage())
             return
         }
@@ -211,7 +212,7 @@ extension TerminalChat {
             let result = try await MLXPromptSkillInstaller.install(fromGitHubURL: url)
             await finishInstalledSkill(result)
         } catch {
-            writeChatError("mlx-coder: \(error.localizedDescription)\n")
+            writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
             writeSystemMessage(Self.renderSkillSelectionUsage())
         }
     }
@@ -222,7 +223,7 @@ extension TerminalChat {
             let result = try MLXPromptSkillInstaller.install(fromLocalURL: url)
             await finishInstalledSkill(result)
         } catch {
-            writeChatError("mlx-coder: \(error.localizedDescription)\n")
+            writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
             writeSystemMessage(Self.renderSkillSelectionUsage())
         }
     }
@@ -230,10 +231,11 @@ extension TerminalChat {
     private func finishInstalledSkill(_ result: MLXPromptSkillInstallResult) async {
         availableSkillsCache = nil
         selectedSkillIDs.insert(result.skill.id)
+        activeSessionSystemPromptOverride = nil
         do {
             try await createCurrentSession()
         } catch {
-            writeChatError("mlx-coder: \(error.localizedDescription)\n")
+            writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
         }
         statusBar.reset()
         refreshInitialStatusBarContextWindow()
@@ -250,17 +252,18 @@ extension TerminalChat {
             )
             await applySkillSelection(selectedSkillIDs)
         } catch {
-            writeChatError("mlx-coder: \(error.localizedDescription)\n")
+            writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
             writeSystemMessage(Self.renderSkillSelectionUsage())
         }
     }
 
     public func applySkillSelection(_ selectedSkillIDs: Set<String>) async {
         self.selectedSkillIDs = selectedSkillIDs
+        activeSessionSystemPromptOverride = nil
         do {
             try await createCurrentSession()
         } catch {
-            writeChatError("mlx-coder: \(error.localizedDescription)\n")
+            writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
         }
         statusBar.reset()
         refreshInitialStatusBarContextWindow()

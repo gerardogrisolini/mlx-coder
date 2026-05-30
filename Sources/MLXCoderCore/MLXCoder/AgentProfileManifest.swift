@@ -108,16 +108,28 @@ public struct AgentProfile: Codable, Hashable, Sendable {
         var allowedToolNames = Set<String>()
         for tool in tools {
             switch tool.selectionKey {
-            case "bash", "shell", "local", "files", "file", "search":
+            case "bash", "shell", "sh", "zsh", "exec":
+                allowedToolNames.formUnion(
+                    baseToolNames {
+                        $0 == "local.exec"
+                    }
+                )
+            case "files", "file", "local", "filesystem", "fs":
                 allowedToolNames.formUnion(
                     baseToolNames {
                         $0.hasPrefix("local.")
-                            || $0.hasPrefix("search.")
-                            || $0.hasPrefix("text.")
+                            && $0 != "local.exec"
                     }
                 )
+            case "search", "grep", "glob":
+                allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("search.") })
+            case "text", "txt":
+                allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("text.") })
             case "git":
                 allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("git.") })
+            case "features", "feature", "kernel":
+                allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("feature.") })
+                allowedToolNames.insert(SwiftFeatureRuntime.generatedFeatureToolsAllowedName)
             case "memory", "mem", "remember", "todo", "todos":
                 allowedToolNames.formUnion(
                     baseToolNames {
@@ -159,7 +171,7 @@ public struct AgentProfile: Codable, Hashable, Sendable {
     private func baseToolNames(
         matching predicate: (String) -> Bool
     ) -> Set<String> {
-        Set(DirectToolCatalog.baseDescriptors.map(\.name).filter(predicate))
+        Set(DirectToolCatalog.selectableDescriptors.map(\.name).filter(predicate))
     }
 }
 
@@ -246,36 +258,56 @@ public enum AgentProfileStore {
     public static let refactorAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000006")!
     public static let manifestFilename = "agents.json"
     public static let defaultToolNames: [String] = [
-        "bash",
+        "shell",
+        "files",
+        "search",
+        "text",
         "git",
+        "features",
         "memory",
         "web",
         "orchestration"
     ]
     public static let implementationToolNames: [String] = [
         "xcode",
-        "bash",
+        "shell",
+        "files",
+        "search",
+        "text",
         "git",
+        "features",
         "memory",
         "orchestration"
     ]
     public static let featureToolNames: [String] = [
         "xcode",
-        "bash",
+        "shell",
+        "files",
+        "search",
+        "text",
         "git",
+        "features",
         "memory",
         "web",
         "orchestration",
         "figma"
     ]
     public static let reviewToolNames: [String] = [
-        "bash",
+        "shell",
+        "files",
+        "search",
+        "text",
         "git",
+        "features",
         "memory",
         "web"
     ]
     public static let researchToolNames: [String] = [
-        "bash",
+        "shell",
+        "files",
+        "search",
+        "text",
+        "features",
         "memory",
         "web",
         "orchestration"

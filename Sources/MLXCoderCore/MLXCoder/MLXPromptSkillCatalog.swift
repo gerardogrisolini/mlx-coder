@@ -14,7 +14,7 @@ public enum MLXPromptSkillCatalog {
     public static func appCatalogSearchRoots(fileManager: FileManager = .default) -> [URL] {
         let skillsDirectoryURL = MLXAppStorageDirectory
             .appSupportDirectoryURL(fileManager: fileManager)
-            .appendingPathComponent("Skills", isDirectory: true)
+            .appendingPathComponent("skills", isDirectory: true)
             .standardizedFileURL
         return [skillsDirectoryURL]
     }

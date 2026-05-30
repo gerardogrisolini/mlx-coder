@@ -183,6 +183,25 @@ public actor AgentCoreSessionRunner {
         return await backend.subAgentSnapshots()
     }
 
+    public func snapshotSession(id sessionID: String) async -> AgentRuntimeSessionSnapshot? {
+        if let snapshot = await backend?.snapshotSession(id: sessionID) {
+            return snapshot
+        }
+        guard let configuration = sessions[sessionID] else {
+            return nil
+        }
+        return AgentRuntimeSessionSnapshot(
+            sessionID: configuration.sessionID,
+            workingDirectoryPath: configuration.workingDirectoryPath,
+            systemPrompt: configuration.systemPrompt,
+            cacheKey: configuration.cacheKey,
+            history: configuration.history,
+            allowedToolNames: configuration.allowedToolNames,
+            thinkingSelection: configuration.thinkingSelection,
+            preserveThinking: configuration.preserveThinking
+        )
+    }
+
     public func streamPrompt(
         _ prompt: String,
         configuration: AgentCoreSessionConfiguration,

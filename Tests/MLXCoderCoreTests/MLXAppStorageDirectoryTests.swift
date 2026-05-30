@@ -16,5 +16,9 @@ struct MLXAppStorageDirectoryTests {
         #expect(MLXMemoryService().globalMemoryFileURL() == supportDirectory.appendingPathComponent("MEMORY.md"))
         #expect(AgentSettingsManifestStore.settingsURL() == supportDirectory.appendingPathComponent("settings.json"))
         #expect(AgentProfileStore.agentsManifestURL() == supportDirectory.appendingPathComponent("agents.json"))
+        #expect(MLXPromptSkillCatalog.appCatalogSearchRoots() == [
+            supportDirectory.appendingPathComponent("skills", isDirectory: true)
+        ])
+        #expect(SwiftFeatureRegistry.appFeatureRootURL() == supportDirectory.appendingPathComponent("features", isDirectory: true))
     }
 }

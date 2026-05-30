@@ -20,6 +20,7 @@ The goal is simple: expose downloaded MLX models as a fast local server without 
 - Records throughput metrics so regressions in tok/s are visible.
 - Provides a terminal chat mode that keeps session context alive and reports tok/s per turn.
 - Provides `mlx-coder` as a separate executable backed by the same package sources, plus a direct `mlx-server --coder` mode that runs it against the local MLX runtime without HTTP or ACP.
+- Saves and restores explicit `mlx-coder` session snapshots with `/sessions`, including local or remote transcripts.
 
 ## What It Is For
 
@@ -144,6 +145,8 @@ swift run -c release mlx-server --coder --cwd /path/to/project
 ```
 
 In direct mode, `mlx-coder` uses the configured `mlx-server` model catalog and local MLX runtime without going through HTTP or ACP.
+
+Inside the TUI, `/sessions <name>` saves the current conversation as an explicit snapshot under `~/.mlx-coder/sessions/` for the current project. Running `/sessions` without a name lists the saved snapshots for that project and lets you load one to continue the work. Local MLX sessions save the runtime snapshot; remote sessions save the local transcript, including tool calls and tool outputs, so a remote `mlx-server` can reuse its disk KV cache when the restored prompt prefix matches.
 
 ## Runtime
 

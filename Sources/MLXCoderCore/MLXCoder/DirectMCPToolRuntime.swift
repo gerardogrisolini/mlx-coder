@@ -54,8 +54,11 @@ public actor DirectMCPToolRuntime {
     private var didAttemptXcodeDiscovery = false
     private var didAttemptFigmaDiscovery = false
     private var servers: [Server] = []
+    private let autoDiscoverExternalConnectors: Bool
 
-    public init() {}
+    public init(autoDiscoverExternalConnectors: Bool = false) {
+        self.autoDiscoverExternalConnectors = autoDiscoverExternalConnectors
+    }
 
     deinit {
         let servers = self.servers
@@ -234,6 +237,10 @@ public actor DirectMCPToolRuntime {
     ]
 
     private func discoverFamilyIfNeeded(_ family: ServerFamily) async {
+        guard autoDiscoverExternalConnectors else {
+            return
+        }
+
         switch family {
         case .xcode:
             guard !didAttemptXcodeDiscovery else {

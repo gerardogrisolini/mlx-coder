@@ -29,16 +29,17 @@ extension TerminalChat {
     public func currentSessionConfiguration(
         allowedToolNames: Set<String>
     ) -> AgentCoreSessionConfiguration {
-        let systemPrompt = currentSystemPrompt(allowedToolNames: allowedToolNames)
+        let systemPrompt = activeSessionSystemPromptOverride
+            ?? currentSystemPrompt(allowedToolNames: allowedToolNames)
         return AgentCoreSessionConfiguration(
             sessionID: sessionID,
             modelID: currentEffectiveModelID(),
             bearerToken: configuration.bearerToken,
             workingDirectory: configuration.workingDirectory,
             systemPrompt: systemPrompt,
-            cacheKey: nil,
+            cacheKey: activeSessionCacheKey,
             sessionRevision: 0,
-            history: [],
+            history: activeSessionHistory,
             allowedToolNames: allowedToolNames,
             maxToolRounds: configuration.maxToolRounds,
             maxOutputTokens: configuration.maxOutputTokens,
@@ -154,7 +155,7 @@ extension TerminalChat {
         return AgentToolSelection.allowedToolNames(
             for: selectedToolGroups,
             additionalDescriptors: mcpDescriptors,
-            includeDynamicGroupPrefixes: false
+            includeDynamicGroupPrefixes: true
         )
     }
 
@@ -172,7 +173,7 @@ extension TerminalChat {
                 )
             )
         } catch {
-            writeChatError("mlx-coder: \(error.localizedDescription)\n")
+            writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
         }
         didPrintActiveTools = false
         return allowedToolNames
@@ -210,7 +211,10 @@ extension TerminalChat {
     }
 
     private static let workspaceAccessToolGroups: Set<TerminalToolGroup> = [
-        .bash,
+        .shell,
+        .files,
+        .search,
+        .text,
         .git,
         .memory
     ]

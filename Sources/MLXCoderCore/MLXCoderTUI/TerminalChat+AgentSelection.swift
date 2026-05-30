@@ -58,6 +58,7 @@ extension TerminalChat {
     public func applyAgentSelection(_ agent: AgentProfile) async throws {
         selectedAgent = agent
         applyAgentProfile(agent)
+        activeSessionSystemPromptOverride = nil
         manualModelIDOverride = configuration.hostedModels == nil
             ? nil
             : configuration.modelID
