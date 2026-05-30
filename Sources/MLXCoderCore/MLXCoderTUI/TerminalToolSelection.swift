@@ -302,14 +302,12 @@ public enum TerminalToolSelectionCatalog {
         featureStatuses: [SwiftFeatureStatus]
     ) -> [TerminalToolSelectionItem] {
         featureStatuses
+            .filter { $0.enabled && $0.available }
             .sorted { lhs, rhs in
                 featureTitle(lhs).localizedStandardCompare(featureTitle(rhs)) == .orderedAscending
             }
             .map { status in
-                let enabled = status.enabled && status.available
-                let allowedNames = enabled
-                    ? featurePackageAllowedNames(from: [status])
-                    : []
+                let allowedNames = featurePackageAllowedNames(from: [status])
                 return TerminalToolSelectionItem(
                     key: featurePackageKey(id: status.id),
                     title: featureTitle(status),
@@ -317,10 +315,8 @@ public enum TerminalToolSelectionCatalog {
                     groupTitle: "Feature Packages",
                     allowedToolNames: allowedNames,
                     aliases: featureAliases(status),
-                    requiresWorkspaceAccess: enabled && requiresWorkspaceAccess(featureStatus: status),
-                    externalDiscoveryPrefixes: enabled
-                        ? externalDiscoveryPrefixes(from: [status])
-                        : []
+                    requiresWorkspaceAccess: requiresWorkspaceAccess(featureStatus: status),
+                    externalDiscoveryPrefixes: externalDiscoveryPrefixes(from: [status])
                 )
             }
     }
@@ -387,9 +383,43 @@ public enum TerminalToolSelectionCatalog {
     ) -> [SwiftFeatureStatus] {
         var statusesByID = Dictionary(uniqueKeysWithValues: preconfiguredStatuses.map { ($0.id, $0) })
         for status in statuses {
-            statusesByID[status.id] = status
+            if let preconfiguredStatus = statusesByID[status.id] {
+                statusesByID[status.id] = mergedFeatureStatus(
+                    status,
+                    with: preconfiguredStatus
+                )
+            } else {
+                statusesByID[status.id] = status
+            }
         }
         return Array(statusesByID.values)
+    }
+
+    private static func mergedFeatureStatus(
+        _ status: SwiftFeatureStatus,
+        with preconfiguredStatus: SwiftFeatureStatus
+    ) -> SwiftFeatureStatus {
+        SwiftFeatureStatus(
+            id: status.id,
+            displayName: status.displayName ?? preconfiguredStatus.displayName,
+            description: status.description ?? preconfiguredStatus.description,
+            source: status.source,
+            enabled: status.enabled,
+            available: status.available,
+            executablePath: status.executablePath,
+            manifestPath: status.manifestPath,
+            tools: sortedUnique(status.tools + preconfiguredStatus.tools),
+            toolNamePrefixes: sortedUnique(status.toolNamePrefixes + preconfiguredStatus.toolNamePrefixes),
+            toolNameAliases: sortedUnique(status.toolNameAliases + preconfiguredStatus.toolNameAliases),
+            discoversToolsAtRuntime: status.discoversToolsAtRuntime || preconfiguredStatus.discoversToolsAtRuntime,
+            build: status.build ?? preconfiguredStatus.build,
+            generated: status.generated ?? preconfiguredStatus.generated,
+            issue: status.issue ?? preconfiguredStatus.issue
+        )
+    }
+
+    private static func sortedUnique(_ values: [String]) -> [String] {
+        Set(values.compactMap(\.nilIfBlank)).sorted()
     }
 
     private static func featurePackageAllowedNames(
@@ -397,7 +427,7 @@ public enum TerminalToolSelectionCatalog {
     ) -> Set<String> {
         Set(
             statuses.flatMap { status in
-                status.tools + status.toolNamePrefixes + status.toolNameAliases
+                status.tools + status.toolNamePrefixes
             }.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         )
     }

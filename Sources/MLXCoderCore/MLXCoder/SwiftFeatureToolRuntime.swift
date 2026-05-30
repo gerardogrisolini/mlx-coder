@@ -754,6 +754,43 @@ public actor SwiftFeatureRuntime {
     public static let featurePackageToolsAllowedName = "feature.tools"
     public static let generatedSwiftToolsVersion = "6.3"
 
+    private struct BundledFeatureDefinition: Sendable {
+        let id: String
+        let executableName: String
+        let tools: [ToolDescriptor]
+        let toolNamePrefixes: [String]
+        let toolNameAliases: [String]
+        let discoversToolsAtRuntime: Bool
+
+        init(
+            id: String,
+            executableName: String,
+            tools: [ToolDescriptor],
+            toolNamePrefixes: [String] = [],
+            toolNameAliases: [String] = [],
+            discoversToolsAtRuntime: Bool = false
+        ) {
+            self.id = id
+            self.executableName = executableName
+            self.tools = ToolDescriptor.canonicalized(tools)
+            self.toolNamePrefixes = toolNamePrefixes
+            self.toolNameAliases = toolNameAliases
+            self.discoversToolsAtRuntime = discoversToolsAtRuntime
+        }
+
+        func bundle(executableURL: URL) -> SwiftFeatureBundle {
+            SwiftFeatureBundle(
+                id: id,
+                executableURL: executableURL,
+                tools: tools,
+                toolNamePrefixes: toolNamePrefixes,
+                toolNameAliases: toolNameAliases,
+                discoversToolsAtRuntime: discoversToolsAtRuntime,
+                source: .bundled
+            )
+        }
+    }
+
     public static func isFeatureManagementToolName(_ toolName: String) -> Bool {
         switch toolName {
         case "feature.list",
@@ -799,7 +836,11 @@ public actor SwiftFeatureRuntime {
     ) async -> [DirectToolDescriptor] {
         var resolvedTools: [ToolDescriptor] = []
         for feature in features where feature.isRelevant(allowedToolNames: allowedToolNames) {
-            resolvedTools.append(contentsOf: await tools(for: feature))
+            if allowedToolNames == nil, feature.discoversToolsAtRuntime {
+                resolvedTools.append(contentsOf: feature.tools)
+            } else {
+                resolvedTools.append(contentsOf: await tools(for: feature))
+            }
         }
 
         return ToolDescriptor.canonicalized(resolvedTools).map {
@@ -851,7 +892,8 @@ public actor SwiftFeatureRuntime {
 
     public func featureStatuses(
         includeTools: Bool = true,
-        includeDisabled: Bool = true
+        includeDisabled: Bool = true,
+        discoverRuntimeTools: Bool = false
     ) async -> [SwiftFeatureStatus] {
         var statuses = explicitFeatures == nil
             ? Self.defaultFeatureRecords(
@@ -869,7 +911,7 @@ public actor SwiftFeatureRuntime {
                 )
             }
 
-        if includeTools {
+        if includeTools && discoverRuntimeTools {
             for feature in features {
                 let tools = await tools(for: feature).map(\.name)
                 guard let index = statuses.firstIndex(where: { $0.id == feature.id }) else {
@@ -912,9 +954,11 @@ public actor SwiftFeatureRuntime {
         case "feature.list":
             let includeTools = arguments.bool("includeTools", "include_tools") ?? true
             let includeDisabled = arguments.bool("includeDisabled", "include_disabled") ?? true
+            let discoverRuntimeTools = arguments.bool("discoverRuntimeTools", "discover_runtime_tools") ?? false
             return try await renderFeatureList(
                 includeTools: includeTools,
-                includeDisabled: includeDisabled
+                includeDisabled: includeDisabled,
+                discoverRuntimeTools: discoverRuntimeTools
             )
         case "feature.enable":
             let id = try Self.requiredFeatureID(arguments)
@@ -935,7 +979,8 @@ public actor SwiftFeatureRuntime {
             return try await renderFeatureList(
                 prefix: "Reloaded Swift features.",
                 includeTools: arguments.bool("includeTools", "include_tools") ?? true,
-                includeDisabled: arguments.bool("includeDisabled", "include_disabled") ?? true
+                includeDisabled: arguments.bool("includeDisabled", "include_disabled") ?? true,
+                discoverRuntimeTools: arguments.bool("discoverRuntimeTools", "discover_runtime_tools") ?? false
             )
         case "feature.validate":
             return try renderJSON(
@@ -969,9 +1014,7 @@ public actor SwiftFeatureRuntime {
             )
         }
 
-        let bundledIDs = Set(
-            Self.allBundledFeatureBundles(fileManager: fileManager).map(\.id)
-        )
+        let bundledIDs = Set(Self.bundledFeatureDefinitions().map(\.id))
         if bundledIDs.contains(id) {
             try SwiftFeatureStateStore.setBundledFeature(
                 id: id,
@@ -1392,18 +1435,21 @@ public actor SwiftFeatureRuntime {
         try await renderFeatureList(
             prefix: "Feature '\(id)' \(action).",
             includeTools: true,
-            includeDisabled: true
+            includeDisabled: true,
+            discoverRuntimeTools: false
         )
     }
 
     private func renderFeatureList(
         prefix: String? = nil,
         includeTools: Bool,
-        includeDisabled: Bool
+        includeDisabled: Bool,
+        discoverRuntimeTools: Bool
     ) async throws -> String {
         let statuses = await featureStatuses(
             includeTools: includeTools,
-            includeDisabled: includeDisabled
+            includeDisabled: includeDisabled,
+            discoverRuntimeTools: discoverRuntimeTools
         )
         let payload = SwiftFeatureListPayload(features: statuses)
         let encoder = JSONEncoder()
@@ -2538,12 +2584,7 @@ public actor SwiftFeatureRuntime {
         includeDisabled: Bool
     ) -> [DirectToolDescriptor] {
         let state = SwiftFeatureStateStore.load(fileManager: fileManager)
-        let definitions: [(id: String, tools: [ToolDescriptor])] = [
-            ("mlx-search-tools", bundledSearchToolDescriptors()),
-            ("mlx-web-tools", bundledWebToolDescriptors()),
-            ("mlx-git-tools", bundledGitToolDescriptors())
-        ]
-        let tools = definitions
+        let tools = bundledFeatureDefinitions()
             .filter { includeDisabled || state.bundledFeatureIsEnabled(id: $0.id) }
             .flatMap(\.tools)
         return ToolDescriptor.canonicalized(tools).map {
@@ -2559,20 +2600,61 @@ public actor SwiftFeatureRuntime {
         fileManager: FileManager
     ) -> [SwiftFeatureBundle] {
         let state = SwiftFeatureStateStore.load(fileManager: fileManager)
-        return allBundledFeatureBundles(fileManager: fileManager)
+        return bundledFeatureDefinitions()
             .filter { state.bundledFeatureIsEnabled(id: $0.id) }
+            .compactMap { definition in
+                guard let executableURL = availableBundledExecutableURL(
+                    named: definition.executableName,
+                    fileManager: fileManager
+                ) else {
+                    return nil
+                }
+                return definition.bundle(executableURL: executableURL)
+            }
     }
 
-    private static func allBundledFeatureBundles(
-        fileManager: FileManager
-    ) -> [SwiftFeatureBundle] {
+    private static func bundledFeatureDefinitions() -> [BundledFeatureDefinition] {
         [
-            bundledSearchToolsFeature(fileManager: fileManager),
-            bundledWebToolsFeature(fileManager: fileManager),
-            bundledGitToolsFeature(fileManager: fileManager),
-            bundledXcodeToolsFeature(fileManager: fileManager),
-            bundledFigmaToolsFeature(fileManager: fileManager)
-        ].compactMap { $0 }
+            BundledFeatureDefinition(
+                id: "mlx-search-tools",
+                executableName: "mlx-search-tools-feature",
+                tools: bundledSearchToolDescriptors()
+            ),
+            BundledFeatureDefinition(
+                id: "mlx-web-tools",
+                executableName: "mlx-web-tools-feature",
+                tools: bundledWebToolDescriptors()
+            ),
+            BundledFeatureDefinition(
+                id: "mlx-git-tools",
+                executableName: "mlx-git-tools-feature",
+                tools: bundledGitToolDescriptors()
+            ),
+            BundledFeatureDefinition(
+                id: "mlx-xcode-tools",
+                executableName: "mlx-xcode-tools-feature",
+                tools: [],
+                toolNamePrefixes: ["xcode.", "Xcode"],
+                toolNameAliases: [
+                    "BuildProject",
+                    "DocumentationSearch",
+                    "ExecuteSnippet",
+                    "GetBuildLog",
+                    "GetTestList",
+                    "RenderPreview",
+                    "RunAllTests",
+                    "RunSomeTests"
+                ],
+                discoversToolsAtRuntime: true
+            ),
+            BundledFeatureDefinition(
+                id: "mlx-figma-tools",
+                executableName: "mlx-figma-tools-feature",
+                tools: [],
+                toolNamePrefixes: ["figma."],
+                discoversToolsAtRuntime: true
+            )
+        ]
     }
 
     private static func defaultFeatureRecords(
@@ -2580,16 +2662,20 @@ public actor SwiftFeatureRuntime {
         fileManager: FileManager
     ) -> [SwiftFeatureRecord] {
         let state = SwiftFeatureStateStore.load(fileManager: fileManager)
-        let bundledRecords = allBundledFeatureBundles(fileManager: fileManager).map { feature in
-            SwiftFeatureRecord(
+        let bundledRecords = bundledFeatureDefinitions().map { feature in
+            let executableURL = bundledExecutableStatusURL(
+                named: feature.executableName,
+                fileManager: fileManager
+            )
+            return SwiftFeatureRecord(
                 id: feature.id,
                 displayName: nil,
                 description: nil,
                 source: .bundled,
-                executableURL: feature.executableURL,
+                executableURL: executableURL,
                 manifestURL: nil,
                 manifestEnabled: state.bundledFeatureIsEnabled(id: feature.id),
-                executableAvailable: fileManager.isExecutableFile(atPath: feature.executableURL.path),
+                executableAvailable: fileManager.isExecutableFile(atPath: executableURL.path),
                 tools: feature.tools,
                 toolNamePrefixes: feature.toolNamePrefixes,
                 toolNameAliases: feature.toolNameAliases,
@@ -2691,51 +2777,6 @@ public actor SwiftFeatureRuntime {
         )
     }
 
-    private static func bundledSearchToolsFeature(
-        fileManager: FileManager
-    ) -> SwiftFeatureBundle? {
-        guard let executableURL = bundledExecutableURL(named: "mlx-search-tools-feature", fileManager: fileManager) else {
-            return nil
-        }
-
-        return SwiftFeatureBundle(
-            id: "mlx-search-tools",
-            executableURL: executableURL,
-            tools: bundledSearchToolDescriptors(),
-            source: .bundled
-        )
-    }
-
-    private static func bundledWebToolsFeature(
-        fileManager: FileManager
-    ) -> SwiftFeatureBundle? {
-        guard let executableURL = bundledExecutableURL(named: "mlx-web-tools-feature", fileManager: fileManager) else {
-            return nil
-        }
-
-        return SwiftFeatureBundle(
-            id: "mlx-web-tools",
-            executableURL: executableURL,
-            tools: bundledWebToolDescriptors(),
-            source: .bundled
-        )
-    }
-
-    private static func bundledGitToolsFeature(
-        fileManager: FileManager
-    ) -> SwiftFeatureBundle? {
-        guard let executableURL = bundledExecutableURL(named: "mlx-git-tools-feature", fileManager: fileManager) else {
-            return nil
-        }
-
-        return SwiftFeatureBundle(
-            id: "mlx-git-tools",
-            executableURL: executableURL,
-            tools: bundledGitToolDescriptors(),
-            source: .bundled
-        )
-    }
-
     private static func bundledSearchToolDescriptors() -> [ToolDescriptor] {
         DirectToolCatalog.localSearchDescriptors.map(\.toolDescriptor) + [
             ToolDescriptor(
@@ -2771,55 +2812,41 @@ public actor SwiftFeatureRuntime {
         #endif
     }
 
-    private static func bundledXcodeToolsFeature(
-        fileManager: FileManager
-    ) -> SwiftFeatureBundle? {
-        guard let executableURL = bundledExecutableURL(named: "mlx-xcode-tools-feature", fileManager: fileManager) else {
-            return nil
-        }
-
-        return SwiftFeatureBundle(
-            id: "mlx-xcode-tools",
-            executableURL: executableURL,
-            tools: [],
-            toolNamePrefixes: ["xcode.", "Xcode"],
-            toolNameAliases: [
-                "BuildProject",
-                "DocumentationSearch",
-                "ExecuteSnippet",
-                "GetBuildLog",
-                "GetTestList",
-                "RenderPreview",
-                "RunAllTests",
-                "RunSomeTests"
-            ],
-            discoversToolsAtRuntime: true,
-            source: .bundled
-        )
-    }
-
-    private static func bundledFigmaToolsFeature(
-        fileManager: FileManager
-    ) -> SwiftFeatureBundle? {
-        guard let executableURL = bundledExecutableURL(named: "mlx-figma-tools-feature", fileManager: fileManager) else {
-            return nil
-        }
-
-        return SwiftFeatureBundle(
-            id: "mlx-figma-tools",
-            executableURL: executableURL,
-            tools: [],
-            toolNamePrefixes: ["figma."],
-            discoversToolsAtRuntime: true,
-            source: .bundled
-        )
-    }
-
-    private static func bundledExecutableURL(
+    private static func availableBundledExecutableURL(
         named executableName: String,
         fileManager: FileManager
     ) -> URL? {
-        let candidateDirectories = [
+        for executableURL in bundledExecutableCandidateURLs(
+            named: executableName,
+            fileManager: fileManager
+        ) {
+            if fileManager.isExecutableFile(atPath: executableURL.path) {
+                return executableURL
+            }
+        }
+        return nil
+    }
+
+    private static func bundledExecutableStatusURL(
+        named executableName: String,
+        fileManager: FileManager
+    ) -> URL {
+        availableBundledExecutableURL(
+            named: executableName,
+            fileManager: fileManager
+        ) ?? bundledExecutableCandidateURLs(
+            named: executableName,
+            fileManager: fileManager
+        ).first
+            ?? URL(fileURLWithPath: executableName).standardizedFileURL
+    }
+
+    private static func bundledExecutableCandidateURLs(
+        named executableName: String,
+        fileManager: FileManager
+    ) -> [URL] {
+        var seenPaths = Set<String>()
+        let baseDirectories = [
             Bundle.main.executableURL?.deletingLastPathComponent(),
             CommandLine.arguments.first.map {
                 URL(fileURLWithPath: $0)
@@ -2827,16 +2854,61 @@ public actor SwiftFeatureRuntime {
                     .deletingLastPathComponent()
             }
         ].compactMap { $0 }
+        let workingDirectoryURL = URL(
+            fileURLWithPath: fileManager.currentDirectoryPath,
+            isDirectory: true
+        ).standardizedFileURL
+        let buildDirectoryURL = workingDirectoryURL
+            .appendingPathComponent(".build", isDirectory: true)
+        let buildProductDirectories = swiftPMBuildProductDirectories(
+            buildDirectoryURL: buildDirectoryURL,
+            fileManager: fileManager
+        )
+        let candidateDirectories = baseDirectories.flatMap { directoryURL in
+            var directories = [directoryURL]
+            var parentURL = directoryURL
+            for _ in 0..<4 {
+                parentURL = parentURL.deletingLastPathComponent()
+                directories.append(parentURL)
+            }
+            return directories
+        } + buildProductDirectories
 
-        for directoryURL in candidateDirectories {
+        return candidateDirectories.compactMap { directoryURL in
             let executableURL = directoryURL
                 .appendingPathComponent(executableName)
                 .standardizedFileURL
-            if fileManager.isExecutableFile(atPath: executableURL.path) {
-                return executableURL
+            guard seenPaths.insert(executableURL.path).inserted else {
+                return nil
             }
+            return executableURL
         }
-        return nil
+    }
+
+    private static func swiftPMBuildProductDirectories(
+        buildDirectoryURL: URL,
+        fileManager: FileManager
+    ) -> [URL] {
+        var directories = [
+            buildDirectoryURL.appendingPathComponent("debug", isDirectory: true),
+            buildDirectoryURL.appendingPathComponent("release", isDirectory: true)
+        ]
+        guard let children = try? fileManager.contentsOfDirectory(
+            at: buildDirectoryURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return directories
+        }
+
+        for childURL in children {
+            guard (try? childURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+                continue
+            }
+            directories.append(childURL.appendingPathComponent("debug", isDirectory: true))
+            directories.append(childURL.appendingPathComponent("release", isDirectory: true))
+        }
+        return directories
     }
 
     private static func renderInvocationResult(

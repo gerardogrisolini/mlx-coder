@@ -20,14 +20,14 @@ extension TerminalChat {
     }
 
     public func printStartupSummary() async {
-        let allowedToolNames = await selectedAllowedToolNames()
+        let allowedToolNames = await selectedAllowedToolNames(
+            discoverExternalTools: false
+        )
         let toolItems = await toolSelectionItems()
         didPrintActiveTools = true
 
         var lines = [
             "Version: \(Self.appVersionDescription)",
-            Self.renderSelectedTools(selectedToolKeys, items: toolItems)
-                .trimmingCharacters(in: .whitespacesAndNewlines),
             Self.renderActiveTools(
                 Array(allowedToolNames),
                 items: toolItems,
@@ -48,7 +48,7 @@ extension TerminalChat {
         lines.append(contentsOf: [
             "Working directory: \(configuration.workingDirectory.path)",
             "",
-            "Commands: /help, /models, /agents, /tools, /skills, /sessions, /attach, /changes, /undo, /subagents, /clear, /exit"
+            "Commands: /help, /models, /agents, /tools, /feature, /skills, /sessions, /attach, /changes, /undo, /subagents, /clear, /exit"
         ])
 
         let startupBox = Self.renderStartupBox(lines: lines)
@@ -103,10 +103,8 @@ extension TerminalChat {
             groupedToolNames.formUnion(itemToolNames)
             let concreteToolNames = itemToolNames.filter { toolName in
                 !toolName.hasSuffix(".")
-            }
-            let toolCount = concreteToolNames.isEmpty
-                ? itemToolNames.count
-                : concreteToolNames.count
+            }.sorted()
+            let toolCount = concreteToolNames.count
             renderedGroups.append("\(item.title) (\(toolCount))")
         }
 
@@ -115,25 +113,10 @@ extension TerminalChat {
             renderedGroups.append("Other (\(otherToolCount))")
         }
 
-        return "Active tools: \(renderedGroups.joined(separator: ", "))\n"
-    }
-
-    public static func renderSelectedTools(
-        _ selectedKeys: Set<String>,
-        items: [TerminalToolSelectionItem]
-    ) -> String {
-        let normalizedKeys = TerminalToolSelectionCatalog.normalizedSelectionKeys(
-            selectedKeys,
-            items: items
-        )
-        guard !normalizedKeys.isEmpty else {
-            return "Selected tools: none\n"
+        guard !renderedGroups.isEmpty else {
+            return "Active tools: none\n"
         }
-        let renderedItems = items
-            .filter { normalizedKeys.contains($0.key) }
-            .map(\.title)
-            .joined(separator: ", ")
-        return "Selected tools: \(renderedItems)\n"
+        return "Active tools: \(renderedGroups.joined(separator: ", "))\n"
     }
 
     public static func renderSelectedSkills(_ skills: [MLXPromptSkill]) -> String {
@@ -172,8 +155,11 @@ extension TerminalChat {
         }
         output.append("\(linePrefix)\(orange)┌\(horizontalRule)┐\(reset)")
         for line in lines {
-            let fittedLine = padded(fitInline(line, width: contentWidth), width: contentWidth)
-            output.append("\(linePrefix)\(orange)│\(reset) \(fittedLine) \(orange)│\(reset)")
+            let splitLines = line.components(separatedBy: .newlines)
+            for splitLine in splitLines {
+                let fittedLine = padded(fitInline(splitLine, width: contentWidth), width: contentWidth)
+                output.append("\(linePrefix)\(orange)│\(reset) \(fittedLine) \(orange)│\(reset)")
+            }
         }
         output.append("\(linePrefix)\(orange)└\(horizontalRule)┘\(reset)")
         return output.joined(separator: "\n")
@@ -181,10 +167,11 @@ extension TerminalChat {
 
     public static var mlxCoderHeaderLines: [String] {
         [
-            " █   █   █    █   █      ██    ██    ███    ███   ███",
-            " █ █ █   █      █    |  █     █  █   █  █   ██    ███",
-            " █   █   █      █    |  █     █  █   █  █   █     █ ",
-            " █   █   ███  █   █      ██    ██    ███    ███   █ █"
+            "                                       ",
+            " █ █  █   █ █    ██   ██   ██   ██  ███",
+            " ███  █    █  █ █    █  █  █ █  █   ██ ",
+            " █ █  ██  █ █    ██   ██   ██   ██  █ █",
+            "                                       "
         ]
     }
 

@@ -75,7 +75,6 @@ extension TerminalChat {
             discoverExternalTools: shouldDiscoverExternalTools
         )
         let renderItems = await toolSelectionItems()
-        writeSystemMessage(Self.renderSelectedTools(selectedToolKeys, items: renderItems))
         writeSystemMessage(Self.renderActiveTools(Array(allowedToolNames), items: renderItems, selectedKeys: selectedToolKeys))
         didPrintActiveTools = true
     }
@@ -85,7 +84,6 @@ extension TerminalChat {
             discoverExternalTools: false
         )
         let items = await toolSelectionItems()
-        writeSystemMessage(Self.renderSelectedTools(selectedToolKeys, items: items))
         writeSystemMessage(Self.renderActiveTools(Array(allowedToolNames), items: items, selectedKeys: selectedToolKeys))
     }
 
@@ -131,13 +129,16 @@ extension TerminalChat {
     public func toolSelectionItems(
         additionalDescriptors: [DirectToolDescriptor] = []
     ) async -> [TerminalToolSelectionItem] {
+        let knownMCPDescriptors = await sessionRunner.knownMCPToolDescriptors()
         let featureStatuses = await SwiftFeatureRuntime().featureStatuses(
             includeTools: true,
             includeDisabled: true
         )
         return Self.toolSelectionItems(
             featureStatuses: featureStatuses,
-            additionalDescriptors: additionalDescriptors
+            additionalDescriptors: DirectToolExecutor.canonicalized(
+                knownMCPDescriptors + additionalDescriptors
+            )
         )
     }
 

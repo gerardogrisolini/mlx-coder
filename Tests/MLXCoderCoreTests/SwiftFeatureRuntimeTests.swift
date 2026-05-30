@@ -686,6 +686,10 @@ struct SwiftFeatureRuntimeTests {
             ]
         )
 
+        let allDescriptors = await runtime.descriptors()
+        #expect(allDescriptors.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: markerURL.path))
+
         let unrelatedDescriptors = await runtime.descriptors(
             allowedToolNames: ["other."]
         )
@@ -711,6 +715,53 @@ struct SwiftFeatureRuntimeTests {
     }
 
     @Test
+    func featureStatusesDoNotDiscoverRuntimeToolsByDefault() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-swift-feature-status-no-discovery-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: rootURL)
+        }
+        try FileManager.default.createDirectory(
+            at: rootURL,
+            withIntermediateDirectories: true
+        )
+        let markerURL = rootURL.appendingPathComponent("list-tools-marker")
+        let executableURL = rootURL.appendingPathComponent("feature")
+        try """
+        #!/bin/sh
+        if [ "$1" = "--list-tools" ]; then
+          printf x >> "\(markerURL.path)"
+          printf '{"tools":[{"name":"dynamic.status","description":"Dynamic status","inputSchema":"{}"}]}\\n'
+          exit 0
+        fi
+        cat >/dev/null
+        printf '{"ok":true,"output":"status-output"}\\n'
+        """.write(to: executableURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: executableURL.path
+        )
+
+        let runtime = SwiftFeatureRuntime(
+            features: [
+                SwiftFeatureBundle(
+                    id: "status-fixture",
+                    executableURL: executableURL,
+                    tools: [],
+                    toolNamePrefixes: ["dynamic."],
+                    discoversToolsAtRuntime: true
+                )
+            ]
+        )
+
+        let statuses = await runtime.featureStatuses(includeTools: true)
+
+        #expect(statuses.first?.id == "status-fixture")
+        #expect(statuses.first?.tools == [])
+        #expect(!FileManager.default.fileExists(atPath: markerURL.path))
+    }
+
+    @Test
     func directMCPRuntimeDoesNotAutodiscoverExternalConnectorsByDefault() async {
         let runtime = DirectMCPToolRuntime()
 
@@ -719,6 +770,22 @@ struct SwiftFeatureRuntimeTests {
         )
 
         #expect(descriptors.isEmpty)
+    }
+
+    @Test
+    func defaultFeatureStatusesIncludeBundledPackagesEvenWhenManaged() {
+        let ids = Set(
+            SwiftFeatureRuntime.defaultFeatureStatuses(
+                includeTools: false,
+                includeDisabled: true
+            ).map(\.id)
+        )
+
+        #expect(ids.contains("mlx-search-tools"))
+        #expect(ids.contains("mlx-web-tools"))
+        #expect(ids.contains("mlx-git-tools"))
+        #expect(ids.contains("mlx-xcode-tools"))
+        #expect(ids.contains("mlx-figma-tools"))
     }
 
     @Test

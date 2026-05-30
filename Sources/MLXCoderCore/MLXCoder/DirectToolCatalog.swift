@@ -155,7 +155,7 @@ public enum DirectToolCatalog {
         DirectToolDescriptor(
             name: "feature.list",
             description: "Lists Swift feature bundles known to the kernel, including bundled and generated features plus enabled status.",
-            inputSchema: #"{"type":"object","properties":{"includeTools":{"type":"boolean"},"include_tools":{"type":"boolean"},"includeDisabled":{"type":"boolean"},"include_disabled":{"type":"boolean"}}}"#
+            inputSchema: #"{"type":"object","properties":{"includeTools":{"type":"boolean"},"include_tools":{"type":"boolean"},"includeDisabled":{"type":"boolean"},"include_disabled":{"type":"boolean"},"discoverRuntimeTools":{"type":"boolean"},"discover_runtime_tools":{"type":"boolean"}}}"#
         ),
         DirectToolDescriptor(
             name: "feature.enable",
@@ -170,7 +170,7 @@ public enum DirectToolCatalog {
         DirectToolDescriptor(
             name: "feature.reload",
             description: "Reloads Swift feature bundles from bundled executables and generated feature manifests.",
-            inputSchema: #"{"type":"object","properties":{"includeTools":{"type":"boolean"},"include_tools":{"type":"boolean"},"includeDisabled":{"type":"boolean"},"include_disabled":{"type":"boolean"}}}"#
+            inputSchema: #"{"type":"object","properties":{"includeTools":{"type":"boolean"},"include_tools":{"type":"boolean"},"includeDisabled":{"type":"boolean"},"include_disabled":{"type":"boolean"},"discoverRuntimeTools":{"type":"boolean"},"discover_runtime_tools":{"type":"boolean"}}}"#
         ),
         DirectToolDescriptor(
             name: "feature.validate",

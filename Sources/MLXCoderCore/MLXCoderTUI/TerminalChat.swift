@@ -347,6 +347,10 @@ public final class TerminalChat: @unchecked Sendable {
             summary: "select tool groups"
         ),
         TerminalCommandSuggestion(
+            command: "/feature",
+            summary: "create/manage features"
+        ),
+        TerminalCommandSuggestion(
             command: "/skills",
             summary: "select/install prompt skills"
         ),
@@ -413,6 +417,7 @@ public final class TerminalChat: @unchecked Sendable {
                 /models shows configured models and lets you switch the default agent model.
                 /agents selects an agent profile and resets the session.
                 /tools selects which tool groups are available to the model.
+                /feature creates and manages generated Swift feature packages.
                 /skills selects installed prompt skills or installs one from GitHub or a local folder.
                 /sessions saves or restores named session snapshots for this project.
                 /attach <file> [file ...] attaches image or video files to the next prompt.
@@ -444,6 +449,9 @@ public final class TerminalChat: @unchecked Sendable {
             return .continueChat
         case let command where command == "/tools" || command.hasPrefix("/tools "):
             await handleToolsCommand(command)
+            return .continueChat
+        case let command where command == "/feature" || command.hasPrefix("/feature "):
+            await handleFeatureCommand(command)
             return .continueChat
         case let command where command == "/skills" || command.hasPrefix("/skills "):
             await handleSkillsCommand(command)

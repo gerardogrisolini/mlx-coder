@@ -32,7 +32,7 @@ public actor AgentCoreSessionRunner {
     public func mcpToolDescriptors(
         allowedToolNames: Set<String>? = nil
     ) async -> [DirectToolDescriptor] {
-        await mcpRuntime.descriptors(allowedToolNames: allowedToolNames)
+        await mcpRuntime.discoverDescriptors(allowedToolNames: allowedToolNames)
     }
 
     public func knownMCPToolDescriptors(

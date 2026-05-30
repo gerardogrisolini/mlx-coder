@@ -116,10 +116,6 @@ struct AgentConfigurationTests {
             for: selectedKeys,
             items: items
         )
-        let renderedSelection = TerminalChat.renderSelectedTools(
-            selectedKeys,
-            items: items
-        )
 
         #expect(selectedKeys.contains(TerminalToolSelectionCatalog.featureBuilderKey))
         #expect(allowedToolNames.contains("feature.list"))
@@ -129,7 +125,6 @@ struct AgentConfigurationTests {
         #expect(!allowedToolNames.contains("web.search"))
         #expect(!allowedToolNames.contains("clock.now"))
         #expect(!allowedToolNames.contains(SwiftFeatureRuntime.featurePackageToolsAllowedName))
-        #expect(renderedSelection.contains("Feature Builder"))
     }
 
     @Test
@@ -161,6 +156,127 @@ struct AgentConfigurationTests {
         #expect(xcodeDetail.contains("discovers tools at runtime"))
         #expect(!xcodeDetail.contains("1 tool: xcode."))
         #expect(figmaDetail.contains("2 tools: figma.get_code, figma.get_variable_defs"))
+    }
+
+    @Test
+    func toolSelectionCatalogHidesDisabledFeaturePackages() {
+        let items = TerminalChat.toolSelectionItems(
+            featureStatuses: [
+                featureStatus(
+                    id: "enabled-clock",
+                    displayName: "Enabled Clock",
+                    source: .generated,
+                    tools: ["clock.now"]
+                ),
+                featureStatus(
+                    id: "disabled-clock",
+                    displayName: "Disabled Clock",
+                    source: .generated,
+                    tools: ["clock.disabled"],
+                    enabled: false
+                )
+            ]
+        )
+
+        #expect(items.map(\.title).contains("Enabled Clock"))
+        #expect(!items.map(\.title).contains("Disabled Clock"))
+    }
+
+    @Test
+    func featureListShowsBundledAndGeneratedPackagesIncludingDisabled() throws {
+        let statuses = [
+            featureStatus(
+                id: "mlx-xcode-tools",
+                source: .bundled,
+                tools: [],
+                toolNamePrefixes: ["xcode."],
+                discoversToolsAtRuntime: true,
+                enabled: false
+            ),
+            featureStatus(
+                id: "custom-linear",
+                displayName: "Linear",
+                source: .generated,
+                tools: ["linear.issue.list"]
+            )
+        ]
+
+        let rendered = TerminalChat.renderFeatureStatusList(statuses)
+
+        #expect(rendered.contains("Xcode [mlx-xcode-tools] - disabled, bundled, discovers tools at runtime"))
+        #expect(rendered.contains("Linear [custom-linear] - enabled, generated, 1 tool: linear.issue.list"))
+        #expect(rendered.contains("Use /feature enable <id|name|#> or /feature disable <id|name|#>."))
+        #expect(try TerminalChat.resolvedFeatureID("xcode", statuses: statuses) == "mlx-xcode-tools")
+        #expect(try TerminalChat.resolvedFeatureID("Linear", statuses: statuses) == "custom-linear")
+    }
+
+    @Test
+    func activeToolRenderingCountsUndiscoveredRuntimePackagesAsZero() throws {
+        let items = TerminalChat.toolSelectionItems(
+            featureStatuses: [
+                featureStatus(
+                    id: "mlx-figma-tools",
+                    source: .bundled,
+                    tools: [],
+                    toolNamePrefixes: ["figma."],
+                    discoversToolsAtRuntime: true
+                )
+            ]
+        )
+        let selectedKeys = try TerminalChat.parseToolSelection("figma", items: items)
+        let allowedToolNames = TerminalToolSelectionCatalog.allowedToolNames(
+            for: selectedKeys,
+            items: items
+        )
+        let rendered = TerminalChat.renderActiveTools(
+            Array(allowedToolNames),
+            items: items,
+            selectedKeys: selectedKeys
+        )
+
+        #expect(rendered.contains("Figma (0)"))
+        #expect(!rendered.contains("Figma (1)"))
+        #expect(rendered.hasPrefix("Active tools: Figma (0)"))
+        #expect(!rendered.contains("\n  Figma"))
+    }
+
+    @Test
+    func discoveredMCPDescriptorsAreRenderedInsideFeaturePackage() throws {
+        let items = TerminalChat.toolSelectionItems(
+            featureStatuses: [
+                featureStatus(
+                    id: "mlx-xcode-tools",
+                    source: .bundled,
+                    tools: [],
+                    toolNamePrefixes: ["xcode."],
+                    discoversToolsAtRuntime: true
+                )
+            ],
+            additionalDescriptors: [
+                DirectToolDescriptor(
+                    name: "xcode.BuildProject",
+                    description: "Xcode: build project",
+                    inputSchema: "{}"
+                )
+            ]
+        )
+        let xcodeItem = try #require(items.first { $0.title == "Xcode" })
+        let selectedKeys = try TerminalChat.parseToolSelection("xcode", items: items)
+        let allowedToolNames = TerminalToolSelectionCatalog.allowedToolNames(
+            for: selectedKeys,
+            items: items
+        )
+        let rendered = TerminalChat.renderActiveTools(
+            Array(allowedToolNames),
+            items: items,
+            selectedKeys: selectedKeys
+        )
+
+        #expect(xcodeItem.detail?.contains("1 tool: xcode.BuildProject") == true)
+        #expect(allowedToolNames.contains("xcode.BuildProject"))
+        #expect(rendered.contains("Xcode (1)"))
+        #expect(!rendered.contains("xcode.BuildProject"))
+        #expect(rendered.hasPrefix("Active tools: Xcode (1)"))
     }
 
     @Test

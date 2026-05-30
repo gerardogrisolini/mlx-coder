@@ -13,7 +13,9 @@ import Foundation
 extension TerminalChat {
     public func createCurrentSession() async throws {
         try await sessionRunner.createSession(
-            configuration: await currentSessionConfiguration()
+            configuration: await currentSessionConfiguration(
+                discoverExternalTools: false
+            )
         )
     }
 
