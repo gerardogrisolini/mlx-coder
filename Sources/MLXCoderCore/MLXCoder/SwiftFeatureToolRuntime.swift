@@ -71,8 +71,7 @@ public struct SwiftFeatureBundle: Hashable, Sendable {
             }
         }
 
-        if source == .generated,
-           allowedToolNames.contains(SwiftFeatureRuntime.generatedFeatureToolsAllowedName) {
+        if allowedToolNames.contains(SwiftFeatureRuntime.featurePackageToolsAllowedName) {
             return true
         }
 
@@ -752,7 +751,7 @@ public enum SwiftFeatureRegistry {
 }
 
 public actor SwiftFeatureRuntime {
-    public static let generatedFeatureToolsAllowedName = "feature.tools"
+    public static let featurePackageToolsAllowedName = "feature.tools"
     public static let generatedSwiftToolsVersion = "6.3"
 
     public static func isFeatureManagementToolName(_ toolName: String) -> Bool {
@@ -1060,7 +1059,7 @@ public actor SwiftFeatureRuntime {
            manifest.toolNamePrefixes.isEmpty,
            manifest.toolNameAliases.isEmpty,
            manifest.tools.isEmpty {
-            warnings.append("Runtime-discovered feature has no toolNamePrefixes or toolNameAliases; it is only reachable through feature.tools.")
+            warnings.append("Runtime-discovered feature has no toolNamePrefixes or toolNameAliases; declare a prefix or alias so it can be selected explicitly.")
         }
 
         errors.append(contentsOf: Self.validationErrorsForToolNames(toolNames))
@@ -1196,17 +1195,10 @@ public actor SwiftFeatureRuntime {
             )
         }
 
-        let toolName = arguments
-            .string("toolName", "tool_name")?
-            .nilIfBlank ?? "\(Self.defaultToolPrefix(for: id)).echo"
-        let toolErrors = Self.validationErrorsForToolNames([toolName])
-        guard toolErrors.isEmpty else {
-            throw DirectToolError.permissionDenied(toolErrors.joined(separator: "\n"))
-        }
-
+        let template = Self.scaffoldTemplate(arguments: arguments)
         let displayName = arguments.string("displayName", "display_name", "name")?.nilIfBlank ?? id
         let description = arguments.string("description")?.nilIfBlank
-            ?? "Swift feature generated for mlx-coder."
+            ?? Self.defaultScaffoldDescription(template: template, displayName: displayName)
         let targetName = Self.targetName(for: id)
         let productName = id
         let sourceDirectoryURL = directoryURL
@@ -1219,21 +1211,73 @@ public actor SwiftFeatureRuntime {
             at: sourceDirectoryURL,
             withIntermediateDirectories: true
         )
-        try Self.packageManifestContents(
-            productName: productName,
-            targetName: targetName
-        ).write(to: packageURL, atomically: true, encoding: .utf8)
-        try Self.featureMainContents(
-            toolName: toolName,
-            toolDescription: "Echoes the provided text. Replace this implementation with the generated feature logic."
-        ).write(to: sourceURL, atomically: true, encoding: .utf8)
-        try Self.featureManifestContents(
-            id: id,
-            displayName: displayName,
-            description: description,
-            toolName: toolName,
-            enabled: arguments.bool("enabled") ?? false
-        ).write(to: manifestURL, atomically: true, encoding: .utf8)
+
+        let reportToolName: String
+        switch template {
+        case .basic:
+            let toolName = arguments
+                .string("toolName", "tool_name")?
+                .nilIfBlank ?? "\(Self.defaultToolPrefix(for: id)).echo"
+            let toolErrors = Self.validationErrorsForToolNames([toolName])
+            guard toolErrors.isEmpty else {
+                throw DirectToolError.permissionDenied(toolErrors.joined(separator: "\n"))
+            }
+            try Self.packageManifestContents(
+                productName: productName,
+                targetName: targetName
+            ).write(to: packageURL, atomically: true, encoding: .utf8)
+            try Self.featureMainContents(
+                toolName: toolName,
+                toolDescription: "Echoes the provided text. Replace this implementation with the generated feature logic."
+            ).write(to: sourceURL, atomically: true, encoding: .utf8)
+            try Self.featureManifestContents(
+                id: id,
+                displayName: displayName,
+                description: description,
+                toolName: toolName,
+                enabled: arguments.bool("enabled") ?? false
+            ).write(to: manifestURL, atomically: true, encoding: .utf8)
+            reportToolName = toolName
+        case .mcpBridge:
+            let toolPrefix = Self.normalizedToolPrefix(
+                arguments.string("toolPrefix", "tool_prefix", "prefix")?
+                    .nilIfBlank ?? "\(Self.defaultToolPrefix(for: id))."
+            )
+            try Self.validateMCPBridgeToolPrefix(toolPrefix)
+            let packagePath = arguments
+                .string("mlxServerPackagePath", "mlx_server_package_path", "dependencyPath", "dependency_path")?
+                .nilIfBlank ?? Self.defaultMLXServerPackagePath(fileManager: fileManager)
+            let serviceName = arguments
+                .string("serviceName", "service_name")?
+                .nilIfBlank ?? displayName
+            try Self.mcpBridgePackageManifestContents(
+                productName: productName,
+                targetName: targetName,
+                mlxServerPackagePath: packagePath
+            ).write(to: packageURL, atomically: true, encoding: .utf8)
+            try Self.mcpBridgeMainContents(
+                serviceName: serviceName,
+                toolPrefix: toolPrefix,
+                endpointURLString: arguments.string("endpointURL", "endpoint_url", "url")?.nilIfBlank,
+                executablePath: arguments.string("executablePath", "executable_path", "command")?.nilIfBlank,
+                arguments: Self.stringArrayArgument(
+                    arguments,
+                    keys: ["arguments", "args", "commandArguments", "command_arguments"]
+                ),
+                environment: Self.stringDictionaryArgument(
+                    arguments,
+                    keys: ["environment", "env"]
+                )
+            ).write(to: sourceURL, atomically: true, encoding: .utf8)
+            try Self.mcpBridgeFeatureManifestContents(
+                id: id,
+                displayName: displayName,
+                description: description,
+                toolPrefix: toolPrefix,
+                enabled: arguments.bool("enabled") ?? false
+            ).write(to: manifestURL, atomically: true, encoding: .utf8)
+            reportToolName = toolPrefix
+        }
 
         return SwiftFeatureScaffoldReport(
             id: id,
@@ -1241,7 +1285,7 @@ public actor SwiftFeatureRuntime {
             manifestPath: manifestURL.path,
             packagePath: packageURL.path,
             sourcePath: sourceURL.path,
-            toolName: toolName
+            toolName: reportToolName
         )
     }
 
@@ -1423,21 +1467,31 @@ public actor SwiftFeatureRuntime {
         id: String,
         arguments: [String: Any]
     ) throws -> URL {
+        let rootURL = featureRootURL()
+        let directoryURL: URL
         if let directory = arguments
             .string("directory", "directoryPath", "directory_path")?
             .nilIfBlank {
-            return resolvedFeaturePath(directory)
-        }
-        if let path = arguments.string("path")?.nilIfBlank {
+            directoryURL = resolvedFeaturePath(directory)
+        } else if let path = arguments.string("path")?.nilIfBlank {
             let url = resolvedFeaturePath(path)
             if url.lastPathComponent == SwiftFeatureRegistry.manifestFilename {
-                return url.deletingLastPathComponent()
+                directoryURL = url.deletingLastPathComponent()
+            } else {
+                directoryURL = url
             }
-            return url
+        } else {
+            directoryURL = rootURL
+                .appendingPathComponent(id, isDirectory: true)
+                .standardizedFileURL
         }
-        return featureRootURL()
-            .appendingPathComponent(id, isDirectory: true)
-            .standardizedFileURL
+
+        guard Self.path(directoryURL, isDescendantOf: rootURL) else {
+            throw DirectToolError.permissionDenied(
+                "feature.scaffold can only create packages under the generated features directory: \(rootURL.path). Use feature.install for packages prepared elsewhere."
+            )
+        }
+        return directoryURL
     }
 
     private func installSourceManifestURL(
@@ -1574,6 +1628,13 @@ public actor SwiftFeatureRuntime {
             .standardizedFileURL
     }
 
+    private static func path(_ candidate: URL, isDescendantOf root: URL) -> Bool {
+        let rootPath = root.standardizedFileURL.path
+        let candidatePath = candidate.standardizedFileURL.path
+        return candidatePath == rootPath
+            || candidatePath.hasPrefix(rootPath.hasSuffix("/") ? rootPath : "\(rootPath)/")
+    }
+
     private static func resolveBuildPackageDirectory(
         build: SwiftFeatureBuildManifest,
         featureDirectoryURL: URL
@@ -1618,7 +1679,7 @@ public actor SwiftFeatureRuntime {
             errors.append("Duplicate tool names: \(duplicates.joined(separator: ", ")).")
         }
 
-        let reservedToolNames = Set(DirectToolCatalog.selectableDescriptors.map(\.name))
+        let reservedToolNames = Set(DirectToolCatalog.baseDescriptors.map(\.name))
         for toolName in toolNames {
             if toolName.nilIfBlank == nil {
                 errors.append("Feature contains an empty tool name.")
@@ -1627,7 +1688,7 @@ public actor SwiftFeatureRuntime {
             } else if toolName.hasPrefix("feature.") {
                 errors.append("Tool namespace 'feature.' is reserved for kernel feature management: \(toolName).")
             } else if reservedToolNames.contains(toolName) {
-                errors.append("Tool name '\(toolName)' already exists in the core or bundled catalog.")
+                errors.append("Tool name '\(toolName)' already exists in the core catalog.")
             }
         }
         return errors
@@ -1664,6 +1725,134 @@ public actor SwiftFeatureRuntime {
             return URL(fileURLWithPath: candidate)
         }
         return URL(fileURLWithPath: "/usr/bin/swift")
+    }
+
+    private enum ScaffoldTemplate {
+        case basic
+        case mcpBridge
+    }
+
+    private static func scaffoldTemplate(arguments: [String: Any]) -> ScaffoldTemplate {
+        let rawValue = arguments
+            .string("template", "kind", "scaffoldTemplate", "scaffold_template")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        switch rawValue {
+        case "mcp", "mcp-bridge", "mcp_bridge", "mcpbridge":
+            return .mcpBridge
+        default:
+            return .basic
+        }
+    }
+
+    private static func defaultScaffoldDescription(
+        template: ScaffoldTemplate,
+        displayName: String
+    ) -> String {
+        switch template {
+        case .basic:
+            return "Swift feature generated for mlx-coder."
+        case .mcpBridge:
+            return "Swift MCP bridge feature for \(displayName)."
+        }
+    }
+
+    private static func normalizedToolPrefix(_ rawPrefix: String) -> String {
+        let prefix = rawPrefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prefix.isEmpty else {
+            return prefix
+        }
+        return prefix.hasSuffix(".") ? prefix : "\(prefix)."
+    }
+
+    private static func validateMCPBridgeToolPrefix(_ prefix: String) throws {
+        guard prefix.nilIfBlank != nil else {
+            throw DirectToolError.permissionDenied("MCP bridge toolPrefix cannot be empty.")
+        }
+        if prefix.hasPrefix("feature.") {
+            throw DirectToolError.permissionDenied(
+                "Tool namespace 'feature.' is reserved for kernel feature management: \(prefix)"
+            )
+        }
+        if prefix.hasPrefix("local.") || prefix.hasPrefix("text.") {
+            throw DirectToolError.permissionDenied(
+                "Tool prefix '\(prefix)' conflicts with a core tool namespace."
+            )
+        }
+    }
+
+    private static func defaultMLXServerPackagePath(fileManager: FileManager) -> String {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .standardizedFileURL
+        if fileManager.fileExists(
+            atPath: sourceURL.appendingPathComponent("Package.swift").path
+        ) {
+            return sourceURL.path
+        }
+
+        let workingDirectoryURL = URL(
+            fileURLWithPath: fileManager.currentDirectoryPath,
+            isDirectory: true
+        ).standardizedFileURL
+        if fileManager.fileExists(
+            atPath: workingDirectoryURL.appendingPathComponent("Package.swift").path
+        ) {
+            return workingDirectoryURL.path
+        }
+
+        return sourceURL.path
+    }
+
+    private static func stringArrayArgument(
+        _ arguments: [String: Any],
+        keys: [String]
+    ) -> [String] {
+        for key in keys {
+            if let values = arguments[key] as? [String] {
+                return values.compactMap(\.nilIfBlank)
+            }
+            if let values = arguments[key] as? [Any] {
+                return values.compactMap { value in
+                    String(describing: value).nilIfBlank
+                }
+            }
+            if let value = arguments[key] as? String {
+                let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmedValue.isEmpty else {
+                    return []
+                }
+                if trimmedValue.contains("\n") {
+                    return trimmedValue
+                        .split(separator: "\n")
+                        .compactMap { String($0).nilIfBlank }
+                }
+                return [trimmedValue]
+            }
+        }
+        return []
+    }
+
+    private static func stringDictionaryArgument(
+        _ arguments: [String: Any],
+        keys: [String]
+    ) -> [String: String] {
+        for key in keys {
+            if let values = arguments[key] as? [String: String] {
+                return values.filter { !$0.key.isEmpty }
+            }
+            if let values = arguments[key] as? [String: Any] {
+                var output: [String: String] = [:]
+                for (entryKey, value) in values where !entryKey.isEmpty {
+                    output[entryKey] = String(describing: value)
+                }
+                return output
+            }
+        }
+        return [:]
     }
 
     private static func targetName(for id: String) -> String {
@@ -1713,6 +1902,43 @@ public actor SwiftFeatureRuntime {
             targets: [
                 .executableTarget(
                     name: "\(targetName)"
+                )
+            ]
+        )
+        """
+    }
+
+    private static func mcpBridgePackageManifestContents(
+        productName: String,
+        targetName: String,
+        mlxServerPackagePath: String
+    ) -> String {
+        """
+        // swift-tools-version: \(generatedSwiftToolsVersion)
+
+        import PackageDescription
+
+        let package = Package(
+            name: "\(productName)",
+            platforms: [
+                .macOS(.v26)
+            ],
+            products: [
+                .executable(
+                    name: "\(productName)",
+                    targets: ["\(targetName)"]
+                )
+            ],
+            dependencies: [
+                .package(path: \(swiftStringLiteral(mlxServerPackagePath)))
+            ],
+            targets: [
+                .executableTarget(
+                    name: "\(targetName)",
+                    dependencies: [
+                        .product(name: "MLXCoderCore", package: "mlx-server"),
+                        .product(name: "MLXFeatureKit", package: "mlx-server")
+                    ]
                 )
             ]
         )
@@ -1905,6 +2131,231 @@ public actor SwiftFeatureRuntime {
         """#
     }
 
+    private static func mcpBridgeMainContents(
+        serviceName: String,
+        toolPrefix: String,
+        endpointURLString: String?,
+        executablePath: String?,
+        arguments: [String],
+        environment: [String: String]
+    ) -> String {
+        let escapedServiceName = swiftStringLiteral(serviceName)
+        let escapedToolPrefix = swiftStringLiteral(toolPrefix)
+        let endpointLiteral = endpointURLString.map(swiftStringLiteral) ?? "nil"
+        let executablePathLiteral = executablePath.map(swiftStringLiteral) ?? "nil"
+        let argumentsLiteral = swiftStringArrayLiteral(arguments)
+        let environmentLiteral = swiftStringDictionaryLiteral(environment)
+        return #"""
+        import Foundation
+        import MLXCoderCore
+        import MLXFeatureKit
+        #if canImport(Darwin)
+        import Darwin
+        #elseif canImport(Glibc)
+        import Glibc
+        #endif
+
+        private let bridgeServiceName = \#(escapedServiceName)
+        private let bridgeToolNamePrefix = \#(escapedToolPrefix)
+        private let bridgeEndpointURLString: String? = \#(endpointLiteral)
+        private let bridgeExecutablePath: String? = \#(executablePathLiteral)
+        private let bridgeExecutableArguments: [String] = \#(argumentsLiteral)
+        private let bridgeEnvironment: [String: String] = \#(environmentLiteral)
+
+        @main
+        enum MCPBridgeFeatureMain {
+            static func main() async {
+                let command = ParsedFeatureCommand(arguments: Array(CommandLine.arguments.dropFirst()))
+
+                do {
+                    switch command {
+                    case .listTools:
+                        let tools = try await listTools()
+                        try emitJSON(ListToolsResponse(tools: tools))
+                    case let .invoke(toolName):
+                        let inputData = FileHandle.standardInput.readDataToEndOfFile()
+                        let output = try await invoke(
+                            toolName: toolName,
+                            inputData: inputData
+                        )
+                        try emitJSON(
+                            InvocationResponse(
+                                ok: true,
+                                output: .string(output),
+                                error: nil
+                            )
+                        )
+                    case .usage:
+                        throw MCPBridgeFeatureError.usage
+                    }
+                } catch {
+                    try? emitJSON(
+                        InvocationResponse(
+                            ok: false,
+                            output: nil,
+                            error: error.localizedDescription
+                        )
+                    )
+                    terminate(code: 1)
+                }
+            }
+
+            private static func listTools() async throws -> [MLXFeatureToolDescriptor] {
+                let executor = RemoteMCPToolExecutor(
+                    configuration: try configuration(),
+                    toolNamePrefix: bridgeToolNamePrefix
+                )
+                do {
+                    let tools = try await executor.loadTools()
+                    await executor.disconnect()
+                    return ToolDescriptor.canonicalized(tools).map { tool in
+                        MLXFeatureToolDescriptor(
+                            name: tool.name,
+                            description: tool.description.hasPrefix("\(bridgeServiceName):")
+                                ? tool.description
+                                : "\(bridgeServiceName): \(tool.description)",
+                            inputSchema: tool.inputSchema,
+                            outputSchema: tool.outputSchema
+                        )
+                    }
+                } catch {
+                    await executor.disconnect()
+                    throw error
+                }
+            }
+
+            private static func invoke(
+                toolName: String,
+                inputData: Data
+            ) async throws -> String {
+                let executor = RemoteMCPToolExecutor(
+                    configuration: try configuration(),
+                    toolNamePrefix: bridgeToolNamePrefix
+                )
+                do {
+                    let output = try await executor.execute(
+                        ToolRequest(
+                            name: toolName,
+                            arguments: try decodeArguments(from: inputData)
+                        )
+                    )
+                    await executor.disconnect()
+                    return output.text
+                } catch {
+                    await executor.disconnect()
+                    throw error
+                }
+            }
+
+            private static func configuration() throws -> MCPServerConfiguration {
+                if let rawEndpointURL = bridgeEndpointURLString,
+                   let endpointURL = URL(string: rawEndpointURL) {
+                    return MCPServerConfiguration(
+                        executablePath: "",
+                        arguments: [],
+                        environment: [:],
+                        endpointURL: endpointURL
+                    )
+                }
+
+                if let executablePath = bridgeExecutablePath,
+                   !executablePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    var environment = ProcessInfo.processInfo.environment
+                    environment.merge(bridgeEnvironment) { _, new in new }
+                    return MCPServerConfiguration(
+                        executablePath: executablePath,
+                        arguments: bridgeExecutableArguments,
+                        environment: environment
+                    )
+                }
+
+                throw MCPBridgeFeatureError.unconfigured
+            }
+
+            private static func decodeArguments(from data: Data) throws -> [String: JSONValue] {
+                guard !data.isEmpty else {
+                    return [:]
+                }
+
+                let value = try JSONDecoder().decode(JSONValue.self, from: data)
+                guard case let .object(arguments) = value else {
+                    throw MCPBridgeFeatureError.invalidArguments
+                }
+                return arguments
+            }
+
+            private static func emitJSON<T: Encodable>(_ value: T) throws {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+                let data = try encoder.encode(value)
+                FileHandle.standardOutput.write(data)
+                FileHandle.standardOutput.write(Data("\n".utf8))
+            }
+
+            private static func terminate(code: Int32) -> Never {
+                #if canImport(Darwin) || canImport(Glibc)
+                exit(code)
+                #else
+                fatalError("MCP bridge feature terminated with code \(code).")
+                #endif
+            }
+        }
+
+        private struct ListToolsResponse: Encodable {
+            let tools: [MLXFeatureToolDescriptor]
+        }
+
+        private struct InvocationResponse: Encodable {
+            let ok: Bool
+            let output: JSONValue?
+            let error: String?
+        }
+
+        private enum ParsedFeatureCommand {
+            case listTools
+            case invoke(String)
+            case usage
+
+            init(arguments: [String]) {
+                guard let first = arguments.first else {
+                    self = .usage
+                    return
+                }
+
+                switch first {
+                case "--list-tools":
+                    self = .listTools
+                case "--invoke":
+                    guard arguments.count >= 2 else {
+                        self = .usage
+                        return
+                    }
+                    self = .invoke(arguments[1])
+                default:
+                    self = .usage
+                }
+            }
+        }
+
+        private enum MCPBridgeFeatureError: LocalizedError {
+            case invalidArguments
+            case unconfigured
+            case usage
+
+            var errorDescription: String? {
+                switch self {
+                case .invalidArguments:
+                    return "Expected a JSON object as tool arguments."
+                case .unconfigured:
+                    return "\(bridgeServiceName) MCP bridge is not configured. Set endpointURL for HTTP MCP or executablePath for stdio MCP in the scaffold arguments."
+                case .usage:
+                    return "Usage: feature-binary --list-tools | --invoke <tool-name> [--working-directory <path>]"
+                }
+            }
+        }
+        """#
+    }
+
     private static func featureManifestContents(
         id: String,
         displayName: String,
@@ -1954,11 +2405,66 @@ public actor SwiftFeatureRuntime {
         return String(data: data, encoding: .utf8) ?? "{}"
     }
 
+    private static func mcpBridgeFeatureManifestContents(
+        id: String,
+        displayName: String,
+        description: String,
+        toolPrefix: String,
+        enabled: Bool
+    ) throws -> String {
+        let object: [String: Any] = [
+            "schemaVersion": SwiftFeatureManifest.currentSchemaVersion,
+            "id": id,
+            "displayName": displayName,
+            "description": description,
+            "enabled": enabled,
+            "executable": ".build/release/\(id)",
+            "discoversToolsAtRuntime": true,
+            "toolNamePrefixes": [toolPrefix],
+            "toolNameAliases": [],
+            "build": [
+                "system": "swiftpm",
+                "packagePath": ".",
+                "product": id,
+                "configuration": "release",
+                "executablePath": ".build/release/\(id)"
+            ],
+            "generated": [
+                "by": "mlx-coder",
+                "createdAt": ISO8601DateFormatter().string(from: Date())
+            ],
+            "tools": []
+        ]
+        let data = try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        )
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+
     private static func toolNamePrefix(from toolName: String) -> String {
         guard let dotIndex = toolName.lastIndex(of: ".") else {
             return "\(toolName)."
         }
         return String(toolName[...dotIndex])
+    }
+
+    private static func swiftStringArrayLiteral(_ values: [String]) -> String {
+        let renderedValues = values
+            .map(swiftStringLiteral)
+            .joined(separator: ", ")
+        return "[\(renderedValues)]"
+    }
+
+    private static func swiftStringDictionaryLiteral(_ values: [String: String]) -> String {
+        guard !values.isEmpty else {
+            return "[:]"
+        }
+        let renderedValues = values
+            .sorted { $0.key < $1.key }
+            .map { "\(swiftStringLiteral($0.key)): \(swiftStringLiteral($0.value))" }
+            .joined(separator: ", ")
+        return "[\(renderedValues)]"
     }
 
     private static func swiftStringLiteral(_ value: String) -> String {
@@ -1978,6 +2484,75 @@ public actor SwiftFeatureRuntime {
                 searchRoots: searchRoots,
                 fileManager: fileManager
             )
+    }
+
+    public static func defaultFeatureToolDescriptors(
+        searchRoots: [URL]? = nil,
+        fileManager: FileManager = .default,
+        includeDisabled: Bool = false
+    ) -> [DirectToolDescriptor] {
+        let bundledTools = bundledFeatureToolDescriptors(
+            fileManager: fileManager,
+            includeDisabled: includeDisabled
+        )
+        let records = defaultFeatureRecords(
+            searchRoots: searchRoots,
+            fileManager: fileManager
+        )
+        let tools = records
+            .filter { $0.source != .bundled }
+            .filter { includeDisabled || $0.enabled }
+            .flatMap(\.tools)
+        return DirectToolExecutor.canonicalized(
+            bundledTools + ToolDescriptor.canonicalized(tools).map {
+                DirectToolDescriptor(
+                    name: $0.name,
+                    description: $0.description,
+                    inputSchema: $0.inputSchema
+                )
+            }
+        )
+    }
+
+    public static func defaultFeatureStatuses(
+        searchRoots: [URL]? = nil,
+        fileManager: FileManager = .default,
+        includeTools: Bool = true,
+        includeDisabled: Bool = true
+    ) -> [SwiftFeatureStatus] {
+        defaultFeatureRecords(
+            searchRoots: searchRoots,
+            fileManager: fileManager
+        )
+        .filter { includeDisabled || $0.enabled }
+        .map { record in
+            status(
+                from: record,
+                tools: includeTools ? record.tools.map(\.name) : []
+            )
+        }
+    }
+
+    private static func bundledFeatureToolDescriptors(
+        fileManager: FileManager,
+        includeDisabled: Bool
+    ) -> [DirectToolDescriptor] {
+        let state = SwiftFeatureStateStore.load(fileManager: fileManager)
+        let definitions: [(id: String, tools: [ToolDescriptor])] = [
+            ("mlx-search-tools", bundledSearchToolDescriptors()),
+            ("mlx-web-tools", bundledWebToolDescriptors()),
+            ("mlx-git-tools", bundledGitToolDescriptors())
+        ]
+        let tools = definitions
+            .filter { includeDisabled || state.bundledFeatureIsEnabled(id: $0.id) }
+            .flatMap(\.tools)
+        return ToolDescriptor.canonicalized(tools).map {
+            DirectToolDescriptor(
+                name: $0.name,
+                description: $0.description,
+                inputSchema: $0.inputSchema
+            )
+        }
     }
 
     private static func bundledFeatureBundles(
@@ -2126,13 +2701,7 @@ public actor SwiftFeatureRuntime {
         return SwiftFeatureBundle(
             id: "mlx-search-tools",
             executableURL: executableURL,
-            tools: DirectToolCatalog.localSearchDescriptors.map(\.toolDescriptor) + [
-                ToolDescriptor(
-                    name: "search.grep",
-                    description: "Searches text with grep from a local path.",
-                    inputSchema: #"{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"glob":{"type":"string"},"maxResults":{"type":"number"},"max_results":{"type":"number"}},"required":["pattern"]}"#
-                )
-            ],
+            tools: bundledSearchToolDescriptors(),
             source: .bundled
         )
     }
@@ -2147,18 +2716,7 @@ public actor SwiftFeatureRuntime {
         return SwiftFeatureBundle(
             id: "mlx-web-tools",
             executableURL: executableURL,
-            tools: [
-                ToolDescriptor(
-                    name: "web.search",
-                    description: "Searches the public web and returns matching results with titles, URLs, and snippets.",
-                    inputSchema: #"{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"domains":{"type":"array","items":{"type":"string"}}},"required":["query"]}"#
-                ),
-                ToolDescriptor(
-                    name: "web.fetch",
-                    description: "Fetches an HTTP or HTTPS URL and returns response metadata plus a UTF-8 text preview.",
-                    inputSchema: #"{"type":"object","properties":{"url":{"type":"string"},"maxBytes":{"type":"number"},"timeoutSeconds":{"type":"number"}},"required":["url"]}"#
-                )
-            ],
+            tools: bundledWebToolDescriptors(),
             source: .bundled
         )
     }
@@ -2170,20 +2728,47 @@ public actor SwiftFeatureRuntime {
             return nil
         }
 
-        #if canImport(Darwin) || canImport(Glibc)
-        let tools = DirectToolCatalog.macOSProcessDescriptors
-            .filter { $0.name.hasPrefix("git.") }
-            .map(\.toolDescriptor)
-        #else
-        let tools: [ToolDescriptor] = []
-        #endif
-
         return SwiftFeatureBundle(
             id: "mlx-git-tools",
             executableURL: executableURL,
-            tools: tools,
+            tools: bundledGitToolDescriptors(),
             source: .bundled
         )
+    }
+
+    private static func bundledSearchToolDescriptors() -> [ToolDescriptor] {
+        DirectToolCatalog.localSearchDescriptors.map(\.toolDescriptor) + [
+            ToolDescriptor(
+                name: "search.grep",
+                description: "Searches text with grep from a local path.",
+                inputSchema: #"{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"glob":{"type":"string"},"maxResults":{"type":"number"},"max_results":{"type":"number"}},"required":["pattern"]}"#
+            )
+        ]
+    }
+
+    private static func bundledWebToolDescriptors() -> [ToolDescriptor] {
+        [
+            ToolDescriptor(
+                name: "web.search",
+                description: "Searches the public web and returns matching results with titles, URLs, and snippets.",
+                inputSchema: #"{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"number"},"domains":{"type":"array","items":{"type":"string"}}},"required":["query"]}"#
+            ),
+            ToolDescriptor(
+                name: "web.fetch",
+                description: "Fetches an HTTP or HTTPS URL and returns response metadata plus a UTF-8 text preview.",
+                inputSchema: #"{"type":"object","properties":{"url":{"type":"string"},"maxBytes":{"type":"number"},"timeoutSeconds":{"type":"number"}},"required":["url"]}"#
+            )
+        ]
+    }
+
+    private static func bundledGitToolDescriptors() -> [ToolDescriptor] {
+        #if canImport(Darwin) || canImport(Glibc)
+        DirectToolCatalog.macOSProcessDescriptors
+            .filter { $0.name.hasPrefix("git.") }
+            .map(\.toolDescriptor)
+        #else
+        []
+        #endif
     }
 
     private static func bundledXcodeToolsFeature(

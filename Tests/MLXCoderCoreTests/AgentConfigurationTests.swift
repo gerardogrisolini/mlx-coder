@@ -5,24 +5,41 @@ import Testing
 @Suite
 struct AgentConfigurationTests {
     @Test
-    func shellFilesSearchAndTextToolGroupsAreDistinct() {
-        #expect(TerminalToolGroup.group(named: "bash") == .shell)
-        #expect(TerminalToolGroup.group(named: "files") == .files)
-        #expect(TerminalToolGroup.group(named: "search") == .search)
-        #expect(TerminalToolGroup.group(named: "text") == .text)
-        #expect(TerminalToolGroup.group(named: "kernel") == .features)
+    func toolSelectionKeysKeepCoreAndFeaturePackagesDistinct() throws {
+        let items = TerminalChat.toolSelectionItems(
+            featureStatuses: [
+                featureStatus(
+                    id: "mlx-search-tools",
+                    source: .bundled,
+                    tools: ["search.glob", "search.grep"]
+                ),
+                featureStatus(
+                    id: "mlx-git-tools",
+                    source: .bundled,
+                    tools: ["git.status"]
+                )
+            ]
+        )
 
-        #expect(TerminalToolGroup.shell.allows(toolName: "local.exec"))
-        #expect(!TerminalToolGroup.files.allows(toolName: "local.exec"))
-        #expect(TerminalToolGroup.files.allows(toolName: "local.readFile"))
-        #expect(!TerminalToolGroup.search.allows(toolName: "local.readFile"))
-        #expect(TerminalToolGroup.search.allows(toolName: "search.grep"))
-        #expect(TerminalToolGroup.text.allows(toolName: "text.wc"))
-        #expect(TerminalToolGroup.features.allows(toolName: "feature.list"))
+        let selectedKeys = try TerminalChat.parseToolSelection(
+            "shell files text feature-builder search git",
+            items: items
+        )
+        let allowedToolNames = TerminalToolSelectionCatalog.allowedToolNames(
+            for: selectedKeys,
+            items: items
+        )
+
+        #expect(allowedToolNames.contains("local.exec"))
+        #expect(allowedToolNames.contains("local.readFile"))
+        #expect(allowedToolNames.contains("text.wc"))
+        #expect(allowedToolNames.contains("feature.list"))
+        #expect(allowedToolNames.contains("search.grep"))
+        #expect(allowedToolNames.contains("git.status"))
     }
 
     @Test
-    func defaultAgentProfilesEnableSplitLocalToolGroups() {
+    func defaultAgentProfilesEnableCoreAndFeaturePackageTools() {
         let profile = AgentProfile(
             id: "default",
             name: "Default",
@@ -35,7 +52,115 @@ struct AgentConfigurationTests {
         #expect(allowedToolNames.contains("search.grep"))
         #expect(allowedToolNames.contains("text.wc"))
         #expect(allowedToolNames.contains("feature.list"))
-        #expect(allowedToolNames.contains(SwiftFeatureRuntime.generatedFeatureToolsAllowedName))
+    }
+
+    @Test
+    func toolSelectionCatalogListsBundledAndGeneratedFeaturePackagesTogether() throws {
+        let items = TerminalChat.toolSelectionItems(
+            featureStatuses: [
+                featureStatus(
+                    id: "mlx-git-tools",
+                    source: .bundled,
+                    tools: ["git.status", "git.log"]
+                ),
+                featureStatus(
+                    id: "live-git-branch",
+                    displayName: "Live Git Branch",
+                    source: .generated,
+                    tools: ["live.git_current_branch"]
+                )
+            ]
+        )
+
+        #expect(items.map(\.title).contains("Feature Builder"))
+        #expect(items.map(\.title).contains("Git"))
+        #expect(items.map(\.title).contains("Live Git Branch"))
+
+        let selectedKeys = try TerminalChat.parseToolSelection(
+            "git live-git-branch",
+            items: items
+        )
+        let allowedToolNames = TerminalToolSelectionCatalog.allowedToolNames(
+            for: selectedKeys,
+            items: items
+        )
+
+        #expect(selectedKeys.contains(TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-git-tools")))
+        #expect(selectedKeys.contains(TerminalToolSelectionCatalog.featurePackageKey(id: "live-git-branch")))
+        #expect(allowedToolNames.contains("git.status"))
+        #expect(allowedToolNames.contains("live.git_current_branch"))
+    }
+
+    @Test
+    func featureBuilderSelectionEnablesLifecycleTools() throws {
+        let items = TerminalChat.toolSelectionItems(
+            featureStatuses: [
+                featureStatus(
+                    id: "mlx-web-tools",
+                    source: .bundled,
+                    tools: ["web.search"]
+                ),
+                featureStatus(
+                    id: "generated-clock",
+                    source: .generated,
+                    tools: ["clock.now"]
+                )
+            ]
+        )
+
+        let selectedKeys = try TerminalChat.parseToolSelection(
+            "feature-builder",
+            items: items
+        )
+        let allowedToolNames = TerminalToolSelectionCatalog.allowedToolNames(
+            for: selectedKeys,
+            items: items
+        )
+        let renderedSelection = TerminalChat.renderSelectedTools(
+            selectedKeys,
+            items: items
+        )
+
+        #expect(selectedKeys.contains(TerminalToolSelectionCatalog.featureBuilderKey))
+        #expect(allowedToolNames.contains("feature.list"))
+        #expect(allowedToolNames.contains("feature.enable"))
+        #expect(allowedToolNames.contains("feature.disable"))
+        #expect(allowedToolNames.contains("feature.scaffold"))
+        #expect(!allowedToolNames.contains("web.search"))
+        #expect(!allowedToolNames.contains("clock.now"))
+        #expect(!allowedToolNames.contains(SwiftFeatureRuntime.featurePackageToolsAllowedName))
+        #expect(renderedSelection.contains("Feature Builder"))
+    }
+
+    @Test
+    func runtimeDiscoveredFeaturePackagesDoNotCountPrefixesAsTools() throws {
+        let items = TerminalChat.toolSelectionItems(
+            featureStatuses: [
+                featureStatus(
+                    id: "mlx-xcode-tools",
+                    source: .bundled,
+                    tools: [],
+                    toolNamePrefixes: ["xcode."],
+                    discoversToolsAtRuntime: true
+                ),
+                featureStatus(
+                    id: "mlx-figma-tools",
+                    source: .bundled,
+                    tools: ["figma.get_code", "figma.get_variable_defs"],
+                    toolNamePrefixes: ["figma."],
+                    discoversToolsAtRuntime: true
+                )
+            ]
+        )
+
+        let xcodeItem = try #require(items.first { $0.title == "Xcode" })
+        let figmaItem = try #require(items.first { $0.title == "Figma" })
+        let xcodeDetail = try #require(xcodeItem.detail)
+        let figmaDetail = try #require(figmaItem.detail)
+
+        #expect(xcodeDetail.contains("discovers tools at runtime"))
+        #expect(!xcodeDetail.contains("1 tool: xcode."))
+        #expect(figmaDetail.contains("2 tools: figma.get_code, figma.get_variable_defs"))
     }
 
     @Test
@@ -99,5 +224,34 @@ struct AgentConfigurationTests {
         )
 
         #expect(effectiveModelID == "mlx-community/server-model")
+    }
+
+    private func featureStatus(
+        id: String,
+        displayName: String? = nil,
+        source: SwiftFeatureBundleSource,
+        tools: [String],
+        toolNamePrefixes: [String] = [],
+        discoversToolsAtRuntime: Bool = false,
+        enabled: Bool = true,
+        available: Bool = true
+    ) -> SwiftFeatureStatus {
+        SwiftFeatureStatus(
+            id: id,
+            displayName: displayName,
+            description: nil,
+            source: source,
+            enabled: enabled,
+            available: available,
+            executablePath: "/tmp/\(id)",
+            manifestPath: nil,
+            tools: tools,
+            toolNamePrefixes: toolNamePrefixes,
+            toolNameAliases: [],
+            discoversToolsAtRuntime: discoversToolsAtRuntime,
+            build: nil,
+            generated: nil,
+            issue: nil
+        )
     }
 }

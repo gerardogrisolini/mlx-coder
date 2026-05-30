@@ -7,7 +7,7 @@ import Crypto
 import Foundation
 
 public struct MLXTerminalSavedSession: Codable, Equatable, Sendable {
-    public static let currentVersion = 1
+    public static let currentVersion = 2
 
     public let version: Int
     public let name: String
@@ -19,7 +19,7 @@ public struct MLXTerminalSavedSession: Codable, Equatable, Sendable {
     public let modelID: String?
     public let agentID: String?
     public let agentName: String?
-    public let selectedToolGroups: [String]
+    public let selectedTools: [String]
     public let selectedSkillIDs: [String]
     public let thinkingSelection: String?
     public let systemPrompt: String?
@@ -36,7 +36,7 @@ public struct MLXTerminalSavedSession: Codable, Equatable, Sendable {
         modelID: String?,
         agentID: String?,
         agentName: String?,
-        selectedToolGroups: [String],
+        selectedTools: [String],
         selectedSkillIDs: [String],
         thinkingSelection: String?,
         systemPrompt: String?,
@@ -54,7 +54,7 @@ public struct MLXTerminalSavedSession: Codable, Equatable, Sendable {
         self.modelID = modelID?.nilIfBlank
         self.agentID = agentID?.nilIfBlank
         self.agentName = agentName?.nilIfBlank
-        self.selectedToolGroups = selectedToolGroups
+        self.selectedTools = selectedTools
         self.selectedSkillIDs = selectedSkillIDs
         self.thinkingSelection = thinkingSelection?.nilIfBlank
         self.systemPrompt = systemPrompt?.nilIfBlank

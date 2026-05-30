@@ -302,6 +302,11 @@ extension TerminalChat {
         printedModelID = displayTitle
         _ = statusBar.update(modelID: modelID)
 
+        guard configuration.verboseLogging else {
+            writeOperationalMessage("mlx-server loaded model: \(displayTitle)\n")
+            return
+        }
+
         var lines = [
             "mlx-server loaded model:",
             "  model: \(modelID)"

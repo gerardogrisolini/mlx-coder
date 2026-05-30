@@ -57,7 +57,7 @@ extension TerminalChat {
 
     public func applyAgentSelection(_ agent: AgentProfile) async throws {
         selectedAgent = agent
-        applyAgentProfile(agent)
+        await applyAgentProfile(agent)
         activeSessionSystemPromptOverride = nil
         manualModelIDOverride = configuration.hostedModels == nil
             ? nil
@@ -76,9 +76,11 @@ extension TerminalChat {
         writeSystemMessage("Switched to agent: \(agent.displayName). Session reset.\n")
     }
 
-    public func applyAgentProfile(_ agent: AgentProfile) {
-        selectedToolGroups = Set(
-            agent.tools.compactMap { TerminalToolGroup.group(named: $0) }
+    public func applyAgentProfile(_ agent: AgentProfile) async {
+        let items = await toolSelectionItems()
+        selectedToolKeys = Self.toolSelectionKeys(
+            from: agent.tools,
+            items: items
         )
         selectedSkillIDs = agent.selectedSkillIDs(
             availableSkills: availableSkills()

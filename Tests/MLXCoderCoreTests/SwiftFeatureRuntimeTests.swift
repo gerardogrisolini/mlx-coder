@@ -224,7 +224,7 @@ struct SwiftFeatureRuntimeTests {
         )
 
         let descriptors = await runtime.descriptors(
-            allowedToolNames: [SwiftFeatureRuntime.generatedFeatureToolsAllowedName]
+            allowedToolNames: [SwiftFeatureRuntime.featurePackageToolsAllowedName]
         )
         #expect(descriptors.map(\.name).contains("example.echo"))
 
@@ -241,6 +241,128 @@ struct SwiftFeatureRuntimeTests {
     }
 
     @Test
+    func featureScaffoldCreatesMCPBridgePackage() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-swift-feature-mcp-bridge-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: rootURL)
+        }
+        try FileManager.default.createDirectory(
+            at: rootURL,
+            withIntermediateDirectories: true
+        )
+
+        let runtime = SwiftFeatureRuntime(featureSearchRoots: [rootURL])
+        let scaffoldOutput = try await runtime.executeManagementTool(
+            toolCall: DirectAgentToolCall(
+                id: "feature-scaffold-mcp",
+                name: "feature.scaffold",
+                argumentsObject: [
+                    "id": "linear-mcp",
+                    "template": "mcp-bridge",
+                    "displayName": "Linear MCP",
+                    "serviceName": "Linear",
+                    "toolPrefix": "linear.",
+                    "endpointURL": "http://127.0.0.1:65535/mcp"
+                ],
+                argumentsJSON: "{}"
+            )
+        )
+        let scaffold = try JSONDecoder().decode(
+            SwiftFeatureScaffoldReport.self,
+            from: Data(scaffoldOutput.utf8)
+        )
+
+        let packageContents = try String(
+            contentsOf: URL(fileURLWithPath: scaffold.packagePath),
+            encoding: .utf8
+        )
+        let sourceContents = try String(
+            contentsOf: URL(fileURLWithPath: scaffold.sourcePath),
+            encoding: .utf8
+        )
+        let manifest = try JSONDecoder().decode(
+            SwiftFeatureManifest.self,
+            from: Data(
+                contentsOf: URL(fileURLWithPath: scaffold.manifestPath)
+            )
+        )
+
+        #expect(packageContents.components(separatedBy: .newlines).first == "// swift-tools-version: 6.3")
+        #expect(packageContents.contains(#".product(name: "MLXCoderCore", package: "mlx-server")"#))
+        #expect(sourceContents.contains("RemoteMCPToolExecutor"))
+        #expect(sourceContents.contains("http://127.0.0.1:65535/mcp"))
+        #expect(manifest.discoversToolsAtRuntime)
+        #expect(manifest.toolNamePrefixes == ["linear."])
+        #expect(manifest.tools.isEmpty)
+
+        let validateOutput = try await runtime.executeManagementTool(
+            toolCall: DirectAgentToolCall(
+                id: "feature-validate-mcp",
+                name: "feature.validate",
+                argumentsObject: ["id": "linear-mcp"],
+                argumentsJSON: #"{"id":"linear-mcp"}"#
+            )
+        )
+        let validation = try JSONDecoder().decode(
+            SwiftFeatureValidationReport.self,
+            from: Data(validateOutput.utf8)
+        )
+        #expect(validation.ok)
+
+        let buildOutput = try await runtime.executeManagementTool(
+            toolCall: DirectAgentToolCall(
+                id: "feature-build-mcp",
+                name: "feature.build",
+                argumentsObject: [
+                    "id": "linear-mcp",
+                    "timeoutSeconds": 120
+                ],
+                argumentsJSON: "{}"
+            )
+        )
+        let build = try JSONDecoder().decode(
+            SwiftFeatureBuildReport.self,
+            from: Data(buildOutput.utf8)
+        )
+        #expect(build.ok)
+        #expect(FileManager.default.isExecutableFile(atPath: build.executablePath))
+    }
+
+    @Test
+    func featureScaffoldRejectsPathsOutsideGeneratedFeatureRoot() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-swift-feature-scaffold-root-\(UUID().uuidString)", isDirectory: true)
+        let outsideURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-swift-feature-scaffold-outside-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: rootURL)
+            try? FileManager.default.removeItem(at: outsideURL)
+        }
+
+        let runtime = SwiftFeatureRuntime(featureSearchRoots: [rootURL])
+
+        do {
+            _ = try await runtime.executeManagementTool(
+                toolCall: DirectAgentToolCall(
+                    id: "feature-scaffold-outside",
+                    name: "feature.scaffold",
+                    argumentsObject: [
+                        "id": "outside-feature",
+                        "toolName": "outside.echo",
+                        "path": outsideURL.path
+                    ],
+                    argumentsJSON: "{}"
+                )
+            )
+            Issue.record("feature.scaffold unexpectedly allowed a path outside the generated feature root.")
+        } catch {
+            #expect(error.localizedDescription.contains("feature.scaffold can only create packages"))
+            #expect(!FileManager.default.fileExists(atPath: outsideURL.path))
+        }
+    }
+
+    @Test
     func featureInstallCopiesBuildsAndEnablesExternalFeature() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("mlx-swift-feature-install-root-\(UUID().uuidString)", isDirectory: true)
@@ -252,25 +374,26 @@ struct SwiftFeatureRuntimeTests {
         }
 
         let runtime = SwiftFeatureRuntime(featureSearchRoots: [rootURL])
-        _ = try await runtime.executeManagementTool(
+        let sourceRuntime = SwiftFeatureRuntime(featureSearchRoots: [sourceURL])
+        _ = try await sourceRuntime.executeManagementTool(
             toolCall: DirectAgentToolCall(
                 id: "feature-install-scaffold",
                 name: "feature.scaffold",
                 argumentsObject: [
                     "id": "install-feature",
-                    "toolName": "installed.echo",
-                    "path": sourceURL.path
+                    "toolName": "installed.echo"
                 ],
                 argumentsJSON: "{}"
             )
         )
+        let sourceFeatureURL = sourceURL.appendingPathComponent("install-feature", isDirectory: true)
 
         let installOutput = try await runtime.executeManagementTool(
             toolCall: DirectAgentToolCall(
                 id: "feature-install",
                 name: "feature.install",
                 argumentsObject: [
-                    "path": sourceURL.path
+                    "path": sourceFeatureURL.path
                 ],
                 argumentsJSON: "{}"
             )
@@ -288,7 +411,7 @@ struct SwiftFeatureRuntimeTests {
         #expect(FileManager.default.fileExists(atPath: install.manifestPath))
 
         let descriptors = await runtime.descriptors(
-            allowedToolNames: [SwiftFeatureRuntime.generatedFeatureToolsAllowedName]
+            allowedToolNames: [SwiftFeatureRuntime.featurePackageToolsAllowedName]
         )
         #expect(descriptors.contains { $0.name == "installed.echo" })
 
@@ -412,7 +535,7 @@ struct SwiftFeatureRuntimeTests {
 
         let runtime = SwiftFeatureRuntime(featureSearchRoots: [rootURL])
         let disabledDescriptors = await runtime.descriptors(
-            allowedToolNames: [SwiftFeatureRuntime.generatedFeatureToolsAllowedName]
+            allowedToolNames: [SwiftFeatureRuntime.featurePackageToolsAllowedName]
         )
         #expect(!disabledDescriptors.map(\.name).contains("generated.echo"))
 
@@ -442,7 +565,7 @@ struct SwiftFeatureRuntimeTests {
         #expect(enabledRecords.first?.manifestEnabled == true)
 
         let enabledDescriptors = await runtime.descriptors(
-            allowedToolNames: [SwiftFeatureRuntime.generatedFeatureToolsAllowedName]
+            allowedToolNames: [SwiftFeatureRuntime.featurePackageToolsAllowedName]
         )
         #expect(enabledDescriptors.map(\.name).contains("generated.echo"))
 
@@ -658,7 +781,7 @@ struct SwiftFeatureRuntimeTests {
     }
 
     @Test
-    func directToolExecutorAllowsGeneratedFeatureToolsWithFeatureGroupToken() async throws {
+    func directToolExecutorAllowsFeaturePackageToolsWithFeatureGroupToken() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("mlx-swift-feature-generated-token-\(UUID().uuidString)", isDirectory: true)
         defer {
@@ -692,6 +815,18 @@ struct SwiftFeatureRuntimeTests {
                         )
                     ],
                     source: .generated
+                ),
+                SwiftFeatureBundle(
+                    id: "bundled-token-fixture",
+                    executableURL: executableURL,
+                    tools: [
+                        ToolDescriptor(
+                            name: "bundled.token",
+                            description: "Bundled token fixture",
+                            inputSchema: #"{"type":"object","properties":{}}"#
+                        )
+                    ],
+                    source: .bundled
                 )
             ]
         )
@@ -702,11 +837,12 @@ struct SwiftFeatureRuntimeTests {
         )
 
         let descriptors = await executor.descriptors(
-            allowedToolNames: [SwiftFeatureRuntime.generatedFeatureToolsAllowedName]
+            allowedToolNames: [SwiftFeatureRuntime.featurePackageToolsAllowedName]
         )
         #expect(descriptors.map(\.name).contains("generated.token"))
+        #expect(descriptors.map(\.name).contains("bundled.token"))
 
-        let result = await executor.execute(
+        let generatedResult = await executor.execute(
             sessionID: "test-session",
             toolCall: DirectAgentToolCall(
                 id: "generated-token-call",
@@ -715,10 +851,22 @@ struct SwiftFeatureRuntimeTests {
                 argumentsJSON: "{}"
             ),
             workingDirectory: rootURL,
-            allowedToolNames: [SwiftFeatureRuntime.generatedFeatureToolsAllowedName]
+            allowedToolNames: [SwiftFeatureRuntime.featurePackageToolsAllowedName]
+        )
+        let bundledResult = await executor.execute(
+            sessionID: "test-session",
+            toolCall: DirectAgentToolCall(
+                id: "bundled-token-call",
+                name: "bundled.token",
+                argumentsObject: [:],
+                argumentsJSON: "{}"
+            ),
+            workingDirectory: rootURL,
+            allowedToolNames: [SwiftFeatureRuntime.featurePackageToolsAllowedName]
         )
 
-        #expect(result.output == "generated-token-output")
+        #expect(generatedResult.output == "generated-token-output")
+        #expect(bundledResult.output == "generated-token-output")
     }
 
     @Test
@@ -932,6 +1080,84 @@ struct SwiftFeatureRuntimeTests {
         #expect(result.output.contains("Git command cancelled."))
         #expect(!result.output.contains("feature-git-commit"))
     }
+
+    @Test
+    func scriptedModelGeneratesBuildsEnablesAndUsesFeature() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-swift-feature-scripted-model-\(UUID().uuidString)", isDirectory: true)
+        let workspaceURL = rootURL.appendingPathComponent("workspace", isDirectory: true)
+        let featureRootURL = rootURL.appendingPathComponent("features", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: rootURL)
+        }
+        try FileManager.default.createDirectory(
+            at: workspaceURL,
+            withIntermediateDirectories: true
+        )
+
+        let runtime = SwiftFeatureRuntime(featureSearchRoots: [featureRootURL])
+        let executor = DirectToolExecutor(
+            outputLimit: 200_000,
+            swiftFeatureRuntime: runtime,
+            subAgentBackendFactory: { TestAgentRuntimeBackend() }
+        )
+        let scriptedModel = ScriptedFeatureAuthoringModelBackend(
+            toolExecutor: executor
+        )
+        let runner = AgentCoreSessionRunner(
+            backendFactory: { _, _ in scriptedModel }
+        )
+        let recorder = DirectAgentEventRecorder()
+        let configuration = AgentCoreSessionConfiguration(
+            sessionID: "scripted-model-feature-test",
+            modelID: "scripted-model",
+            workingDirectory: workspaceURL,
+            systemPrompt: MLXSystemPromptBuilder.defaultAgentInstructions(),
+            cacheKey: nil,
+            history: [],
+            allowedToolNames: [
+                "feature.scaffold",
+                "feature.validate",
+                "feature.build",
+                "feature.enable",
+                "local.replace",
+                SwiftFeatureRuntime.featurePackageToolsAllowedName
+            ],
+            maxToolRounds: 20
+        )
+
+        let response = try await runner.sendPrompt(
+            configuration: configuration,
+            prompt: "Genera una feature Swift riusabile che inverta il testo e usala con la parola desserts.",
+            attachments: [],
+            onEvent: { event in
+                await recorder.record(event)
+            }
+        )
+
+        let toolNames = await recorder.startedToolNames()
+        let reverseOutput = await recorder.completedOutput(for: "scripted.reverse")
+        let packageURL = featureRootURL
+            .appendingPathComponent("scripted-reverse", isDirectory: true)
+            .appendingPathComponent("Package.swift")
+        let packageFirstLine = try String(
+            contentsOf: packageURL,
+            encoding: .utf8
+        ).components(separatedBy: .newlines).first
+
+        #expect(response.text.contains("scripted.reverse"))
+        #expect(response.text.contains("stressed"))
+        #expect(toolNames == [
+            "feature.scaffold",
+            "local.replace",
+            "feature.validate",
+            "feature.build",
+            "feature.enable",
+            "scripted.reverse"
+        ])
+        #expect(reverseOutput == "stressed")
+        #expect(packageFirstLine == "// swift-tools-version: 6.3")
+    }
 }
 
 private actor TestAgentRuntimeBackend: AgentRuntimeBackend {
@@ -986,5 +1212,266 @@ private actor TestAgentRuntimeBackend: AgentRuntimeBackend {
         onEvent _: @escaping @Sendable (DirectAgentEvent) async -> Void
     ) async throws -> DirectAgentResponse {
         DirectAgentResponse(text: "", stopReason: "end_turn", modelID: "test")
+    }
+}
+
+private actor ScriptedFeatureAuthoringModelBackend: AgentRuntimeBackend {
+    private struct Session {
+        let cwd: URL
+        var allowedToolNames: Set<String>?
+    }
+
+    private let toolExecutor: DirectToolExecutor
+    private var sessions: [String: Session] = [:]
+
+    init(toolExecutor: DirectToolExecutor) {
+        self.toolExecutor = toolExecutor
+    }
+
+    func createSession(
+        id: String,
+        cwd: String,
+        systemPrompt _: String?,
+        history _: [AgentRuntimeMessage],
+        cacheKey _: String?,
+        allowedToolNames: Set<String>?,
+        thinkingSelection _: AgentThinkingSelection?,
+        preserveThinking _: Bool
+    ) {
+        sessions[id] = Session(
+            cwd: URL(fileURLWithPath: cwd),
+            allowedToolNames: allowedToolNames
+        )
+    }
+
+    func createSessionIfNeeded(
+        id: String,
+        cwd: String,
+        systemPrompt: String?,
+        history: [AgentRuntimeMessage],
+        cacheKey: String?,
+        allowedToolNames: Set<String>?,
+        thinkingSelection: AgentThinkingSelection?,
+        preserveThinking: Bool
+    ) {
+        if sessions[id] == nil {
+            createSession(
+                id: id,
+                cwd: cwd,
+                systemPrompt: systemPrompt,
+                history: history,
+                cacheKey: cacheKey,
+                allowedToolNames: allowedToolNames,
+                thinkingSelection: thinkingSelection,
+                preserveThinking: preserveThinking
+            )
+        }
+    }
+
+    func updateSessionOptions(
+        id: String,
+        systemPrompt _: String?,
+        allowedToolNames: Set<String>?,
+        thinkingSelection _: AgentThinkingSelection?,
+        preserveThinking _: Bool
+    ) {
+        guard var session = sessions[id] else {
+            return
+        }
+        session.allowedToolNames = allowedToolNames
+        sessions[id] = session
+    }
+
+    func closeSession(id: String) {
+        sessions[id] = nil
+    }
+
+    func shutdown() async {}
+
+    func preloadModel(
+        onEvent _: @escaping @Sendable (DirectAgentEvent) async -> Void
+    ) async throws -> String {
+        "scripted-model"
+    }
+
+    func activeToolDescriptors() async -> [DirectToolDescriptor] {
+        await toolExecutor.descriptors()
+    }
+
+    func subAgentSnapshots() async -> [DirectSubAgentRuntime.AgentSnapshot] {
+        []
+    }
+
+    func sendPrompt(
+        sessionID: String,
+        prompt: String,
+        attachments _: [AgentRuntimeAttachment],
+        onEvent: @escaping @Sendable (DirectAgentEvent) async -> Void
+    ) async throws -> DirectAgentResponse {
+        guard let session = sessions[sessionID] else {
+            throw ScriptedFeatureAuthoringModelError.missingSession
+        }
+        guard prompt.localizedCaseInsensitiveContains("feature") else {
+            throw ScriptedFeatureAuthoringModelError.unexpectedPrompt(prompt)
+        }
+
+        func callTool(
+            id: Int,
+            _ name: String,
+            arguments: [String: Any]
+        ) async throws -> String {
+            let toolCall = DirectAgentToolCall(
+                id: "scripted-feature-tool-\(id)",
+                name: name,
+                argumentsObject: arguments,
+                argumentsJSON: try Self.jsonString(from: arguments)
+            )
+            await onEvent(.toolCallStarted(toolCall))
+            let result = await toolExecutor.execute(
+                sessionID: sessionID,
+                toolCall: toolCall,
+                workingDirectory: session.cwd,
+                allowedToolNames: session.allowedToolNames
+            )
+            await onEvent(.toolCallCompleted(toolCall, result))
+            if result.output.hasPrefix("Tool error:") {
+                throw ScriptedFeatureAuthoringModelError.toolFailed(name, result.output)
+            }
+            return result.output
+        }
+
+        let scaffoldOutput = try await callTool(
+            id: 1,
+            "feature.scaffold",
+            arguments: [
+                "id": "scripted-reverse",
+                "toolName": "scripted.reverse"
+            ]
+        )
+        let scaffold = try JSONDecoder().decode(
+            SwiftFeatureScaffoldReport.self,
+            from: Data(scaffoldOutput.utf8)
+        )
+        _ = try await callTool(
+            id: 2,
+            "local.replace",
+            arguments: [
+                "path": scaffold.sourcePath,
+                "oldString": #"return input.text ?? """#,
+                "newString": #"return String((input.text ?? "").reversed())"#
+            ]
+        )
+
+        let validationOutput = try await callTool(
+            id: 3,
+            "feature.validate",
+            arguments: [
+                "id": "scripted-reverse"
+            ]
+        )
+        let validation = try JSONDecoder().decode(
+            SwiftFeatureValidationReport.self,
+            from: Data(validationOutput.utf8)
+        )
+        guard validation.ok else {
+            throw ScriptedFeatureAuthoringModelError.validationFailed(validation.errors)
+        }
+
+        let buildOutput = try await callTool(
+            id: 4,
+            "feature.build",
+            arguments: [
+                "id": "scripted-reverse"
+            ]
+        )
+        let build = try JSONDecoder().decode(
+            SwiftFeatureBuildReport.self,
+            from: Data(buildOutput.utf8)
+        )
+        guard build.ok else {
+            throw ScriptedFeatureAuthoringModelError.buildFailed(build.stderr)
+        }
+
+        _ = try await callTool(
+            id: 5,
+            "feature.enable",
+            arguments: [
+                "id": "scripted-reverse"
+            ]
+        )
+        let reverseOutput = try await callTool(
+            id: 6,
+            "scripted.reverse",
+            arguments: [
+                "text": "desserts"
+            ]
+        )
+        guard reverseOutput == "stressed" else {
+            throw ScriptedFeatureAuthoringModelError.unexpectedToolOutput(reverseOutput)
+        }
+
+        return DirectAgentResponse(
+            text: "Generated feature scripted.reverse returned \(reverseOutput).",
+            stopReason: "end_turn",
+            modelID: "scripted-model"
+        )
+    }
+
+    private static func jsonString(from object: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        )
+        return String(data: data, encoding: .utf8) ?? "{}"
+    }
+}
+
+private enum ScriptedFeatureAuthoringModelError: LocalizedError {
+    case missingSession
+    case unexpectedPrompt(String)
+    case toolFailed(String, String)
+    case validationFailed([String])
+    case buildFailed(String)
+    case unexpectedToolOutput(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingSession:
+            return "The scripted feature authoring model has no active session."
+        case let .unexpectedPrompt(prompt):
+            return "The scripted feature authoring model received an unexpected prompt: \(prompt)"
+        case let .toolFailed(name, output):
+            return "Tool \(name) failed during scripted feature authoring: \(output)"
+        case let .validationFailed(errors):
+            return "Generated feature validation failed: \(errors.joined(separator: "\n"))"
+        case let .buildFailed(stderr):
+            return "Generated feature build failed: \(stderr)"
+        case let .unexpectedToolOutput(output):
+            return "Generated feature returned unexpected output: \(output)"
+        }
+    }
+}
+
+private actor DirectAgentEventRecorder {
+    private var startedNames: [String] = []
+    private var completedOutputsByName: [String: String] = [:]
+
+    func record(_ event: DirectAgentEvent) {
+        switch event {
+        case let .toolCallStarted(toolCall):
+            startedNames.append(toolCall.name)
+        case let .toolCallCompleted(toolCall, result):
+            completedOutputsByName[toolCall.name] = result.output
+        default:
+            break
+        }
+    }
+
+    func startedToolNames() -> [String] {
+        startedNames
+    }
+
+    func completedOutput(for toolName: String) -> String? {
+        completedOutputsByName[toolName]
     }
 }

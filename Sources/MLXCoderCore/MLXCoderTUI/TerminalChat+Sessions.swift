@@ -85,7 +85,7 @@ extension TerminalChat {
             modelID: currentEffectiveModelID(),
             agentID: selectedAgent?.id,
             agentName: selectedAgent?.name,
-            selectedToolGroups: Self.selectedToolGroupNames(selectedToolGroups),
+            selectedTools: Self.selectedToolSelectionNames(selectedToolKeys),
             selectedSkillIDs: selectedSkillIDs.sorted(),
             thinkingSelection: currentAgentThinkingSelection()?.rawValue,
             systemPrompt: snapshot.systemPrompt,
@@ -120,7 +120,11 @@ extension TerminalChat {
         } else {
             selectedAgent = nil
         }
-        selectedToolGroups = Self.toolGroups(from: savedSession.selectedToolGroups)
+        let items = await toolSelectionItems()
+        selectedToolKeys = Self.toolSelectionKeys(
+            from: savedSession.selectedTools,
+            items: items
+        )
         selectedSkillIDs = Set(savedSession.selectedSkillIDs)
 
         await ensureWorkspaceAccessIfNeeded()
@@ -197,18 +201,10 @@ extension TerminalChat {
         "Usage: /sessions [session name]\n"
     }
 
-    public static func selectedToolGroupNames(
-        _ selectedToolGroups: Set<TerminalToolGroup>
+    public static func selectedToolSelectionNames(
+        _ selectedToolKeys: Set<String>
     ) -> [String] {
-        TerminalToolGroup.allCases
-            .filter { selectedToolGroups.contains($0) }
-            .map(\.rawValue)
-    }
-
-    public static func toolGroups(
-        from rawValues: [String]
-    ) -> Set<TerminalToolGroup> {
-        Set(rawValues.compactMap(TerminalToolGroup.group(named:)))
+        selectedToolKeys.sorted()
     }
 
     public static func savedSessionCacheKey(

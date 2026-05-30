@@ -22,14 +22,18 @@ extension TerminalChat {
                 return
             }
 
-            let selectedGroups = TerminalCheckboxMenu.select(
-                title: "Tool groups",
-                items: Self.toolCheckboxItems(),
-                selected: selectedToolGroups,
+            let items = await toolSelectionItems()
+            let selectedKeys = TerminalCheckboxMenu.select(
+                title: "Tools",
+                items: Self.toolCheckboxItems(items: items),
+                selected: TerminalToolSelectionCatalog.normalizedSelectionKeys(
+                    selectedToolKeys,
+                    items: items
+                ),
                 reservedBottomRows: statusBar.reservedRowsForOverlay()
             )
-            if let selectedGroups {
-                await applyToolSelection(selectedGroups)
+            if let selectedKeys {
+                await applyToolSelection(selectedKeys)
             } else {
                 await printToolSelectionStatus()
             }
@@ -41,28 +45,38 @@ extension TerminalChat {
 
     public func applyToolSelection(_ rawSelection: String) async {
         do {
-            let selectedGroups = try Self.parseToolSelection(rawSelection)
-            await applyToolSelection(selectedGroups)
+            let items = await toolSelectionItems()
+            let selectedKeys = try Self.parseToolSelection(
+                rawSelection,
+                items: items
+            )
+            await applyToolSelection(selectedKeys)
         } catch {
             writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
             writeSystemMessage(Self.renderToolSelectionUsage())
         }
     }
 
-    public func applyToolSelection(_ selectedGroups: Set<TerminalToolGroup>) async {
-        let previousGroups = selectedToolGroups
-        selectedToolGroups = selectedGroups
+    public func applyToolSelection(_ selectedKeys: Set<String>) async {
+        let previousKeys = selectedToolKeys
+        let items = await toolSelectionItems()
+        selectedToolKeys = TerminalToolSelectionCatalog.normalizedSelectionKeys(
+            selectedKeys,
+            items: items
+        )
         activeSessionSystemPromptOverride = nil
         await ensureWorkspaceAccessIfNeeded()
         let shouldDiscoverExternalTools = Self.shouldDiscoverExternalTools(
-            previousGroups: previousGroups,
-            selectedGroups: selectedToolGroups
+            previousKeys: previousKeys,
+            selectedKeys: selectedToolKeys,
+            items: items
         )
         let allowedToolNames = await updateCurrentSessionToolOptions(
             discoverExternalTools: shouldDiscoverExternalTools
         )
-        writeSystemMessage(Self.renderSelectedToolGroups(selectedToolGroups))
-        writeSystemMessage(Self.renderActiveTools(Array(allowedToolNames)))
+        let renderItems = await toolSelectionItems()
+        writeSystemMessage(Self.renderSelectedTools(selectedToolKeys, items: renderItems))
+        writeSystemMessage(Self.renderActiveTools(Array(allowedToolNames), items: renderItems, selectedKeys: selectedToolKeys))
         didPrintActiveTools = true
     }
 
@@ -70,71 +84,94 @@ extension TerminalChat {
         let allowedToolNames = await selectedAllowedToolNames(
             discoverExternalTools: false
         )
-        writeSystemMessage(Self.renderSelectedToolGroups(selectedToolGroups))
-        writeSystemMessage(Self.renderActiveTools(Array(allowedToolNames)))
+        let items = await toolSelectionItems()
+        writeSystemMessage(Self.renderSelectedTools(selectedToolKeys, items: items))
+        writeSystemMessage(Self.renderActiveTools(Array(allowedToolNames), items: items, selectedKeys: selectedToolKeys))
     }
 
     public static func shouldDiscoverExternalTools(
-        previousGroups: Set<TerminalToolGroup>,
-        selectedGroups: Set<TerminalToolGroup>
+        previousKeys: Set<String>,
+        selectedKeys: Set<String>,
+        items: [TerminalToolSelectionItem]
     ) -> Bool {
-        let externalGroups: Set<TerminalToolGroup> = [.xcode, .figma]
-        let newlySelectedExternalGroups = selectedGroups
-            .intersection(externalGroups)
-            .subtracting(previousGroups)
-        return !newlySelectedExternalGroups.isEmpty
+        let previousPrefixes = TerminalToolSelectionCatalog.externalDiscoveryPrefixes(
+            for: previousKeys,
+            items: items
+        )
+        let selectedPrefixes = TerminalToolSelectionCatalog.externalDiscoveryPrefixes(
+            for: selectedKeys,
+            items: items
+        )
+        return !selectedPrefixes.subtracting(previousPrefixes).isEmpty
     }
 
-    public static func toolCheckboxItems() -> [TerminalCheckboxMenuItem<TerminalToolGroup>] {
-        TerminalToolGroup.allCases.map { group in
+    public static func toolCheckboxItems(
+        items: [TerminalToolSelectionItem]
+    ) -> [TerminalCheckboxMenuItem<String>] {
+        items.map { item in
             TerminalCheckboxMenuItem(
-                value: group,
-                title: group.displayTitle,
-                detail: group.description
+                value: item.key,
+                title: item.title,
+                detail: item.detail,
+                groupTitle: item.groupTitle
             )
         }
     }
 
-    public static func parseToolSelection(_ rawSelection: String) throws -> Set<TerminalToolGroup> {
-        let tokens = rawSelection
-            .replacingOccurrences(of: ",", with: " ")
-            .split { $0.isWhitespace }
-            .map(String.init)
-
-        guard !tokens.isEmpty else {
-            return []
-        }
-
-        if tokens.count == 1 {
-            let normalizedToken = tokens[0].lowercased()
-            if normalizedToken == "all" {
-                return Set(TerminalToolGroup.allCases)
-            }
-            if ["none", "off", "clear", "disabled"].contains(normalizedToken) {
-                return []
-            }
-        }
-
-        var groups = Set<TerminalToolGroup>()
-        for token in tokens {
-            if let index = Int(token),
-               TerminalToolGroup.allCases.indices.contains(index - 1) {
-                groups.insert(TerminalToolGroup.allCases[index - 1])
-                continue
-            }
-            guard let group = TerminalToolGroup.group(named: token) else {
-                throw TerminalToolSelectionError.unknownToken(token)
-            }
-            groups.insert(group)
-        }
-        return groups
+    public static func parseToolSelection(
+        _ rawSelection: String,
+        items: [TerminalToolSelectionItem]
+    ) throws -> Set<String> {
+        try TerminalToolSelectionCatalog.parseSelection(
+            rawSelection,
+            items: items
+        )
     }
 
-    public func applyInitialAgentSelectionIfNeeded() {
+    public func toolSelectionItems(
+        additionalDescriptors: [DirectToolDescriptor] = []
+    ) async -> [TerminalToolSelectionItem] {
+        let featureStatuses = await SwiftFeatureRuntime().featureStatuses(
+            includeTools: true,
+            includeDisabled: true
+        )
+        return Self.toolSelectionItems(
+            featureStatuses: featureStatuses,
+            additionalDescriptors: additionalDescriptors
+        )
+    }
+
+    public static func toolSelectionItems(
+        featureStatuses: [SwiftFeatureStatus],
+        additionalDescriptors: [DirectToolDescriptor] = []
+    ) -> [TerminalToolSelectionItem] {
+        TerminalToolSelectionCatalog.items(
+            featureStatuses: featureStatuses,
+            additionalDescriptors: additionalDescriptors
+        )
+    }
+
+    public static func toolSelectionKeys(
+        from rawValues: [String],
+        items: [TerminalToolSelectionItem]
+    ) -> Set<String> {
+        var selectedKeys = Set<String>()
+        for rawValue in rawValues {
+            selectedKeys.formUnion(
+                TerminalToolSelectionCatalog.selectionKeys(
+                    for: rawValue,
+                    items: items
+                )
+            )
+        }
+        return selectedKeys
+    }
+
+    public func applyInitialAgentSelectionIfNeeded() async {
         guard let selectedAgent else {
             return
         }
-        applyAgentProfile(selectedAgent)
+        await applyAgentProfile(selectedAgent)
     }
 
     public func applyInitialSkillSelectionIfNeeded() throws {

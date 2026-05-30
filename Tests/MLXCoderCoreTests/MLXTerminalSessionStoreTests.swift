@@ -92,7 +92,10 @@ struct MLXTerminalSessionStoreTests {
             modelID: "model-test",
             agentID: "default",
             agentName: "Default",
-            selectedToolGroups: ["bash", "git"],
+            selectedTools: [
+                "shell",
+                TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-git-tools")
+            ],
             selectedSkillIDs: ["skill-a"],
             thinkingSelection: "on",
             systemPrompt: "System",

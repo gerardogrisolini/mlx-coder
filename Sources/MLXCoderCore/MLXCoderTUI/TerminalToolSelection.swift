@@ -31,133 +31,483 @@ public enum TerminalChatError: LocalizedError {
     }
 }
 
-public enum TerminalToolGroup: String, CaseIterable, Hashable, Sendable {
-    case shell
-    case files
-    case search
-    case text
-    case git
-    case features
-    case memory
-    case web
-    case orchestration
-    case xcode
-    case figma
+public struct TerminalToolSelectionItem: Hashable, Sendable {
+    public let key: String
+    public let title: String
+    public let detail: String?
+    public let groupTitle: String?
+    public let allowedToolNames: Set<String>
+    public let aliases: Set<String>
+    public let requiresWorkspaceAccess: Bool
+    public let externalDiscoveryPrefixes: Set<String>
 
-    public var displayTitle: String {
-        switch self {
-        case .shell:
-            return "Shell"
-        case .files:
-            return "Files"
-        case .search:
-            return "Search"
-        case .text:
-            return "Text"
-        case .git:
-            return "Git"
-        case .features:
-            return "Features"
-        case .memory:
-            return "Memory"
-        case .web:
-            return "Web"
-        case .orchestration:
-            return "Sub-Agents"
-        case .xcode:
-            return "Xcode"
-        case .figma:
-            return "Figma"
-        }
-    }
-
-    public var description: String {
-        switch self {
-        case .shell:
-            return "local shell command execution"
-        case .files:
-            return "local file reads, writes, edits, and moves"
-        case .search:
-            return "local glob and grep search"
-        case .text:
-            return "local text utilities"
-        case .git:
-            return "git status, history, branches, staging, and commits"
-        case .features:
-            return "kernel feature management and generated Swift feature tools"
-        case .memory:
-            return "memory notes and session todo list"
-        case .web:
-            return "web tools when provided by the runtime"
-        case .orchestration:
-            return "delegated sub-agents and orchestration tasks"
-        case .xcode:
-            return "Xcode MCP tools"
-        case .figma:
-            return "Figma MCP tools"
-        }
-    }
-
-    public static func group(named rawName: String) -> TerminalToolGroup? {
-        let normalizedName = rawName
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        switch normalizedName {
-        case "bash", "shell", "sh", "zsh", "exec":
-            return .shell
-        case "files", "file", "local", "filesystem", "fs":
-            return .files
-        case "search", "grep", "glob":
-            return .search
-        case "text", "txt":
-            return .text
-        case "git":
-            return .git
-        case "features", "feature", "kernel":
-            return .features
-        case "memory", "mem", "remember", "todo", "todos":
-            return .memory
-        case "web", "browser":
-            return .web
-        case "orchestration", "agents", "agent", "subagents", "sub-agents", "tasks", "task":
-            return .orchestration
-        case "xcode":
-            return .xcode
-        case "figma":
-            return .figma
-        default:
-            return nil
-        }
+    public init(
+        key: String,
+        title: String,
+        detail: String?,
+        groupTitle: String?,
+        allowedToolNames: Set<String>,
+        aliases: Set<String> = [],
+        requiresWorkspaceAccess: Bool = false,
+        externalDiscoveryPrefixes: Set<String> = []
+    ) {
+        self.key = key
+        self.title = title
+        self.detail = detail
+        self.groupTitle = groupTitle
+        self.allowedToolNames = allowedToolNames
+        self.aliases = aliases
+        self.requiresWorkspaceAccess = requiresWorkspaceAccess
+        self.externalDiscoveryPrefixes = externalDiscoveryPrefixes
     }
 
     public func allows(toolName: String) -> Bool {
-        switch self {
-        case .shell:
-            return toolName == "local.exec"
-        case .files:
-            return toolName.hasPrefix("local.")
-                && toolName != "local.exec"
-        case .search:
-            return toolName.hasPrefix("search.")
-        case .text:
-            return toolName.hasPrefix("text.")
-        case .git:
-            return toolName.hasPrefix("git.")
-        case .features:
-            return toolName.hasPrefix("feature.")
-        case .memory:
-            return toolName.hasPrefix("memory.")
-                || toolName.hasPrefix("todo.")
-        case .web:
-            return toolName.hasPrefix("web.")
-        case .orchestration:
-            return toolName.hasPrefix("agent.")
-                || toolName.hasPrefix("task.")
-        case .xcode:
-            return DirectMCPToolRuntime.isXcodeToolName(toolName)
-        case .figma:
-            return toolName.hasPrefix("figma.")
+        DirectToolExecutor.isAllowed(
+            toolName,
+            allowedToolNames: allowedToolNames
+        )
+    }
+}
+
+public enum TerminalToolSelectionCatalog {
+    public static let featureBuilderKey = "feature.builder"
+    public static let featurePackageKeyPrefix = "feature:"
+
+    public static func featurePackageKey(id: String) -> String {
+        "\(featurePackageKeyPrefix)\(id)"
+    }
+
+    public static func items(
+        featureStatuses: [SwiftFeatureStatus],
+        additionalDescriptors: [DirectToolDescriptor] = []
+    ) -> [TerminalToolSelectionItem] {
+        let featureStatuses = mergedFeatureStatuses(
+            featureStatuses,
+            preconfiguredStatuses: preconfiguredFeatureSelectionStatuses(
+                additionalDescriptors: additionalDescriptors
+            )
+        )
+        return coreItems(additionalDescriptors: additionalDescriptors)
+            + featurePackageItems(featureStatuses: featureStatuses)
+    }
+
+    public static func allowedToolNames(
+        for selectedKeys: Set<String>,
+        items: [TerminalToolSelectionItem]
+    ) -> Set<String> {
+        let selectedKeys = normalizedSelectionKeys(selectedKeys, items: items)
+        guard !selectedKeys.isEmpty else {
+            return []
         }
+        return Set(
+            items
+                .filter { selectedKeys.contains($0.key) }
+                .flatMap(\.allowedToolNames)
+        )
+    }
+
+    public static func externalDiscoveryPrefixes(
+        for selectedKeys: Set<String>,
+        items: [TerminalToolSelectionItem]
+    ) -> Set<String> {
+        let selectedKeys = normalizedSelectionKeys(selectedKeys, items: items)
+        return Set(
+            items
+                .filter { selectedKeys.contains($0.key) }
+                .flatMap(\.externalDiscoveryPrefixes)
+        )
+    }
+
+    public static func workspaceAccessSelectionKeys(
+        for selectedKeys: Set<String>,
+        items: [TerminalToolSelectionItem]
+    ) -> Set<String> {
+        let selectedKeys = normalizedSelectionKeys(selectedKeys, items: items)
+        return Set(
+            items
+                .filter { selectedKeys.contains($0.key) && $0.requiresWorkspaceAccess }
+                .map(\.key)
+        )
+    }
+
+    public static func parseSelection(
+        _ rawSelection: String,
+        items: [TerminalToolSelectionItem]
+    ) throws -> Set<String> {
+        let tokens = rawSelection
+            .replacingOccurrences(of: ",", with: " ")
+            .split { $0.isWhitespace }
+            .map(String.init)
+
+        guard !tokens.isEmpty else {
+            return []
+        }
+
+        if tokens.count == 1 {
+            let normalizedToken = tokens[0].lowercased()
+            if normalizedToken == "all" {
+                return Set(items.map(\.key))
+            }
+            if ["none", "off", "clear", "disabled"].contains(normalizedToken) {
+                return []
+            }
+        }
+
+        var selectedKeys = Set<String>()
+        for token in tokens {
+            if let index = Int(token),
+               items.indices.contains(index - 1) {
+                selectedKeys.insert(items[index - 1].key)
+                continue
+            }
+            let matchedKeys = selectionKeys(for: token, items: items)
+            guard !matchedKeys.isEmpty else {
+                throw TerminalToolSelectionError.unknownToken(token)
+            }
+            selectedKeys.formUnion(matchedKeys)
+        }
+        return selectedKeys
+    }
+
+    public static func normalizedSelectionKeys(
+        _ rawKeys: Set<String>,
+        items: [TerminalToolSelectionItem]
+    ) -> Set<String> {
+        var normalizedKeys = Set<String>()
+        for rawKey in rawKeys {
+            let matchedKeys = selectionKeys(for: rawKey, items: items)
+            if matchedKeys.isEmpty {
+                normalizedKeys.insert(rawKey)
+            } else {
+                normalizedKeys.formUnion(matchedKeys)
+            }
+        }
+        return normalizedKeys
+    }
+
+    public static func selectedKeyNames(
+        _ selectedKeys: Set<String>,
+        items: [TerminalToolSelectionItem]
+    ) -> [String] {
+        let normalizedKeys = normalizedSelectionKeys(selectedKeys, items: items)
+        return items
+            .filter { normalizedKeys.contains($0.key) }
+            .map(\.key)
+    }
+
+    public static func selectionKeys(
+        for rawToken: String,
+        items: [TerminalToolSelectionItem]
+    ) -> Set<String> {
+        let trimmedToken = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedToken.isEmpty else {
+            return []
+        }
+        if items.contains(where: { $0.key == trimmedToken }) {
+            return [trimmedToken]
+        }
+
+        let token = normalizedLookupKey(trimmedToken)
+        guard !token.isEmpty else {
+            return []
+        }
+
+        return Set(
+            items.compactMap { item in
+                let lookupKeys = Set(
+                    ([item.key, item.title] + Array(item.aliases))
+                        .map(normalizedLookupKey)
+                )
+                if lookupKeys.contains(token)
+                    || item.key.lowercased().hasPrefix(trimmedToken.lowercased()) {
+                    return item.key
+                }
+                return nil
+            }
+        )
+    }
+
+    private static func coreItems(
+        additionalDescriptors: [DirectToolDescriptor]
+    ) -> [TerminalToolSelectionItem] {
+        let descriptors = AgentToolSelection.selectableDescriptors(
+            additionalDescriptors: additionalDescriptors
+        )
+        let descriptorNames = Set(descriptors.map(\.name))
+        let coreGroup = "Core"
+
+        return [
+            TerminalToolSelectionItem(
+                key: "shell",
+                title: "Shell",
+                detail: "local.exec",
+                groupTitle: coreGroup,
+                allowedToolNames: descriptorNames.filter { $0 == "local.exec" },
+                aliases: ["bash", "sh", "zsh", "exec"],
+                requiresWorkspaceAccess: true
+            ),
+            TerminalToolSelectionItem(
+                key: "files",
+                title: "Files",
+                detail: "local file reads, writes, edits, and moves",
+                groupTitle: coreGroup,
+                allowedToolNames: descriptorNames.filter {
+                    $0.hasPrefix("local.") && $0 != "local.exec"
+                },
+                aliases: ["file", "local", "filesystem", "fs"],
+                requiresWorkspaceAccess: true
+            ),
+            TerminalToolSelectionItem(
+                key: "text",
+                title: "Text",
+                detail: "local text utilities",
+                groupTitle: coreGroup,
+                allowedToolNames: descriptorNames.filter { $0.hasPrefix("text.") },
+                aliases: ["txt"],
+                requiresWorkspaceAccess: true
+            ),
+            TerminalToolSelectionItem(
+                key: "memory",
+                title: "Memory",
+                detail: "memory notes and session todo list",
+                groupTitle: coreGroup,
+                allowedToolNames: descriptorNames.filter {
+                    $0.hasPrefix("memory.") || $0.hasPrefix("todo.")
+                },
+                aliases: ["mem", "remember", "todo", "todos"],
+                requiresWorkspaceAccess: true
+            ),
+            TerminalToolSelectionItem(
+                key: "orchestration",
+                title: "Sub-Agents",
+                detail: "delegated sub-agents and orchestration tasks",
+                groupTitle: coreGroup,
+                allowedToolNames: descriptorNames.filter {
+                    $0.hasPrefix("agent.") || $0.hasPrefix("task.")
+                },
+                aliases: ["agents", "agent", "subagents", "sub-agents", "tasks", "task"]
+            ),
+            TerminalToolSelectionItem(
+                key: featureBuilderKey,
+                title: "Feature Builder",
+                detail: "create, build, install, validate, enable, disable, and reload Swift feature packages",
+                groupTitle: coreGroup,
+                allowedToolNames: descriptorNames.filter { $0.hasPrefix("feature.") },
+                aliases: ["features", "feature", "feature-manager", "kernel"]
+            )
+        ].filter { !$0.allowedToolNames.isEmpty }
+    }
+
+    private static func featurePackageItems(
+        featureStatuses: [SwiftFeatureStatus]
+    ) -> [TerminalToolSelectionItem] {
+        featureStatuses
+            .sorted { lhs, rhs in
+                featureTitle(lhs).localizedStandardCompare(featureTitle(rhs)) == .orderedAscending
+            }
+            .map { status in
+                let enabled = status.enabled && status.available
+                let allowedNames = enabled
+                    ? featurePackageAllowedNames(from: [status])
+                    : []
+                return TerminalToolSelectionItem(
+                    key: featurePackageKey(id: status.id),
+                    title: featureTitle(status),
+                    detail: featureDetail(status),
+                    groupTitle: "Feature Packages",
+                    allowedToolNames: allowedNames,
+                    aliases: featureAliases(status),
+                    requiresWorkspaceAccess: enabled && requiresWorkspaceAccess(featureStatus: status),
+                    externalDiscoveryPrefixes: enabled
+                        ? externalDiscoveryPrefixes(from: [status])
+                        : []
+                )
+            }
+    }
+
+    private static func preconfiguredFeatureSelectionStatuses(
+        additionalDescriptors: [DirectToolDescriptor]
+    ) -> [SwiftFeatureStatus] {
+        let descriptors = AgentToolSelection.selectableDescriptors(
+            additionalDescriptors: additionalDescriptors
+        )
+        return [
+            bundledFeatureSelectionStatus(
+                id: "mlx-search-tools",
+                tools: descriptors.filter { $0.name.hasPrefix("search.") }.map(\.name)
+            ),
+            bundledFeatureSelectionStatus(
+                id: "mlx-web-tools",
+                tools: descriptors.filter { $0.name.hasPrefix("web.") }.map(\.name)
+            ),
+            bundledFeatureSelectionStatus(
+                id: "mlx-git-tools",
+                tools: descriptors.filter { $0.name.hasPrefix("git.") }.map(\.name)
+            ),
+            bundledFeatureSelectionStatus(
+                id: "mlx-xcode-tools",
+                tools: descriptors.filter { $0.name.hasPrefix("xcode.") }.map(\.name),
+                toolNamePrefixes: ["xcode."]
+            ),
+            bundledFeatureSelectionStatus(
+                id: "mlx-figma-tools",
+                tools: descriptors.filter { $0.name.hasPrefix("figma.") }.map(\.name),
+                toolNamePrefixes: ["figma."]
+            )
+        ].filter { !$0.tools.isEmpty || !$0.toolNamePrefixes.isEmpty }
+    }
+
+    private static func bundledFeatureSelectionStatus(
+        id: String,
+        tools: [String],
+        toolNamePrefixes: [String] = []
+    ) -> SwiftFeatureStatus {
+        SwiftFeatureStatus(
+            id: id,
+            displayName: nil,
+            description: nil,
+            source: .bundled,
+            enabled: true,
+            available: true,
+            executablePath: "",
+            manifestPath: nil,
+            tools: tools,
+            toolNamePrefixes: toolNamePrefixes,
+            toolNameAliases: [],
+            discoversToolsAtRuntime: !toolNamePrefixes.isEmpty,
+            build: nil,
+            generated: nil,
+            issue: nil
+        )
+    }
+
+    private static func mergedFeatureStatuses(
+        _ statuses: [SwiftFeatureStatus],
+        preconfiguredStatuses: [SwiftFeatureStatus]
+    ) -> [SwiftFeatureStatus] {
+        var statusesByID = Dictionary(uniqueKeysWithValues: preconfiguredStatuses.map { ($0.id, $0) })
+        for status in statuses {
+            statusesByID[status.id] = status
+        }
+        return Array(statusesByID.values)
+    }
+
+    private static func featurePackageAllowedNames(
+        from statuses: [SwiftFeatureStatus]
+    ) -> Set<String> {
+        Set(
+            statuses.flatMap { status in
+                status.tools + status.toolNamePrefixes + status.toolNameAliases
+            }.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        )
+    }
+
+    private static func externalDiscoveryPrefixes(
+        from statuses: [SwiftFeatureStatus]
+    ) -> Set<String> {
+        Set(
+            statuses.flatMap(\.toolNamePrefixes).filter {
+                $0 == "xcode." || $0 == "figma."
+            }
+        )
+    }
+
+    private static func requiresWorkspaceAccess(
+        featureStatus status: SwiftFeatureStatus
+    ) -> Bool {
+        if status.source == .generated {
+            return true
+        }
+        let localPrefixes = ["local.", "search.", "git.", "text.", "memory.", "todo."]
+        return (status.tools + status.toolNamePrefixes).contains { name in
+            localPrefixes.contains { name.hasPrefix($0) }
+        }
+    }
+
+    private static func featureTitle(_ status: SwiftFeatureStatus) -> String {
+        if let displayName = status.displayName?.nilIfBlank {
+            return displayName
+        }
+        switch status.id {
+        case "mlx-search-tools":
+            return "Search"
+        case "mlx-web-tools":
+            return "Web"
+        case "mlx-git-tools":
+            return "Git"
+        case "mlx-xcode-tools":
+            return "Xcode"
+        case "mlx-figma-tools":
+            return "Figma"
+        default:
+            return status.id
+                .replacingOccurrences(of: "-", with: " ")
+                .replacingOccurrences(of: "_", with: " ")
+                .split(separator: " ")
+                .map { word in
+                    word.prefix(1).uppercased() + word.dropFirst()
+                }
+                .joined(separator: " ")
+        }
+    }
+
+    private static func featureDetail(_ status: SwiftFeatureStatus) -> String {
+        var parts: [String] = []
+        parts.append(status.source == .bundled ? "bundled Swift feature package" : "generated Swift feature package")
+        if !status.enabled {
+            parts.append("disabled")
+        } else if !status.available {
+            parts.append("unavailable")
+        }
+        if !status.tools.isEmpty {
+            let renderedTools = status.tools.prefix(4).joined(separator: ", ")
+            let suffix = status.tools.count > 4 ? ", ..." : ""
+            let toolLabel = status.tools.count == 1 ? "tool" : "tools"
+            parts.append("\(status.tools.count) \(toolLabel): \(renderedTools)\(suffix)")
+        } else if status.discoversToolsAtRuntime {
+            parts.append("discovers tools at runtime")
+        }
+        if let issue = status.issue?.nilIfBlank {
+            parts.append(issue)
+        }
+        return parts.joined(separator: "; ")
+    }
+
+    private static func featureAliases(_ status: SwiftFeatureStatus) -> Set<String> {
+        var aliases = Set<String>()
+        aliases.insert(status.id)
+        aliases.insert(featureTitle(status))
+        aliases.formUnion(status.tools)
+        aliases.formUnion(status.toolNamePrefixes)
+        aliases.formUnion(status.toolNameAliases)
+        switch status.id {
+        case "mlx-search-tools":
+            aliases.formUnion(["search", "grep", "glob"])
+        case "mlx-web-tools":
+            aliases.formUnion(["web", "browser"])
+        case "mlx-git-tools":
+            aliases.insert("git")
+        case "mlx-xcode-tools":
+            aliases.insert("xcode")
+        case "mlx-figma-tools":
+            aliases.insert("figma")
+        default:
+            break
+        }
+        return aliases
+    }
+
+    private static func normalizedLookupKey(_ value: String) -> String {
+        let foldedValue = value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive],
+            locale: .current
+        )
+        let characters = foldedValue.unicodeScalars.map { scalar -> Character in
+            CharacterSet.alphanumerics.contains(scalar) ? Character(String(scalar)) : "-"
+        }
+        return String(characters)
+            .replacingOccurrences(of: #"-+"#, with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
     }
 }
 
@@ -167,7 +517,7 @@ public enum TerminalToolSelectionError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case let .unknownToken(token):
-            return "Unknown tool group '\(token)'."
+            return "Unknown tool or package '\(token)'."
         }
     }
 }

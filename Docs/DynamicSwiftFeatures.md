@@ -31,8 +31,9 @@ The executable should use `MLXFeatureKit` and support:
 
 `MLXFeatureRunner.run(...)` already implements that process protocol for bundled
 features. Agent-generated scaffolds may also implement the same small protocol
-directly to stay dependency-free. Every generated `Package.swift` must start
-with:
+directly to stay dependency-free. The `mcp-bridge` scaffold intentionally adds a
+local package dependency on `mlx-server` so it can reuse the Swift MCP client.
+Every generated `Package.swift` must start with:
 
 ```swift
 // swift-tools-version: 6.3
@@ -106,7 +107,10 @@ Optional fields:
 - Bundled features are enabled or disabled through `~/.mlx-coder/feature-state.json`.
 - Generated features are enabled or disabled by updating their own `feature.json`.
 - `feature.reload` reloads manifests and clears runtime-discovered tool caches.
-- `feature.scaffold` creates a dependency-free Swift 6.3 SwiftPM package.
+- `feature.scaffold` creates a Swift 6.3 SwiftPM package under the generated
+  features root and rejects paths outside that root. The default scaffold is
+  dependency-free; `template: "mcp-bridge"` adds a local `mlx-server` dependency
+  for MCP client support.
 - `feature.validate` checks manifest shape, reserved tool names, duplicate names,
   executable state, and SwiftPM tools version.
 - `feature.build` runs `swift build -c release --product <product>` for SwiftPM
@@ -115,9 +119,10 @@ Optional fields:
   `~/.mlx-coder/features/<feature-id>`, skips transient folders such as `.build`,
   validates it, builds it by default, and enables it by default when the build
   succeeds.
-- The `features` tool group exposes `feature.*` commands plus the internal
-  `feature.tools` token, which allows generated feature tools without enabling
-  unrelated bundled groups such as `git.*`, `web.*`, or `search.*`.
+- The `/tools` picker lists feature packages alongside core tools. Bundled and
+  generated packages use the same selection path.
+- `Feature Builder` exposes the `feature.*` lifecycle commands used to create,
+  build, install, validate, enable/disable, and reload Swift feature packages.
 
 ## Agent Workflow
 
@@ -125,7 +130,8 @@ Agents should create generated features only for reusable missing capabilities,
 not for one-off shell commands or simple file edits. When a generated feature is
 appropriate, the lifecycle is:
 
-1. Call `feature.scaffold` with a stable feature id and tool name.
+1. Call `feature.scaffold` with a stable feature id and tool name, or with
+   `template: "mcp-bridge"` and a stable tool prefix for MCP services.
 2. Edit the generated Swift package under `~/.mlx-coder/features/<feature-id>`.
 3. Run `feature.validate` to catch manifest, naming, executable, and SwiftPM
    tools-version issues.
@@ -136,6 +142,12 @@ appropriate, the lifecycle is:
 If the package was generated or staged outside `~/.mlx-coder/features`, call
 `feature.install` with the source `path` instead. It performs the copy/build/
 enable flow and leaves the source package untouched.
+
+For MCP service integrations, call `feature.scaffold` with
+`template: "mcp-bridge"`, a stable `toolPrefix`, and either `endpointURL` for an
+HTTP MCP server or `executablePath` plus `arguments` for a stdio MCP server. The
+generated bridge uses `--list-tools` to discover the service tools at runtime
+and `--invoke <tool>` to forward model calls to the MCP service.
 
 Generated tool names must stay out of the reserved `feature.*` namespace and
 must never shadow core tools such as `local.exec`, `local.readFile`, or

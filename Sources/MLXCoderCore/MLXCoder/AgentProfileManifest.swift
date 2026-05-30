@@ -105,58 +105,30 @@ public struct AgentProfile: Codable, Hashable, Sendable {
     }
 
     public func allowedToolNames() -> Set<String> {
+        let items = TerminalToolSelectionCatalog.items(
+            featureStatuses: SwiftFeatureRuntime.defaultFeatureStatuses()
+        )
+        var selectedKeys = Set<String>()
         var allowedToolNames = Set<String>()
         for tool in tools {
-            switch tool.selectionKey {
-            case "bash", "shell", "sh", "zsh", "exec":
-                allowedToolNames.formUnion(
-                    baseToolNames {
-                        $0 == "local.exec"
-                    }
-                )
-            case "files", "file", "local", "filesystem", "fs":
-                allowedToolNames.formUnion(
-                    baseToolNames {
-                        $0.hasPrefix("local.")
-                            && $0 != "local.exec"
-                    }
-                )
-            case "search", "grep", "glob":
-                allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("search.") })
-            case "text", "txt":
-                allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("text.") })
-            case "git":
-                allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("git.") })
-            case "features", "feature", "kernel":
-                allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("feature.") })
-                allowedToolNames.insert(SwiftFeatureRuntime.generatedFeatureToolsAllowedName)
-            case "memory", "mem", "remember", "todo", "todos":
-                allowedToolNames.formUnion(
-                    baseToolNames {
-                        $0.hasPrefix("memory.")
-                            || $0.hasPrefix("todo.")
-                    }
-                )
-            case "web", "browser":
-                allowedToolNames.formUnion(baseToolNames { $0.hasPrefix("web.") })
-            case "orchestration", "agents", "agent", "subagents", "sub-agents", "tasks", "task":
-                allowedToolNames.formUnion(
-                    baseToolNames {
-                        $0.hasPrefix("agent.")
-                            || $0.hasPrefix("task.")
-                    }
-                )
-            case "xcode":
-                allowedToolNames.insert("xcode.")
-            case "figma":
-                allowedToolNames.insert("figma.")
-            default:
-                let normalizedName = tool.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !normalizedName.isEmpty {
+            let matchingKeys = TerminalToolSelectionCatalog.selectionKeys(
+                for: tool,
+                items: items
+            )
+            if matchingKeys.isEmpty {
+                if let normalizedName = tool.nilIfBlank {
                     allowedToolNames.insert(normalizedName)
                 }
+            } else {
+                selectedKeys.formUnion(matchingKeys)
             }
         }
+        allowedToolNames.formUnion(
+            TerminalToolSelectionCatalog.allowedToolNames(
+                for: selectedKeys,
+                items: items
+            )
+        )
         return allowedToolNames
     }
 
@@ -168,11 +140,6 @@ public struct AgentProfile: Codable, Hashable, Sendable {
         )
     }
 
-    private func baseToolNames(
-        matching predicate: (String) -> Bool
-    ) -> Set<String> {
-        Set(DirectToolCatalog.selectableDescriptors.map(\.name).filter(predicate))
-    }
 }
 
 public struct AgentProfileSkill: Codable, Hashable, Sendable {
@@ -260,56 +227,56 @@ public enum AgentProfileStore {
     public static let defaultToolNames: [String] = [
         "shell",
         "files",
-        "search",
+        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-search-tools"),
         "text",
-        "git",
-        "features",
+        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-git-tools"),
+        TerminalToolSelectionCatalog.featureBuilderKey,
         "memory",
-        "web",
+        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-web-tools"),
         "orchestration"
     ]
     public static let implementationToolNames: [String] = [
-        "xcode",
+        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-xcode-tools"),
         "shell",
         "files",
-        "search",
+        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-search-tools"),
         "text",
-        "git",
-        "features",
+        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-git-tools"),
+        TerminalToolSelectionCatalog.featureBuilderKey,
         "memory",
         "orchestration"
     ]
     public static let featureToolNames: [String] = [
-        "xcode",
+        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-xcode-tools"),
         "shell",
         "files",
-        "search",
+        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-search-tools"),
         "text",
-        "git",
-        "features",
+        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-git-tools"),
+        TerminalToolSelectionCatalog.featureBuilderKey,
         "memory",
-        "web",
+        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-web-tools"),
         "orchestration",
-        "figma"
+        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-figma-tools")
     ]
     public static let reviewToolNames: [String] = [
         "shell",
         "files",
-        "search",
+        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-search-tools"),
         "text",
-        "git",
-        "features",
+        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-git-tools"),
+        TerminalToolSelectionCatalog.featureBuilderKey,
         "memory",
-        "web"
+        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-web-tools")
     ]
     public static let researchToolNames: [String] = [
         "shell",
         "files",
-        "search",
+        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-search-tools"),
         "text",
-        "features",
+        TerminalToolSelectionCatalog.featureBuilderKey,
         "memory",
-        "web",
+        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-web-tools"),
         "orchestration"
     ]
 

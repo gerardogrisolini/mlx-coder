@@ -34,7 +34,7 @@ public final class TerminalChat: @unchecked Sendable {
     public var selectedAgent: AgentProfile?
     public var manualModelIDOverride: String?
     public var manualThinkingSelectionOverride: AgentThinkingSelection?
-    public var selectedToolGroups = Set<TerminalToolGroup>()
+    public var selectedToolKeys = Set<String>()
     public var selectedSkillIDs = Set<String>()
     public var pendingAttachments: [AgentRuntimeAttachment] = []
     public var lastFileChangeSummary: TurnFileChangeSummary?
@@ -136,7 +136,7 @@ public final class TerminalChat: @unchecked Sendable {
             initialInputLine = line
         }
 
-        applyInitialAgentSelectionIfNeeded()
+        await applyInitialAgentSelectionIfNeeded()
         try handleMissingInitialModelSelectionIfNeeded()
         try applyInitialSkillSelectionIfNeeded()
         await ensureWorkspaceAccessIfNeeded()

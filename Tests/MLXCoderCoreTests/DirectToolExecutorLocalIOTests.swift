@@ -7,7 +7,7 @@ struct DirectToolExecutorLocalIOTests {
     @Test
     func baseCatalogKeepsCoreLocalAndTextToolsOnly() {
         let baseToolNames = Set(DirectToolCatalog.baseDescriptors.map(\.name))
-        let selectableToolNames = Set(DirectToolCatalog.selectableDescriptors.map(\.name))
+        let selectableToolNames = Set(AgentToolSelection.selectableDescriptors().map(\.name))
 
         #expect(baseToolNames.contains("local.exec"))
         #expect(baseToolNames.contains("local.readFile"))

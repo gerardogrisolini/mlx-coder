@@ -21,13 +21,18 @@ extension TerminalChat {
 
     public func printStartupSummary() async {
         let allowedToolNames = await selectedAllowedToolNames()
+        let toolItems = await toolSelectionItems()
         didPrintActiveTools = true
 
         var lines = [
             "Version: \(Self.appVersionDescription)",
-            Self.renderSelectedToolGroups(selectedToolGroups)
+            Self.renderSelectedTools(selectedToolKeys, items: toolItems)
                 .trimmingCharacters(in: .whitespacesAndNewlines),
-            Self.renderActiveTools(Array(allowedToolNames))
+            Self.renderActiveTools(
+                Array(allowedToolNames),
+                items: toolItems,
+                selectedKeys: selectedToolKeys
+            )
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         ]
         if let selectedAgent {
@@ -70,6 +75,14 @@ extension TerminalChat {
     }
 
     public static func renderActiveTools(_ toolNames: [String]) -> String {
+        renderActiveTools(toolNames, items: [], selectedKeys: [])
+    }
+
+    public static func renderActiveTools(
+        _ toolNames: [String],
+        items: [TerminalToolSelectionItem],
+        selectedKeys: Set<String>
+    ) -> String {
         guard !toolNames.isEmpty else {
             return "Active tools: none\n"
         }
@@ -77,21 +90,24 @@ extension TerminalChat {
         let uniqueToolNames = Set(toolNames)
         var groupedToolNames = Set<String>()
         var renderedGroups: [String] = []
-        for group in TerminalToolGroup.allCases {
-            let groupToolNames = uniqueToolNames.filter { toolName in
-                group.allows(toolName: toolName)
-            }
-            guard !groupToolNames.isEmpty else {
+        let normalizedKeys = TerminalToolSelectionCatalog.normalizedSelectionKeys(
+            selectedKeys,
+            items: items
+        )
+
+        for item in items where normalizedKeys.contains(item.key) {
+            let itemToolNames = uniqueToolNames.filter { item.allows(toolName: $0) }
+            guard !itemToolNames.isEmpty else {
                 continue
             }
-            groupedToolNames.formUnion(groupToolNames)
-            let concreteToolNames = groupToolNames.filter { toolName in
+            groupedToolNames.formUnion(itemToolNames)
+            let concreteToolNames = itemToolNames.filter { toolName in
                 !toolName.hasSuffix(".")
             }
             let toolCount = concreteToolNames.isEmpty
-                ? groupToolNames.count
+                ? itemToolNames.count
                 : concreteToolNames.count
-            renderedGroups.append("\(group.displayTitle) (\(toolCount))")
+            renderedGroups.append("\(item.title) (\(toolCount))")
         }
 
         let otherToolCount = uniqueToolNames.subtracting(groupedToolNames).count
@@ -102,15 +118,22 @@ extension TerminalChat {
         return "Active tools: \(renderedGroups.joined(separator: ", "))\n"
     }
 
-    public static func renderSelectedToolGroups(_ groups: Set<TerminalToolGroup>) -> String {
-        guard !groups.isEmpty else {
-            return "Selected tool groups: none\n"
+    public static func renderSelectedTools(
+        _ selectedKeys: Set<String>,
+        items: [TerminalToolSelectionItem]
+    ) -> String {
+        let normalizedKeys = TerminalToolSelectionCatalog.normalizedSelectionKeys(
+            selectedKeys,
+            items: items
+        )
+        guard !normalizedKeys.isEmpty else {
+            return "Selected tools: none\n"
         }
-        let renderedGroups = TerminalToolGroup.allCases
-            .filter { groups.contains($0) }
-            .map(\.displayTitle)
+        let renderedItems = items
+            .filter { normalizedKeys.contains($0.key) }
+            .map(\.title)
             .joined(separator: ", ")
-        return "Selected tool groups: \(renderedGroups)\n"
+        return "Selected tools: \(renderedItems)\n"
     }
 
     public static func renderSelectedSkills(_ skills: [MLXPromptSkill]) -> String {
@@ -125,10 +148,7 @@ extension TerminalChat {
     }
 
     public static func renderToolSelectionUsage() -> String {
-        let groups = TerminalToolGroup.allCases
-            .map(\.rawValue)
-            .joined(separator: ", ")
-        return "Usage: /tools [all|none|\(groups)]\n"
+        "Usage: /tools [all|none|tool-name|package-name|tool-number]\n"
     }
 
     public static func renderSkillSelectionUsage() -> String {
