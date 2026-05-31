@@ -145,6 +145,9 @@ extension MLXCoderACPBridge {
                                 result: result
                             ))
                         )
+                    case .sessionSnapshot,
+                         .turnEnded:
+                        break
                     }
                 }
             )

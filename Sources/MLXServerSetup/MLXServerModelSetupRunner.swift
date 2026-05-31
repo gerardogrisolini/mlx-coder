@@ -6,15 +6,11 @@
 import Foundation
 import HuggingFace
 import MLXServerCore
-#if os(macOS)
-import Darwin
-#elseif os(Linux)
-import Glibc
-#endif
 
 public enum MLXServerModelSetupRunner {
     public static let option = "--setup-models"
     private static let recommendedContextWindow = 65_536
+    private static let interactiveLineReader = MLXServerSetupInteractiveLineReader()
 
     public static func shouldRunSetup(arguments: [String]) -> Bool {
         arguments.contains(option)
@@ -871,8 +867,7 @@ public enum MLXServerModelSetupRunner {
     ) throws -> String {
         while true {
             let suffix = defaultValue.map { " [\($0)]" } ?? ""
-            FileHandle.standardError.writeString("\(prompt)\(suffix): ")
-            guard let line = readLine() else {
+            guard let line = interactiveLineReader.readLine(prompt: "\(prompt)\(suffix): ") else {
                 throw MLXServerModelSetupError.inputClosed
             }
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -937,8 +932,7 @@ public enum MLXServerModelSetupRunner {
     ) throws -> Bool {
         let defaultLabel = defaultValue ? "Y/n" : "y/N"
         while true {
-            FileHandle.standardError.writeString("\(prompt) [\(defaultLabel)]: ")
-            guard let line = readLine() else {
+            guard let line = interactiveLineReader.readLine(prompt: "\(prompt) [\(defaultLabel)]: ") else {
                 throw MLXServerModelSetupError.inputClosed
             }
             let normalized = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -955,11 +949,7 @@ public enum MLXServerModelSetupRunner {
     }
 
     private static func supportsInteractiveInput() -> Bool {
-        #if os(macOS) || os(Linux)
-        return isatty(STDIN_FILENO) == 1
-        #else
-        return true
-        #endif
+        MLXServerSetupInteractiveLineReader.supportsInteractiveInput()
     }
 }
 

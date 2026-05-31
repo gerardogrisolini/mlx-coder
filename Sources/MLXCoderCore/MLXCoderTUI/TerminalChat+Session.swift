@@ -13,7 +13,9 @@ import Foundation
 extension TerminalChat {
     public func createCurrentSession() async throws {
         try await sessionRunner.createSession(
-            configuration: await currentSessionConfiguration()
+            configuration: await currentSessionConfiguration(
+                discoverExternalTools: false
+            )
         )
     }
 
@@ -29,16 +31,17 @@ extension TerminalChat {
     public func currentSessionConfiguration(
         allowedToolNames: Set<String>
     ) -> AgentCoreSessionConfiguration {
-        let systemPrompt = currentSystemPrompt(allowedToolNames: allowedToolNames)
+        let systemPrompt = activeSessionSystemPromptOverride
+            ?? currentSystemPrompt(allowedToolNames: allowedToolNames)
         return AgentCoreSessionConfiguration(
             sessionID: sessionID,
             modelID: currentEffectiveModelID(),
             bearerToken: configuration.bearerToken,
             workingDirectory: configuration.workingDirectory,
             systemPrompt: systemPrompt,
-            cacheKey: nil,
+            cacheKey: activeSessionCacheKey,
             sessionRevision: 0,
-            history: [],
+            history: activeSessionHistory,
             allowedToolNames: allowedToolNames,
             maxToolRounds: configuration.maxToolRounds,
             maxOutputTokens: configuration.maxOutputTokens,
@@ -128,12 +131,19 @@ extension TerminalChat {
     public func selectedAllowedToolNames(
         discoverExternalTools: Bool = true
     ) async -> Set<String> {
-        guard !selectedToolGroups.isEmpty else {
-            return []
+        let intrinsicToolNames = intrinsicAllowedToolNamesForSelectedAgent()
+        let baseItems = await toolSelectionItems()
+        guard !selectedToolKeys.isEmpty else {
+            return intrinsicToolNames
         }
 
-        let dynamicToolPrefixes = AgentToolSelection.dynamicToolPrefixes(
-            for: selectedToolGroups
+        selectedToolKeys = TerminalToolSelectionCatalog.normalizedSelectionKeys(
+            selectedToolKeys,
+            items: baseItems
+        )
+        let dynamicToolPrefixes = TerminalToolSelectionCatalog.externalDiscoveryPrefixes(
+            for: selectedToolKeys,
+            items: baseItems
         )
         let mcpDiscoveryToolNames = Set(
             dynamicToolPrefixes.filter { $0 == "xcode." || $0 == "figma." }
@@ -151,11 +161,15 @@ extension TerminalChat {
             )
         }
 
-        return AgentToolSelection.allowedToolNames(
-            for: selectedToolGroups,
-            additionalDescriptors: mcpDescriptors,
-            includeDynamicGroupPrefixes: false
+        let items = await toolSelectionItems(
+            additionalDescriptors: mcpDescriptors
         )
+        var allowedToolNames = TerminalToolSelectionCatalog.allowedToolNames(
+            for: selectedToolKeys,
+            items: items
+        )
+        allowedToolNames.formUnion(intrinsicToolNames)
+        return allowedToolNames
     }
 
     @discardableResult
@@ -172,16 +186,21 @@ extension TerminalChat {
                 )
             )
         } catch {
-            writeChatError("mlx-coder: \(error.localizedDescription)\n")
+            writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
         }
         didPrintActiveTools = false
         return allowedToolNames
     }
 
     public func ensureWorkspaceAccessIfNeeded() async {
+        let items = await toolSelectionItems()
+        let workspaceSelectionKeys = TerminalToolSelectionCatalog.workspaceAccessSelectionKeys(
+            for: selectedToolKeys,
+            items: items
+        )
         guard stdinIsTerminal,
               !configuration.appMode,
-              !selectedToolGroups.isDisjoint(with: Self.workspaceAccessToolGroups) else {
+              !workspaceSelectionKeys.isEmpty else {
             return
         }
 
@@ -193,25 +212,18 @@ extension TerminalChat {
             return
         }
 
-        let disabledGroups = selectedToolGroups.intersection(Self.workspaceAccessToolGroups)
-        selectedToolGroups.subtract(disabledGroups)
-        let disabledGroupNames = disabledGroups
-            .sorted { $0.displayTitle.localizedStandardCompare($1.displayTitle) == .orderedAscending }
-            .map(\.displayTitle)
+        selectedToolKeys.subtract(workspaceSelectionKeys)
+        let disabledToolNames = items
+            .filter { workspaceSelectionKeys.contains($0.key) }
+            .map(\.title)
             .joined(separator: ", ")
         writeSystemMessage(
             """
             Workspace access was not granted for \(configuration.workingDirectory.path).
-            Disabled tool groups: \(disabledGroupNames).
+            Disabled tools: \(disabledToolNames).
 
             """
         )
         #endif
     }
-
-    private static let workspaceAccessToolGroups: Set<TerminalToolGroup> = [
-        .bash,
-        .git,
-        .memory
-    ]
 }

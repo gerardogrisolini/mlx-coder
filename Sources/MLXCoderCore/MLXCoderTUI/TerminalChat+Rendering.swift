@@ -20,14 +20,19 @@ extension TerminalChat {
     }
 
     public func printStartupSummary() async {
-        let allowedToolNames = await selectedAllowedToolNames()
+        let allowedToolNames = await selectedAllowedToolNames(
+            discoverExternalTools: false
+        )
+        let toolItems = await toolSelectionItems()
         didPrintActiveTools = true
 
         var lines = [
             "Version: \(Self.appVersionDescription)",
-            Self.renderSelectedToolGroups(selectedToolGroups)
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-            Self.renderActiveTools(Array(allowedToolNames))
+            Self.renderActiveTools(
+                Array(allowedToolNames),
+                items: toolItems,
+                selectedKeys: selectedToolKeys
+            )
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         ]
         if let selectedAgent {
@@ -40,10 +45,14 @@ extension TerminalChat {
             lines.append(selectedSkills)
         }
 
+        let commands = AgentProfileStore.isBuilderAgent(selectedAgent)
+            ? "Commands: /help, /models, /agents, /tools, /feature, /skills, /sessions, /attach, /retry, /changes, /undo, /subagents, /clear, /exit"
+            : "Commands: /help, /models, /agents, /tools, /skills, /sessions, /attach, /retry, /changes, /undo, /subagents, /clear, /exit"
+
         lines.append(contentsOf: [
             "Working directory: \(configuration.workingDirectory.path)",
             "",
-            "Commands: /help, /models, /agents, /tools, /skills, /attach, /changes, /undo, /subagents, /clear, /exit"
+            commands
         ])
 
         let startupBox = Self.renderStartupBox(lines: lines)
@@ -70,28 +79,37 @@ extension TerminalChat {
     }
 
     public static func renderActiveTools(_ toolNames: [String]) -> String {
-        guard !toolNames.isEmpty else {
+        renderActiveTools(toolNames, items: [], selectedKeys: [])
+    }
+
+    public static func renderActiveTools(
+        _ toolNames: [String],
+        items: [TerminalToolSelectionItem],
+        selectedKeys: Set<String>
+    ) -> String {
+        let uniqueToolNames = Set(toolNames).subtracting(AgentProfileStore.featureManagementToolNames)
+        guard !uniqueToolNames.isEmpty else {
             return "Active tools: none\n"
         }
 
-        let uniqueToolNames = Set(toolNames)
         var groupedToolNames = Set<String>()
         var renderedGroups: [String] = []
-        for group in TerminalToolGroup.allCases {
-            let groupToolNames = uniqueToolNames.filter { toolName in
-                group.allows(toolName: toolName)
-            }
-            guard !groupToolNames.isEmpty else {
+        let normalizedKeys = TerminalToolSelectionCatalog.normalizedSelectionKeys(
+            selectedKeys,
+            items: items
+        )
+
+        for item in items where normalizedKeys.contains(item.key) {
+            let itemToolNames = uniqueToolNames.filter { item.allows(toolName: $0) }
+            guard !itemToolNames.isEmpty else {
                 continue
             }
-            groupedToolNames.formUnion(groupToolNames)
-            let concreteToolNames = groupToolNames.filter { toolName in
+            groupedToolNames.formUnion(itemToolNames)
+            let concreteToolNames = itemToolNames.filter { toolName in
                 !toolName.hasSuffix(".")
-            }
-            let toolCount = concreteToolNames.isEmpty
-                ? groupToolNames.count
-                : concreteToolNames.count
-            renderedGroups.append("\(group.displayTitle) (\(toolCount))")
+            }.sorted()
+            let toolCount = concreteToolNames.count
+            renderedGroups.append("\(item.title) (\(toolCount))")
         }
 
         let otherToolCount = uniqueToolNames.subtracting(groupedToolNames).count
@@ -99,18 +117,10 @@ extension TerminalChat {
             renderedGroups.append("Other (\(otherToolCount))")
         }
 
-        return "Active tools: \(renderedGroups.joined(separator: ", "))\n"
-    }
-
-    public static func renderSelectedToolGroups(_ groups: Set<TerminalToolGroup>) -> String {
-        guard !groups.isEmpty else {
-            return "Selected tool groups: none\n"
+        guard !renderedGroups.isEmpty else {
+            return "Active tools: none\n"
         }
-        let renderedGroups = TerminalToolGroup.allCases
-            .filter { groups.contains($0) }
-            .map(\.displayTitle)
-            .joined(separator: ", ")
-        return "Selected tool groups: \(renderedGroups)\n"
+        return "Active tools: \(renderedGroups.joined(separator: ", "))\n"
     }
 
     public static func renderSelectedSkills(_ skills: [MLXPromptSkill]) -> String {
@@ -125,10 +135,7 @@ extension TerminalChat {
     }
 
     public static func renderToolSelectionUsage() -> String {
-        let groups = TerminalToolGroup.allCases
-            .map(\.rawValue)
-            .joined(separator: ", ")
-        return "Usage: /tools [all|none|\(groups)]\n"
+        "Usage: /tools [all|none|tool-name|package-name|tool-number]\n"
     }
 
     public static func renderSkillSelectionUsage() -> String {
@@ -152,8 +159,11 @@ extension TerminalChat {
         }
         output.append("\(linePrefix)\(orange)┌\(horizontalRule)┐\(reset)")
         for line in lines {
-            let fittedLine = padded(fitInline(line, width: contentWidth), width: contentWidth)
-            output.append("\(linePrefix)\(orange)│\(reset) \(fittedLine) \(orange)│\(reset)")
+            let splitLines = line.components(separatedBy: .newlines)
+            for splitLine in splitLines {
+                let fittedLine = padded(fitInline(splitLine, width: contentWidth), width: contentWidth)
+                output.append("\(linePrefix)\(orange)│\(reset) \(fittedLine) \(orange)│\(reset)")
+            }
         }
         output.append("\(linePrefix)\(orange)└\(horizontalRule)┘\(reset)")
         return output.joined(separator: "\n")
@@ -161,10 +171,11 @@ extension TerminalChat {
 
     public static var mlxCoderHeaderLines: [String] {
         [
-            " █   █   █    █   █      ██    ██    ███    ███   ███",
-            " █ █ █   █      █    |  █     █  █   █  █   ██    ███",
-            " █   █   █      █    |  █     █  █   █  █   █     █ ",
-            " █   █   ███  █   █      ██    ██    ███    ███   █ █"
+            "                                       ",
+            " █ █  █   █ █    ██   ██   ██   ██  ███",
+            " ███  █    █  █ █    █  █  █ █  █   ██ ",
+            " █ █  ██  █ █    ██   ██   ██   ██  █ █",
+            "                                       "
         ]
     }
 
@@ -367,6 +378,15 @@ extension TerminalChat {
         AgentOutput.standardError.writeString(chatLineInsetApplied(to: text))
     }
 
+    func writeFailureMessage(_ text: String) {
+        writeChatError(
+            Self.failureMessageColorApplied(
+                to: text,
+                isEnabled: AgentOutput.standardErrorIsTerminal
+            )
+        )
+    }
+
     func writeSystemMessage(_ text: String) {
         writeChatError(
             Self.systemMessageColorApplied(
@@ -442,6 +462,23 @@ extension TerminalChat {
     }
 
     private static let systemMessageANSIColor = "\u{1B}[38;5;179m"
+
+    static func failureMessageColorApplied(to text: String, isEnabled: Bool) -> String {
+        guard isEnabled, !text.isEmpty else {
+            return text
+        }
+
+        let color = failureMessageANSIColor
+        let reset = "\u{1B}[0m"
+        return text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in
+                line.isEmpty ? "" : "\(color)\(line)\(reset)"
+            }
+            .joined(separator: "\n")
+    }
+
+    private static let failureMessageANSIColor = "\u{1B}[38;5;203m"
 
     static func operationalMessageColorApplied(to text: String, isEnabled: Bool) -> String {
         guard isEnabled, !text.isEmpty else {
@@ -693,29 +730,16 @@ extension TerminalChat {
         text
     }
 
-    private static func compactToolStatusLine(
+    static func compactToolStatusLine(
         target: String,
         statusIcon: String,
         contentInsetWidth: Int = 0
     ) -> String {
-        rightAlignedSuffix(
-            text: target,
-            suffix: statusIcon,
-            contentInsetWidth: contentInsetWidth
-        )
-    }
-
-    private static func rightAlignedSuffix(
-        text: String,
-        suffix: String,
-        contentInsetWidth: Int = 0
-    ) -> String {
         let columns = max(20, terminalColumnCount() - contentInsetWidth)
-        let suffixWidth = displayWidth(suffix)
+        let suffixWidth = displayWidth(statusIcon)
         let textWidthLimit = max(1, columns - suffixWidth - 1)
-        let fittedText = fitDisplayWidth(text, width: textWidthLimit)
-        let spacing = columns - displayWidth(fittedText) - suffixWidth
-        return fittedText + String(repeating: " ", count: max(1, spacing)) + suffix
+        let fittedTarget = fitDisplayWidth(target, width: textWidthLimit)
+        return "\(fittedTarget) \(statusIcon)"
     }
 
     private static func renderedTerminalRowCount(

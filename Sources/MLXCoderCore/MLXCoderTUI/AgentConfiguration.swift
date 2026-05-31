@@ -11,18 +11,18 @@ import Glibc
 import Dispatch
 import Foundation
 
-public enum AgentRunMode: String {
+public enum AgentRunMode: String, Sendable {
     case automatic
     case acp
     case chat
 }
 
-public enum AgentResolvedRunMode {
+public enum AgentResolvedRunMode: Sendable {
     case acp
     case chat
 }
 
-public struct AgentConfiguration {
+public struct AgentConfiguration: Sendable {
     public static let helpText = """
     mlx-coder
 
@@ -48,6 +48,7 @@ public struct AgentConfiguration {
     Tool discovery:
       In chat mode, use /agents to switch agent profiles without restarting the TUI.
       In chat mode, use /tools to enable local, shell, search, git, memory, sub-agent, Xcode, or Figma tools.
+      In chat mode, use the Builder agent to create and manage generated Swift feature packages with /feature.
       In chat mode, use /skills to select prompt skills installed by the app or install a skill from GitHub or a local folder.
       In chat mode, use /attach to add image or video files to the next prompt.
       In chat mode, use /changes to review tracked file changes and /undo to revert the latest tracked changes.

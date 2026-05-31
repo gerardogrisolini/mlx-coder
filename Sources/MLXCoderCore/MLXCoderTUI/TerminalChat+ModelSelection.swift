@@ -87,6 +87,7 @@ extension TerminalChat {
         }
 
         let selectedThinkingSelection = promptForThinkingSelection(model: selectedModel)
+        activeSessionSystemPromptOverride = nil
         if configuration.hostedModels == nil {
             try AgentSettingsStore.saveSelectedModelID(
                 selectedModel.id,
@@ -268,7 +269,15 @@ extension TerminalChat {
                 if emitStatus {
                     self.printLoadedModelDetails(details)
                 }
-            case .diagnostic, .thought, .metrics, .contextWindow, .content, .toolCallStarted, .toolCallCompleted:
+            case .diagnostic,
+                 .thought,
+                 .metrics,
+                 .contextWindow,
+                 .content,
+                 .toolCallStarted,
+                 .toolCallCompleted,
+                 .sessionSnapshot,
+                 .turnEnded:
                 break
             }
         }
@@ -300,6 +309,11 @@ extension TerminalChat {
         let displayTitle = loadedModelDisplayTitle(modelID)
         printedModelID = displayTitle
         _ = statusBar.update(modelID: modelID)
+
+        guard configuration.verboseLogging else {
+            writeOperationalMessage("mlx-server loaded model: \(displayTitle)\n")
+            return
+        }
 
         var lines = [
             "mlx-server loaded model:",

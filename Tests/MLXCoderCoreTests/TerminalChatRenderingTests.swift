@@ -57,4 +57,28 @@ struct TerminalChatRenderingTests {
         #expect(rendered.hasPrefix("\u{1B}[38;5;179mTool details: full\u{1B}[0m\n"))
         #expect(rendered.hasSuffix("\n"))
     }
+
+    @Test
+    func failureMessageColoringWrapsNonBlankLines() {
+        let rendered = TerminalChat.failureMessageColorApplied(
+            to: "mlx-coder: HTTP 402\n\nRetry later.\n",
+            isEnabled: true
+        )
+
+        #expect(rendered.hasPrefix("\u{1B}[38;5;203mmlx-coder: HTTP 402\u{1B}[0m\n\n"))
+        #expect(rendered.contains("\u{1B}[38;5;203mRetry later.\u{1B}[0m\n"))
+        #expect(rendered.hasSuffix("\n"))
+    }
+
+    @Test
+    func compactToolStatusIconStaysImmediatelyAfterText() {
+        let rendered = TerminalChat.compactToolStatusLine(
+            target: "/tmp/generated-feature/Sources/Feature/main.swift",
+            statusIcon: "✅",
+            contentInsetWidth: 0
+        )
+
+        #expect(rendered.hasSuffix(" ✅"))
+        #expect(!rendered.contains("  ✅"))
+    }
 }

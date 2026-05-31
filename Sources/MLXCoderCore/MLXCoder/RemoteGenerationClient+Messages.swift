@@ -23,20 +23,23 @@ extension RemoteGenerationClient {
         allowedToolNames: Set<String>?
     ) -> [[String: Any]] {
         let seededMessages = history.compactMap(remoteMessage(from:))
-        if !seededMessages.isEmpty {
+        if let firstRole = seededMessages.first?["role"] as? String,
+           firstRole.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "system" {
             return seededMessages
         }
 
+        let prompt = systemPrompt?.nilIfBlank
+            ?? Self.systemPrompt(
+                cwd: cwd,
+                allowedToolNames: allowedToolNames
+            )
         return [
             [
                 "role": "system",
-                "content": systemPrompt?.nilIfBlank
-                    ?? Self.systemPrompt(
-                        cwd: cwd,
-                        allowedToolNames: allowedToolNames
-                    )
+                "content": prompt
             ]
-        ]
+        ] + seededMessages
     }
 
     public static func replacingSystemPrompt(
@@ -78,11 +81,31 @@ extension RemoteGenerationClient {
     }
 
     public static func remoteMessage(from message: AgentRuntimeMessage) -> [String: Any]? {
-        let payload = remoteMessage(
+        var payload = remoteMessage(
             role: message.role.rawValue,
             content: message.content,
             attachments: message.attachments
         )
+        if message.role == .assistant, !message.toolCalls.isEmpty {
+            payload["tool_calls"] = message.toolCalls.map { toolCall in
+                [
+                    "id": toolCall.id ?? "call_\(UUID().uuidString.lowercased())",
+                    "type": "function",
+                    "function": [
+                        "name": toolCall.name,
+                        "arguments": toolCall.argumentsJSON
+                    ]
+                ] as [String: Any]
+            }
+        }
+        if message.role == .tool {
+            if let toolCallID = message.toolCallID {
+                payload["tool_call_id"] = toolCallID
+            }
+            if let toolName = message.toolName {
+                payload["name"] = toolName
+            }
+        }
         guard responseMessagePayloadHasContent(payload) else {
             return nil
         }
@@ -130,6 +153,7 @@ extension RemoteGenerationClient {
         }
 
         return !chatCompletionsImageContentItems(from: message["content"]).isEmpty
+            || !((message["tool_calls"] as? [[String: Any]])?.isEmpty ?? true)
     }
 
     public static func chatCompletionsContentPayload(

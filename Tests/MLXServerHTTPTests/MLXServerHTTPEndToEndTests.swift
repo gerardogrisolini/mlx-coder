@@ -10,6 +10,27 @@ import MLXServerHTTP
 import Testing
 
 @Test
+func modelsEndpointIncludesThinkingParameters() async throws {
+    let runtime = RecordingRuntime(outputText: "ok")
+    let server = try TestHTTPServer(runtime: runtime)
+    defer {
+        server.stop()
+    }
+
+    let data = try await server.get(path: "/v1/models")
+    let response = try JSONDecoder().decode(ModelsTestResponse.self, from: data)
+    let model = try #require(response.data.first)
+    let thinking = try #require(model.thinking)
+
+    #expect(model.id == "mlx-community/test-model")
+    #expect(thinking.supportsThinking)
+    #expect(thinking.supportsReasoningEffort)
+    #expect(thinking.supportsPreserveThinking)
+    #expect(thinking.availableSelections == ["off", "low", "medium", "high"])
+    #expect(thinking.defaultSelection == "medium")
+}
+
+@Test
 func chatCompletionsEndpointMapsThinkingProtocol() async throws {
     let runtime = RecordingRuntime(outputText: "<think>Sto ragionando.</think>Ciao!")
     let server = try TestHTTPServer(runtime: runtime)
@@ -569,6 +590,17 @@ private final class TestHTTPServer {
         try? server.stop()
     }
 
+    func get(path: String) async throws -> Data {
+        let normalizedPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
+        var request = URLRequest(url: baseURL.appendingPathComponent(normalizedPath))
+        request.httpMethod = "GET"
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let httpResponse = try #require(response as? HTTPURLResponse)
+        #expect(httpResponse.statusCode == 200)
+        return data
+    }
+
     func post(path: String, body: String) async throws -> Data {
         let normalizedPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
         var request = URLRequest(url: baseURL.appendingPathComponent(normalizedPath))
@@ -585,6 +617,31 @@ private final class TestHTTPServer {
     func postSSE(path: String, body: String) async throws -> [SSEFrame] {
         let data = try await post(path: path, body: body)
         return SSEFrame.parse(String(decoding: data, as: UTF8.self))
+    }
+}
+
+private struct ModelsTestResponse: Decodable {
+    var data: [Model]
+
+    struct Model: Decodable {
+        var id: String
+        var thinking: Thinking?
+    }
+
+    struct Thinking: Decodable {
+        var supportsThinking: Bool
+        var supportsReasoningEffort: Bool
+        var supportsPreserveThinking: Bool
+        var availableSelections: [String]
+        var defaultSelection: String
+
+        enum CodingKeys: String, CodingKey {
+            case supportsThinking = "supports_thinking"
+            case supportsReasoningEffort = "supports_reasoning_effort"
+            case supportsPreserveThinking = "supports_preserve_thinking"
+            case availableSelections = "available_selections"
+            case defaultSelection = "default_selection"
+        }
     }
 }
 

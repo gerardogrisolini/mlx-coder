@@ -5,54 +5,27 @@ import Testing
 @Suite
 struct DirectToolExecutorLocalIOTests {
     @Test
-    func globTreatsExistingDirectoryPatternAsSearchRoot() async throws {
-        let rootURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("mlx-direct-tool-glob-tests-\(UUID().uuidString)", isDirectory: true)
-        let sourcesURL = rootURL.appendingPathComponent("Sources", isDirectory: true)
-        let nestedURL = sourcesURL.appendingPathComponent("Nested", isDirectory: true)
-        defer {
-            try? FileManager.default.removeItem(at: rootURL)
-        }
+    func baseCatalogKeepsCoreLocalAndTextToolsOnly() {
+        let baseToolNames = Set(DirectToolCatalog.baseDescriptors.map(\.name))
+        let selectableToolNames = Set(AgentToolSelection.selectableDescriptors().map(\.name))
 
-        try FileManager.default.createDirectory(
-            at: nestedURL,
-            withIntermediateDirectories: true
-        )
-        try "struct A {}".write(
-            to: sourcesURL.appendingPathComponent("A.swift"),
-            atomically: true,
-            encoding: .utf8
-        )
-        try "struct B {}".write(
-            to: nestedURL.appendingPathComponent("B.swift"),
-            atomically: true,
-            encoding: .utf8
-        )
+        #expect(baseToolNames.contains("local.exec"))
+        #expect(baseToolNames.contains("local.readFile"))
+        #expect(baseToolNames.contains("local.writeFile"))
+        #expect(baseToolNames.contains("text.wc"))
+        #expect(baseToolNames.contains("feature.list"))
+        #expect(baseToolNames.contains("feature.enable"))
+        #expect(baseToolNames.contains("feature.delete"))
+        #expect(!baseToolNames.contains("search.glob"))
+        #expect(!baseToolNames.contains("web.search"))
+        #expect(!baseToolNames.contains("git.status"))
 
-        let executor = DirectToolExecutor(
-            outputLimit: 24_000,
-            subAgentBackendFactory: { TestAgentRuntimeBackend() }
-        )
-        let toolCall = DirectAgentToolCall(
-            id: "tool-call-1",
-            name: "search.glob",
-            argumentsObject: [
-                "pattern": sourcesURL.path,
-                "maxResults": 20
-            ],
-            argumentsJSON: #"{"pattern":"\#(sourcesURL.path)","maxResults":20}"#
-        )
-
-        let result = await executor.execute(
-            sessionID: "test-session",
-            toolCall: toolCall,
-            workingDirectory: rootURL,
-            allowedToolNames: ["search."]
-        )
-
-        #expect(result.output.contains("A.swift"))
-        #expect(result.output.contains("Nested/B.swift"))
-        #expect(!result.output.contains("<empty>"))
+        #expect(selectableToolNames.contains("local.readFile"))
+        #expect(selectableToolNames.contains("local.writeFile"))
+        #expect(selectableToolNames.contains("search.glob"))
+        #expect(selectableToolNames.contains("text.wc"))
+        #expect(selectableToolNames.contains("web.search"))
+        #expect(selectableToolNames.contains("git.status"))
     }
 }
 

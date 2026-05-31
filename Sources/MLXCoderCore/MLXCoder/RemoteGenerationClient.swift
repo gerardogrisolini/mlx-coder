@@ -14,6 +14,8 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
     public struct AgentSession {
         public let id: String
         public let cwd: URL
+        public var systemPrompt: String?
+        public let cacheKey: String?
         public var allowedToolNames: Set<String>?
         public var thinkingSelection: AgentThinkingSelection?
         public var preserveThinking: Bool
@@ -76,6 +78,8 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
         sessions[id] = AgentSession(
             id: id,
             cwd: cwdURL,
+            systemPrompt: systemPrompt,
+            cacheKey: cacheKey,
             allowedToolNames: allowedToolNames,
             thinkingSelection: thinkingSelection,
             preserveThinking: preserveThinking,
@@ -133,6 +137,7 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
             systemPrompt: systemPrompt,
             allowedToolNames: allowedToolNames
         )
+        session.systemPrompt = systemPrompt
         session.allowedToolNames = allowedToolNames
         session.thinkingSelection = thinkingSelection
         session.preserveThinking = preserveThinking
@@ -171,6 +176,23 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
 
     public func subAgentSnapshots() async -> [DirectSubAgentRuntime.AgentSnapshot] {
         await toolExecutor.subAgentSnapshots()
+    }
+
+    public func snapshotSession(id: String) -> AgentRuntimeSessionSnapshot? {
+        guard let session = sessions[id] else {
+            return nil
+        }
+        let splitMessages = Self.snapshotMessages(from: session.messages)
+        return AgentRuntimeSessionSnapshot(
+            sessionID: id,
+            workingDirectoryPath: session.cwd.path,
+            systemPrompt: splitMessages.systemPrompt ?? session.systemPrompt,
+            cacheKey: session.cacheKey,
+            history: splitMessages.history,
+            allowedToolNames: session.allowedToolNames,
+            thinkingSelection: session.thinkingSelection,
+            preserveThinking: session.preserveThinking
+        )
     }
 
     public func sendPrompt(
@@ -326,7 +348,7 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
         return finalCharacter == "?" || finalCharacter.isEmojiSymbol
     }
 
-    private static func agentRuntimeMessages(
+    public static func agentRuntimeMessages(
         from messages: [[String: Any]]
     ) -> [AgentRuntimeMessage] {
         messages.map { message in
@@ -346,9 +368,70 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
             return AgentRuntimeMessage(
                 role: role,
                 content: content,
-                attachments: imageAttachments
+                reasoningContent: reasoningContent(from: message),
+                attachments: imageAttachments,
+                toolCalls: runtimeToolCalls(from: message),
+                toolCallID: stringValue(message["tool_call_id"])?.nilIfBlank,
+                toolName: stringValue(message["name"])?.nilIfBlank
             )
         }
+    }
+
+    public static func snapshotMessages(
+        from messages: [[String: Any]]
+    ) -> (systemPrompt: String?, history: [AgentRuntimeMessage]) {
+        var remainingMessages = messages[...]
+        let systemPrompt: String?
+        if let firstRole = remainingMessages.first?["role"] as? String,
+           firstRole.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "system" {
+            systemPrompt = contentString(from: remainingMessages.first?["content"])?.nilIfBlank
+            remainingMessages = remainingMessages.dropFirst()
+        } else {
+            systemPrompt = nil
+        }
+
+        return (
+            systemPrompt,
+            agentRuntimeMessages(from: Array(remainingMessages))
+        )
+    }
+
+    public static func runtimeToolCalls(
+        from message: [String: Any]
+    ) -> [AgentRuntimeToolCall] {
+        guard let rawToolCalls = message["tool_calls"] as? [[String: Any]] else {
+            return []
+        }
+
+        return rawToolCalls.compactMap { rawToolCall in
+            guard let function = rawToolCall["function"] as? [String: Any],
+                  let name = stringValue(function["name"])?.nilIfBlank else {
+                return nil
+            }
+            return AgentRuntimeToolCall(
+                id: stringValue(rawToolCall["id"])?.nilIfBlank,
+                name: name,
+                argumentsJSON: toolArgumentsJSON(from: function["arguments"])
+            )
+        }
+    }
+
+    private static func reasoningContent(from message: [String: Any]) -> String? {
+        stringValue(message["reasoning_content"])?.nilIfBlank
+            ?? stringValue(message["reasoning"])?.nilIfBlank
+            ?? stringValue(message["reasoning_text"])?.nilIfBlank
+            ?? contentString(from: message["reasoning_details"])?.nilIfBlank
+    }
+
+    public static func toolArgumentsJSON(from value: Any?) -> String {
+        if let string = stringValue(value)?.nilIfBlank {
+            return string
+        }
+        if let value {
+            return AgentJSONSupport.jsonString(from: value)
+        }
+        return "{}"
     }
 
     private static func remoteMessages(

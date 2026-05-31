@@ -18,21 +18,27 @@ public final class TerminalChat: @unchecked Sendable {
     public let reader = StdioLineReader()
     public let interactiveReader = TerminalInteractiveLineReader()
     public let permissionAuthorizer: LocalExecPermissionAuthorizer
-    public let sessionID = "terminal-\(UUID().uuidString.lowercased())"
+    public var sessionID = TerminalChat.newTerminalSessionID()
     public var diskCacheKey: String {
         AgentKVCachePersistencePolicy.terminalDiskCacheKey(
             workingDirectoryPath: configuration.workingDirectory.path
         )
     }
+    public var activeSessionCacheKey: String?
+    public var activeSessionHistory: [AgentRuntimeMessage] = []
+    public var activeSessionTranscript: [AgentRuntimeMessage] = []
+    public var activeSessionSystemPromptOverride: String?
+    public var activeSavedSessionName: String?
     public var printedModelID: String?
     public var didPrintActiveTools = false
     public var didReceiveMetricsForCurrentPrompt = false
     public var selectedAgent: AgentProfile?
     public var manualModelIDOverride: String?
     public var manualThinkingSelectionOverride: AgentThinkingSelection?
-    public var selectedToolGroups = Set<TerminalToolGroup>()
+    public var selectedToolKeys = Set<String>()
     public var selectedSkillIDs = Set<String>()
     public var pendingAttachments: [AgentRuntimeAttachment] = []
+    private var lastFailedPrompt: TerminalRetryPrompt?
     public var lastFileChangeSummary: TurnFileChangeSummary?
     public var isSubAgentOverviewVisible = false
     public var lastRenderedSubAgentOverviewSignature: String?
@@ -78,6 +84,10 @@ public final class TerminalChat: @unchecked Sendable {
 
     public static func supportsInteractiveStatusBar() -> Bool {
         AgentOutput.standardErrorIsTerminal
+    }
+
+    public static func newTerminalSessionID() -> String {
+        "terminal-\(UUID().uuidString.lowercased())"
     }
 
     public func currentEffectiveModelID() -> String? {
@@ -128,7 +138,7 @@ public final class TerminalChat: @unchecked Sendable {
             initialInputLine = line
         }
 
-        applyInitialAgentSelectionIfNeeded()
+        await applyInitialAgentSelectionIfNeeded()
         try handleMissingInitialModelSelectionIfNeeded()
         try applyInitialSkillSelectionIfNeeded()
         await ensureWorkspaceAccessIfNeeded()
@@ -177,7 +187,11 @@ public final class TerminalChat: @unchecked Sendable {
             case .exitChat:
                 return
             case let .runPrompt(prompt):
-                await runPromptBlocking(prompt)
+                await runPromptBlocking(promptAttempt(prompt: prompt))
+            case let .retryPrompt(retryPrompt):
+                await runPromptBlocking(promptAttempt(retryPrompt: retryPrompt))
+            case let .prefillPrompt(prompt):
+                writeSystemMessage("Draft prompt:\n\(prompt)\n")
             }
         }
     }
@@ -192,7 +206,7 @@ public final class TerminalChat: @unchecked Sendable {
         func startPanelInput() -> Bool {
             let didStart = interactiveReader.startPanelInput(
                 statusBar: statusBar,
-                commandSuggestions: Self.commandSuggestions
+                commandSuggestions: commandSuggestionsForCurrentAgent()
             ) { event in
                 Task {
                     await eventQueue.send(.input(event))
@@ -210,7 +224,7 @@ public final class TerminalChat: @unchecked Sendable {
             await interactiveReader.stopPanelInput(clearPanel: clearPanel)
         }
 
-        func startGeneration(prompt: String) {
+        func startGeneration(attempt: TerminalPromptAttempt) {
             isGenerating = true
             didReceiveMetricsForCurrentPrompt = false
             statusBar.setProcessing(true)
@@ -218,19 +232,21 @@ public final class TerminalChat: @unchecked Sendable {
             generationTask = Task {
                 let result: TerminalChatGenerationResult
                 do {
-                    result = .success(try await self.generateResponse(prompt: prompt))
+                    result = .success(try await self.generateResponse(attempt: attempt))
                 } catch is CancellationError {
                     result = .failure(
                         TerminalChatGenerationFailure(
                             message: "",
-                            isCancellation: true
+                            isCancellation: true,
+                            retryPrompt: nil
                         )
                     )
                 } catch {
                     result = .failure(
                         TerminalChatGenerationFailure(
                             message: error.localizedDescription,
-                            isCancellation: false
+                            isCancellation: false,
+                            retryPrompt: attempt.retryPrompt
                         )
                     )
                 }
@@ -265,8 +281,23 @@ public final class TerminalChat: @unchecked Sendable {
                 if shouldSuspendPanel {
                     _ = startPanelInput()
                 }
+                let attempt = promptAttempt(prompt: prompt)
                 writeSubmittedPrompt(prompt)
-                startGeneration(prompt: prompt)
+                startGeneration(attempt: attempt)
+                return true
+            case let .retryPrompt(retryPrompt):
+                if shouldSuspendPanel {
+                    _ = startPanelInput()
+                }
+                let attempt = promptAttempt(retryPrompt: retryPrompt)
+                writeSubmittedPrompt(retryPrompt.prompt)
+                startGeneration(attempt: attempt)
+                return true
+            case let .prefillPrompt(prompt):
+                if shouldSuspendPanel {
+                    _ = startPanelInput()
+                }
+                interactiveReader.setPanelText(prompt)
                 return true
             }
         }
@@ -321,7 +352,52 @@ public final class TerminalChat: @unchecked Sendable {
         return prompt.hasPrefix("/")
     }
 
-    private static let commandSuggestions: [TerminalCommandSuggestion] = [
+    private func renderHelpTextForCurrentAgent() -> String {
+        var lines = [
+            "Type a prompt and press return.",
+            "/models shows configured models and lets you switch the default agent model.",
+            "/agents selects an agent profile and resets the session.",
+            "/tools selects which tool groups are available to the model."
+        ]
+        if AgentProfileStore.isBuilderAgent(selectedAgent) {
+            lines.append("/feature creates and manages generated Swift feature packages.")
+        }
+        lines.append(contentsOf: [
+            "/skills selects installed prompt skills or installs one from GitHub or a local folder.",
+            "/sessions saves, restores, or deletes named session snapshots for this project.",
+            "/attach <file> [file ...] attaches image or video files to the next prompt.",
+            "/attachments shows pending attachments.",
+            "/detach [all|number] removes pending attachments.",
+            "/retry reruns the most recent failed prompt.",
+            "/changes shows the most recent file change summary. Use /changes diff to include patches.",
+            "/undo reverts the most recent tracked file changes.",
+            "/subagents shows delegated sub-agent status. Use /subagents off to hide automatic updates.",
+            "Ctrl+T toggles compact/full tool output.",
+            "/clear resets the conversation.",
+            "/exit closes the session."
+        ])
+        return lines.joined(separator: "\n") + "\n\n"
+    }
+
+    func commandSuggestionsForCurrentAgent() -> [TerminalCommandSuggestion] {
+        if AgentProfileStore.isBuilderAgent(selectedAgent) {
+            return Self.baseCommandSuggestionsWithFeature
+        }
+        return Self.baseCommandSuggestions
+    }
+
+    private static let featureCommandSuggestion = TerminalCommandSuggestion(
+        command: "/feature",
+        summary: "create/manage features"
+    )
+
+    private static let baseCommandSuggestionsWithFeature: [TerminalCommandSuggestion] = {
+        var suggestions = baseCommandSuggestions
+        suggestions.insert(featureCommandSuggestion, at: 4)
+        return suggestions
+    }()
+
+    private static let baseCommandSuggestions: [TerminalCommandSuggestion] = [
         TerminalCommandSuggestion(
             command: "/help",
             summary: "show command help"
@@ -343,6 +419,10 @@ public final class TerminalChat: @unchecked Sendable {
             summary: "select/install prompt skills"
         ),
         TerminalCommandSuggestion(
+            command: "/sessions",
+            summary: "save/load/delete sessions"
+        ),
+        TerminalCommandSuggestion(
             command: "/attach",
             summary: "attach files",
             requiresArgument: true
@@ -355,6 +435,10 @@ public final class TerminalChat: @unchecked Sendable {
             command: "/detach",
             summary: "remove attachments",
             requiresArgument: true
+        ),
+        TerminalCommandSuggestion(
+            command: "/retry",
+            summary: "rerun failed prompt"
         ),
         TerminalCommandSuggestion(
             command: "/changes",
@@ -395,51 +479,49 @@ public final class TerminalChat: @unchecked Sendable {
         case "/exit", "/quit":
             return .exitChat
         case "/help":
-            writeSystemMessage(
-                """
-                Type a prompt and press return.
-                /models shows configured models and lets you switch the default agent model.
-                /agents selects an agent profile and resets the session.
-                /tools selects which tool groups are available to the model.
-                /skills selects installed prompt skills or installs one from GitHub or a local folder.
-                /attach <file> [file ...] attaches image or video files to the next prompt.
-                /attachments shows pending attachments.
-                /detach [all|number] removes pending attachments.
-                /changes shows the most recent file change summary. Use /changes diff to include patches.
-                /undo reverts the most recent tracked file changes.
-                /subagents shows delegated sub-agent status. Use /subagents off to hide automatic updates.
-                Ctrl+T toggles compact/full tool output.
-                /clear resets the conversation.
-                /exit closes the session.
-
-                """
-            )
+            writeSystemMessage(renderHelpTextForCurrentAgent())
             return .continueChat
         case "/models":
             do {
                 try await selectModelInteractively()
             } catch {
-                writeChatError("mlx-coder: \(error.localizedDescription)\n")
+                writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
             }
             return .continueChat
         case let command where command == "/agents" || command.hasPrefix("/agents "):
             do {
                 try await handleAgentsCommand(command)
             } catch {
-                writeChatError("mlx-coder: \(error.localizedDescription)\n")
+                writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
             }
             return .continueChat
         case let command where command == "/tools" || command.hasPrefix("/tools "):
             await handleToolsCommand(command)
             return .continueChat
+        case let command where command == "/feature" || command.hasPrefix("/feature "):
+            guard AgentProfileStore.isBuilderAgent(selectedAgent) else {
+                writeFailureMessage(Self.renderFeatureCommandUnavailableForAgent())
+                return .continueChat
+            }
+            switch await handleFeatureCommand(command) {
+            case .none:
+                return .continueChat
+            case let .runPrompt(prompt):
+                return .runPrompt(prompt)
+            case let .prefillPrompt(prompt):
+                return .prefillPrompt(prompt)
+            }
         case let command where command == "/skills" || command.hasPrefix("/skills "):
             await handleSkillsCommand(command)
+            return .continueChat
+        case let command where command == "/sessions" || command.hasPrefix("/sessions "):
+            await handleSessionsCommand(command)
             return .continueChat
         case let command where command == "/attach" || command.hasPrefix("/attach "):
             do {
                 try handleAttachCommand(command)
             } catch {
-                writeChatError("mlx-coder: \(error.localizedDescription)\n")
+                writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
             }
             return .continueChat
         case "/attachments":
@@ -449,9 +531,15 @@ public final class TerminalChat: @unchecked Sendable {
             do {
                 try handleDetachCommand(command)
             } catch {
-                writeChatError("mlx-coder: \(error.localizedDescription)\n")
+                writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
             }
             return .continueChat
+        case "/retry":
+            guard let lastFailedPrompt else {
+                writeFailureMessage("mlx-coder: no failed prompt to retry.\n")
+                return .continueChat
+            }
+            return .retryPrompt(lastFailedPrompt)
         case let command where command == "/changes" || command.hasPrefix("/changes "):
             handleChangesCommand(command)
             return .continueChat
@@ -464,16 +552,23 @@ public final class TerminalChat: @unchecked Sendable {
         case "/clear":
             do {
                 await sessionRunner.resetSession(id: sessionID)
+                sessionID = Self.newTerminalSessionID()
+                activeSessionCacheKey = nil
+                activeSessionHistory = []
+                activeSessionTranscript = []
+                activeSessionSystemPromptOverride = nil
+                activeSavedSessionName = nil
                 try await createCurrentSession()
                 statusBar.reset()
                 refreshInitialStatusBarContextWindow()
                 pendingAttachments.removeAll()
+                lastFailedPrompt = nil
                 isSubAgentOverviewVisible = false
                 lastRenderedSubAgentOverviewSignature = nil
                 stopSubAgentOverviewRefreshLoop()
                 writeSystemMessage("Session cleared.\n")
             } catch {
-                writeChatError("mlx-coder: \(error.localizedDescription)\n")
+                writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
             }
             return .continueChat
         default:
@@ -481,7 +576,29 @@ public final class TerminalChat: @unchecked Sendable {
         }
     }
 
-    private func runPromptBlocking(_ prompt: String) async {
+    private func promptAttempt(prompt: String) -> TerminalPromptAttempt {
+        TerminalPromptAttempt(
+            prompt: prompt,
+            attachments: consumePendingAttachmentsForPrompt(),
+            baseCacheKey: activeSessionCacheKey,
+            baseHistory: activeSessionHistory,
+            restoresBaseBeforeRun: false
+        )
+    }
+
+    private func promptAttempt(
+        retryPrompt: TerminalRetryPrompt
+    ) -> TerminalPromptAttempt {
+        TerminalPromptAttempt(
+            prompt: retryPrompt.prompt,
+            attachments: retryPrompt.attachments,
+            baseCacheKey: retryPrompt.baseCacheKey,
+            baseHistory: retryPrompt.baseHistory,
+            restoresBaseBeforeRun: true
+        )
+    }
+
+    private func runPromptBlocking(_ attempt: TerminalPromptAttempt) async {
         do {
             didReceiveMetricsForCurrentPrompt = false
             statusBar.setProcessing(true)
@@ -489,7 +606,7 @@ public final class TerminalChat: @unchecked Sendable {
                 statusBar.setProcessing(false)
             }
             let promptTask = Task {
-                try await generateResponse(prompt: prompt)
+                try await generateResponse(attempt: attempt)
             }
             let stopMonitor = TerminalEscapeStopMonitor.startIfNeeded(
                 isEnabled: stdinIsTerminal
@@ -514,22 +631,33 @@ public final class TerminalChat: @unchecked Sendable {
         } catch {
             let failure = TerminalChatGenerationFailure(
                 message: error.localizedDescription,
-                isCancellation: error is CancellationError
+                isCancellation: error is CancellationError,
+                retryPrompt: error is CancellationError ? nil : attempt.retryPrompt
             )
             await finishPromptResult(.failure(failure))
         }
     }
 
-    private func generateResponse(prompt: String) async throws -> DirectAgentResponse {
-        let attachments = consumePendingAttachmentsForPrompt()
+    private func generateResponse(
+        attempt: TerminalPromptAttempt
+    ) async throws -> DirectAgentResponse {
+        if attempt.restoresBaseBeforeRun {
+            await sessionRunner.resetSession(id: sessionID)
+            activeSessionCacheKey = attempt.baseCacheKey
+            activeSessionHistory = attempt.baseHistory
+        }
+        let transcriptTurn = TerminalSessionTranscriptTurn(
+            prompt: attempt.prompt,
+            attachments: attempt.attachments
+        )
         let fileChangeTracker = TurnFileChangeTracker(
             workspacePath: configuration.workingDirectory.path
         )
         do {
             let response = try await sessionRunner.sendPrompt(
                 configuration: await currentSessionConfiguration(),
-                prompt: prompt,
-                attachments: attachments,
+                prompt: attempt.prompt,
+                attachments: attempt.attachments,
                 onToolWillExecute: { toolCall in
                     await fileChangeTracker.captureBaselineIfNeeded(
                         forAgentToolCall: toolCall
@@ -546,6 +674,7 @@ public final class TerminalChat: @unchecked Sendable {
                             self.writeDiagnostic(message)
                         }
                     case let .thought(message):
+                        await transcriptTurn.appendThought(message)
                         self.writeThought(message)
                     case let .modelLoaded(modelID):
                         self.printModelIfNeeded(modelID)
@@ -557,26 +686,36 @@ public final class TerminalChat: @unchecked Sendable {
                     case let .contextWindow(status):
                         self.writeContextWindowStatus(status)
                     case let .content(delta):
+                        await transcriptTurn.appendAssistantContent(delta)
                         self.finishThoughtOutputIfNeeded()
                         self.writeAssistantContent(delta)
                     case let .toolCallStarted(toolCall):
+                        await transcriptTurn.appendToolCallStarted(toolCall)
                         self.finishThoughtOutputIfNeeded()
                         self.finishAssistantContentFormatting()
                         self.writeToolCallStarted(toolCall)
                     case let .toolCallCompleted(toolCall, result):
+                        await transcriptTurn.appendToolCallCompleted(toolCall, result: result)
                         self.finishThoughtOutputIfNeeded()
                         self.finishAssistantContentFormatting()
                         self.writeToolCallCompleted(toolCall, result: result)
                         await self.publishSubAgentOverviewIfVisible(
                             relatedToolName: toolCall.name
                         )
+                    case let .sessionSnapshot(snapshot):
+                        self.activeSessionCacheKey = snapshot.cacheKey
+                        self.activeSessionHistory = snapshot.history
+                    case .turnEnded:
+                        break
                     }
                 }
             )
+            activeSessionTranscript.append(contentsOf: await transcriptTurn.messages())
             await publishFileChangeSummaryIfNeeded(from: fileChangeTracker)
             await publishSubAgentOverviewIfVisible()
             return response
         } catch {
+            activeSessionTranscript.append(contentsOf: await transcriptTurn.messages())
             await publishFileChangeSummaryIfNeeded(from: fileChangeTracker)
             await publishSubAgentOverviewIfVisible()
             throw error
@@ -586,6 +725,7 @@ public final class TerminalChat: @unchecked Sendable {
     private func finishPromptResult(_ result: TerminalChatGenerationResult) async {
         switch result {
         case let .success(response):
+            lastFailedPrompt = nil
             finishThoughtOutputIfNeeded()
             finishAssistantContentFormatting()
             printModelIfNeeded(response.modelID)
@@ -599,7 +739,11 @@ public final class TerminalChat: @unchecked Sendable {
             if failure.isCancellation {
                 writeChatError("\nStopped.\n")
             } else {
-                writeChatError("mlx-coder: \(failure.message)\n")
+                lastFailedPrompt = failure.retryPrompt
+                writeFailureMessage("mlx-coder: \(failure.message)\n")
+                if failure.retryPrompt != nil {
+                    writeSystemMessage("Use /retry to run the prompt again.\n")
+                }
             }
         }
     }
@@ -609,11 +753,126 @@ private enum TerminalSubmittedLineAction {
     case continueChat
     case exitChat
     case runPrompt(String)
+    case retryPrompt(TerminalRetryPrompt)
+    case prefillPrompt(String)
+}
+
+private struct TerminalPromptAttempt: Sendable {
+    let prompt: String
+    let attachments: [AgentRuntimeAttachment]
+    let baseCacheKey: String?
+    let baseHistory: [AgentRuntimeMessage]
+    let restoresBaseBeforeRun: Bool
+
+    var retryPrompt: TerminalRetryPrompt {
+        TerminalRetryPrompt(
+            prompt: prompt,
+            attachments: attachments,
+            baseCacheKey: baseCacheKey,
+            baseHistory: baseHistory
+        )
+    }
+}
+
+private struct TerminalRetryPrompt: Sendable {
+    let prompt: String
+    let attachments: [AgentRuntimeAttachment]
+    let baseCacheKey: String?
+    let baseHistory: [AgentRuntimeMessage]
 }
 
 private struct TerminalChatGenerationFailure: Sendable {
     let message: String
     let isCancellation: Bool
+    let retryPrompt: TerminalRetryPrompt?
+}
+
+private actor TerminalSessionTranscriptTurn {
+    private var transcriptMessages: [AgentRuntimeMessage]
+    private var assistantContent = ""
+    private var reasoningContent = ""
+    private var startedToolCallIDs = Set<String>()
+    private var completedToolCallIDs = Set<String>()
+
+    init(prompt: String, attachments: [AgentRuntimeAttachment]) {
+        let userMessage = AgentRuntimeMessage(
+            role: .user,
+            content: prompt,
+            attachments: attachments
+        )
+        self.transcriptMessages = [userMessage]
+    }
+
+    func appendThought(_ delta: String) {
+        reasoningContent.append(delta)
+    }
+
+    func appendAssistantContent(_ delta: String) {
+        assistantContent.append(delta)
+    }
+
+    func appendToolCallStarted(_ toolCall: DirectAgentToolCall) {
+        guard startedToolCallIDs.insert(toolCall.id).inserted else {
+            return
+        }
+        flushAssistantMessage()
+        transcriptMessages.append(
+            AgentRuntimeMessage(
+                role: .assistant,
+                content: "",
+                toolCalls: [Self.runtimeToolCall(from: toolCall)]
+            )
+        )
+    }
+
+    func appendToolCallCompleted(
+        _ toolCall: DirectAgentToolCall,
+        result: DirectAgentToolResult
+    ) {
+        appendToolCallStarted(toolCall)
+        guard completedToolCallIDs.insert(toolCall.id).inserted else {
+            return
+        }
+        transcriptMessages.append(
+            AgentRuntimeMessage(
+                role: .tool,
+                content: result.output,
+                toolCallID: toolCall.id,
+                toolName: toolCall.name
+            )
+        )
+    }
+
+    func messages() -> [AgentRuntimeMessage] {
+        flushAssistantMessage()
+        return transcriptMessages
+    }
+
+    private func flushAssistantMessage() {
+        guard assistantContent.nilIfBlank != nil
+            || reasoningContent.nilIfBlank != nil else {
+            return
+        }
+        transcriptMessages.append(
+            AgentRuntimeMessage(
+                role: .assistant,
+                content: assistantContent,
+                reasoningContent: reasoningContent
+            )
+        )
+        assistantContent = ""
+        reasoningContent = ""
+    }
+
+    private static func runtimeToolCall(
+        from toolCall: DirectAgentToolCall
+    ) -> AgentRuntimeToolCall {
+        AgentRuntimeToolCall(
+            id: toolCall.id,
+            name: toolCall.name,
+            argumentsJSON: toolCall.argumentsJSON
+        )
+    }
 }
 
 private enum TerminalChatGenerationResult: Sendable {

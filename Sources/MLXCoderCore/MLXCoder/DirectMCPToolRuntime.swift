@@ -54,8 +54,11 @@ public actor DirectMCPToolRuntime {
     private var didAttemptXcodeDiscovery = false
     private var didAttemptFigmaDiscovery = false
     private var servers: [Server] = []
+    private let autoDiscoverExternalConnectors: Bool
 
-    public init() {}
+    public init(autoDiscoverExternalConnectors: Bool = false) {
+        self.autoDiscoverExternalConnectors = autoDiscoverExternalConnectors
+    }
 
     deinit {
         let servers = self.servers
@@ -124,6 +127,16 @@ public actor DirectMCPToolRuntime {
         return knownDescriptors(allowedToolNames: allowedToolNames)
     }
 
+    public func discoverDescriptors(
+        allowedToolNames: Set<String>? = nil
+    ) async -> [DirectToolDescriptor] {
+        await discoverIfNeeded(
+            allowedToolNames: allowedToolNames,
+            force: true
+        )
+        return knownDescriptors(allowedToolNames: allowedToolNames)
+    }
+
     public func knownDescriptors(
         allowedToolNames: Set<String>? = nil
     ) -> [DirectToolDescriptor] {
@@ -175,10 +188,11 @@ public actor DirectMCPToolRuntime {
     }
 
     private func discoverIfNeeded(
-        allowedToolNames: Set<String>? = nil
+        allowedToolNames: Set<String>? = nil,
+        force: Bool = false
     ) async {
         for family in Self.discoveryServerFamilies(allowedToolNames: allowedToolNames) {
-            await discoverFamilyIfNeeded(family)
+            await discoverFamilyIfNeeded(family, force: force)
         }
     }
 
@@ -233,10 +247,20 @@ public actor DirectMCPToolRuntime {
         "RunSomeTests"
     ]
 
-    private func discoverFamilyIfNeeded(_ family: ServerFamily) async {
+    private func discoverFamilyIfNeeded(
+        _ family: ServerFamily,
+        force: Bool
+    ) async {
+        guard force || autoDiscoverExternalConnectors else {
+            return
+        }
+
         switch family {
         case .xcode:
-            guard !didAttemptXcodeDiscovery else {
+            guard force || !didAttemptXcodeDiscovery else {
+                return
+            }
+            guard !servers.contains(where: { $0.family == .xcode }) else {
                 return
             }
             didAttemptXcodeDiscovery = true
@@ -244,7 +268,10 @@ public actor DirectMCPToolRuntime {
                 servers.append(xcodeServer)
             }
         case .figma:
-            guard !didAttemptFigmaDiscovery else {
+            guard force || !didAttemptFigmaDiscovery else {
+                return
+            }
+            guard !servers.contains(where: { $0.family == .figma }) else {
                 return
             }
             didAttemptFigmaDiscovery = true

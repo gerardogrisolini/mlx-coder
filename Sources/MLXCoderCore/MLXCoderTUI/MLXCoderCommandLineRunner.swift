@@ -20,8 +20,9 @@ public enum MLXCoderCommandLineRunner {
         do {
             SwiftPMResourceBundleDirectory.configure()
 
+            let sanitizedArguments = MLXCoderCommandLineArgumentSanitizer.sanitized(rawArguments)
             let configuration = try AgentConfiguration(
-                arguments: MLXCoderCommandLineArgumentSanitizer.sanitized(rawArguments)
+                arguments: sanitizedArguments
             )
             if configuration.printHelp {
                 AgentOutput.standardOutput.writeString(AgentConfiguration.helpText)
@@ -32,6 +33,8 @@ public enum MLXCoderCommandLineRunner {
                 return
             }
 
+            try ensureProjectAgentsFileExists(workingDirectory: configuration.workingDirectory)
+
             let interactiveInputAvailable = TerminalRawInput.supportsInteractiveInput()
             let resolvedRunMode = configuration.resolvedRunMode(
                 stdinIsTerminal: interactiveInputAvailable
@@ -39,6 +42,9 @@ public enum MLXCoderCommandLineRunner {
 
             switch resolvedRunMode {
             case .chat:
+                if interactiveInputAvailable {
+                    AgentOutput.clearTerminalScreenIfNeeded()
+                }
                 AgentOutput.silenceInheritedProcessOutput(
                     keepStandardError: configuration.verboseLogging
                 )
@@ -136,6 +142,39 @@ public enum MLXCoderCommandLineRunner {
             || argument == "--max-tool-rounds"
             || argument == "--max-output-tokens"
             || argument == "--verbose"
+    }
+
+    private static func ensureProjectAgentsFileExists(workingDirectory: URL) throws {
+        let standardizedWorkingDirectory = workingDirectory.standardizedFileURL
+        let agentsFileURL = standardizedWorkingDirectory
+            .appendingPathComponent(MLXAgentsContextService.filename)
+        guard !FileManager.default.fileExists(atPath: agentsFileURL.path) else {
+            return
+        }
+
+        do {
+            _ = try MLXProjectContextFileService().createDefaultDocument(
+                kind: .agents,
+                at: standardizedWorkingDirectory,
+                projectName: standardizedWorkingDirectory.lastPathComponent
+            )
+        } catch {
+            throw MLXCoderCommandLineRunnerError.unableToCreateProjectAgents(
+                agentsFileURL,
+                error
+            )
+        }
+    }
+}
+
+private enum MLXCoderCommandLineRunnerError: LocalizedError {
+    case unableToCreateProjectAgents(URL, Error)
+
+    var errorDescription: String? {
+        switch self {
+        case let .unableToCreateProjectAgents(url, error):
+            return "Unable to create project AGENTS.md at \(url.path): \(error.localizedDescription)"
+        }
     }
 }
 

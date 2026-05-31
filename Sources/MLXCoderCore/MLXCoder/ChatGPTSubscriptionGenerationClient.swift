@@ -365,6 +365,25 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         await toolExecutor.subAgentSnapshots()
     }
 
+    public func snapshotSession(id: String) -> AgentRuntimeSessionSnapshot? {
+        guard let session = sessions[id] else {
+            return nil
+        }
+        let splitMessages = RemoteGenerationClient.snapshotMessages(
+            from: session.messages
+        )
+        return AgentRuntimeSessionSnapshot(
+            sessionID: id,
+            workingDirectoryPath: session.cwd,
+            systemPrompt: splitMessages.systemPrompt ?? session.systemPrompt,
+            cacheKey: session.cacheKey,
+            history: splitMessages.history,
+            allowedToolNames: session.allowedToolNames,
+            thinkingSelection: session.thinkingSelection,
+            preserveThinking: session.preserveThinking
+        )
+    }
+
     public func sendPrompt(
         sessionID: String,
         prompt: String,
@@ -436,6 +455,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
             let toolPayloads = toolCatalog.responsesToolPayloads
 
             var responseText = ""
+            var responseReasoningText = ""
             var stopReason = "end_turn"
             var toolCallAccumulator = RemoteToolCallAccumulator()
             var requestUsage: RemoteGenerationUsage?
@@ -485,6 +505,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                             continue
                         }
                         markFirstDelta()
+                        responseReasoningText.append(delta)
                         await onEvent(.thought(delta))
                     case let .responseToolCallItem(item, outputIndex):
                         markFirstDelta()
@@ -531,6 +552,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                     if let delta = Self.responseReasoningDelta(from: object),
                        !delta.isEmpty {
                         markFirstDelta()
+                        responseReasoningText.append(delta)
                         await onEvent(.thought(delta))
                     }
                 case "response_completed",
@@ -569,6 +591,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
 
             Self.appendAssistantMessage(
                 text: responseText,
+                reasoningText: responseReasoningText,
                 toolCalls: wireToolCalls,
                 to: &session.messages
             )
@@ -582,7 +605,10 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                 session.continuation = nil
             }
 
-            if let metrics = RemoteGenerationClient.generationMetrics(generationStats) {
+            if let metrics = RemoteGenerationClient.generationMetrics(
+                generationStats,
+                estimateMissingRates: true
+            ) {
                 await RemoteGenerationClient.publishGenerationMetrics(
                     metrics,
                     maxTokens: maxContextWindowTokens,
@@ -1306,6 +1332,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
 
     private static func appendAssistantMessage(
         text: String,
+        reasoningText: String,
         toolCalls: [DirectAgentToolCall],
         to messages: inout [[String: Any]]
     ) {
@@ -1313,6 +1340,9 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
             "role": "assistant",
             "content": text
         ]
+        if let reasoningText = reasoningText.nilIfBlank {
+            message["reasoning_content"] = reasoningText
+        }
         if !toolCalls.isEmpty {
             message["tool_calls"] = toolCalls.map { toolCall in
                 [
@@ -1327,7 +1357,8 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         }
 
         let hasContent = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if hasContent || !toolCalls.isEmpty {
+        let hasReasoning = reasoningText.nilIfBlank != nil
+        if hasContent || hasReasoning || !toolCalls.isEmpty {
             messages.append(message)
         }
     }

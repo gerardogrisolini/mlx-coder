@@ -13,6 +13,7 @@ public actor AgentCoreSessionRunner {
     private var backend: AgentCoreBackend?
     private var activeRuntimeConfiguration: AgentCoreSessionConfiguration?
     private var sessions: [String: AgentCoreSessionConfiguration] = [:]
+    private var lastKnownSessionSnapshots: [String: AgentRuntimeSessionSnapshot] = [:]
     private var activePromptTasks: [UUID: Task<Void, Never>] = [:]
     private var promptAuthorizationHandlers: [UUID: AgentToolAuthorizationHandler] = [:]
     private let defaultToolAuthorizationHandler: AgentToolAuthorizationHandler?
@@ -32,7 +33,7 @@ public actor AgentCoreSessionRunner {
     public func mcpToolDescriptors(
         allowedToolNames: Set<String>? = nil
     ) async -> [DirectToolDescriptor] {
-        await mcpRuntime.descriptors(allowedToolNames: allowedToolNames)
+        await mcpRuntime.discoverDescriptors(allowedToolNames: allowedToolNames)
     }
 
     public func knownMCPToolDescriptors(
@@ -162,18 +163,69 @@ public actor AgentCoreSessionRunner {
         )
         await backend.updateToolProviders(toolProviders)
         try await ensureSession(configuration: configuration)
-
-        return try await backend.sendPrompt(
-            sessionID: configuration.sessionID,
+        let initialSnapshot = await backend.snapshotSession(id: configuration.sessionID)
+            ?? AgentRuntimeSessionSnapshot(configuration: configuration)
+        let turnRecorder = AgentCorePromptTurnRecorder(
+            initialSnapshot: initialSnapshot,
             prompt: prompt,
-            attachments: attachments,
-            onEvent: { event in
-                if case let .toolCallStarted(toolCall) = event {
-                    await onToolWillExecute?(toolCall)
-                }
-                await onEvent(event)
-            }
+            attachments: attachments
         )
+
+        do {
+            let response = try await backend.sendPrompt(
+                sessionID: configuration.sessionID,
+                prompt: prompt,
+                attachments: attachments,
+                onEvent: { event in
+                    await turnRecorder.record(event)
+                    if case let .toolCallStarted(toolCall) = event {
+                        await onToolWillExecute?(toolCall)
+                    }
+                    await onEvent(event)
+                }
+            )
+            let recovery = await recoveredSessionSnapshot(
+                backend: backend,
+                configuration: configuration,
+                recorder: turnRecorder
+            )
+            await restoreSessionIfNeeded(
+                recovery,
+                backend: backend,
+                baseConfiguration: configuration
+            )
+            await onEvent(.sessionSnapshot(recovery.snapshot))
+            await onEvent(.turnEnded(.completed))
+            return response
+        } catch is CancellationError {
+            let recovery = await recoveredSessionSnapshot(
+                backend: backend,
+                configuration: configuration,
+                recorder: turnRecorder
+            )
+            await restoreSessionIfNeeded(
+                recovery,
+                backend: backend,
+                baseConfiguration: configuration
+            )
+            await onEvent(.sessionSnapshot(recovery.snapshot))
+            await onEvent(.turnEnded(.cancelled))
+            throw CancellationError()
+        } catch {
+            let recovery = await recoveredSessionSnapshot(
+                backend: backend,
+                configuration: configuration,
+                recorder: turnRecorder
+            )
+            await restoreSessionIfNeeded(
+                recovery,
+                backend: backend,
+                baseConfiguration: configuration
+            )
+            await onEvent(.sessionSnapshot(recovery.snapshot))
+            await onEvent(.turnEnded(.failed(message: error.localizedDescription)))
+            throw error
+        }
     }
 
     public func subAgentSnapshots() async -> [DirectSubAgentRuntime.AgentSnapshot] {
@@ -181,6 +233,32 @@ public actor AgentCoreSessionRunner {
             return []
         }
         return await backend.subAgentSnapshots()
+    }
+
+    public func snapshotSession(id sessionID: String) async -> AgentRuntimeSessionSnapshot? {
+        if let snapshot = await backend?.snapshotSession(id: sessionID) {
+            if let lastKnownSnapshot = lastKnownSessionSnapshots[sessionID],
+               lastKnownSnapshot.isLikelyNewerThan(snapshot) {
+                return lastKnownSnapshot
+            }
+            return snapshot
+        }
+        if let snapshot = lastKnownSessionSnapshots[sessionID] {
+            return snapshot
+        }
+        guard let configuration = sessions[sessionID] else {
+            return nil
+        }
+        return AgentRuntimeSessionSnapshot(
+            sessionID: configuration.sessionID,
+            workingDirectoryPath: configuration.workingDirectoryPath,
+            systemPrompt: configuration.systemPrompt,
+            cacheKey: configuration.cacheKey,
+            history: configuration.history,
+            allowedToolNames: configuration.allowedToolNames,
+            thinkingSelection: configuration.thinkingSelection,
+            preserveThinking: configuration.preserveThinking
+        )
     }
 
     public func streamPrompt(
@@ -249,6 +327,7 @@ public actor AgentCoreSessionRunner {
         activePromptTasks.removeAll()
         promptAuthorizationHandlers.removeAll()
         sessions.removeAll()
+        lastKnownSessionSnapshots.removeAll()
         let backendToShutdown = backend
         backend = nil
         activeRuntimeConfiguration = nil
@@ -264,12 +343,14 @@ public actor AgentCoreSessionRunner {
 
         if let sessionID {
             sessions.removeValue(forKey: sessionID)
+            lastKnownSessionSnapshots.removeValue(forKey: sessionID)
             await backend?.clearSession(id: sessionID)
             return
         }
 
         let sessionIDs = Array(sessions.keys)
         sessions.removeAll()
+        lastKnownSessionSnapshots.removeAll()
         for sessionID in sessionIDs {
             await backend?.clearSession(id: sessionID)
         }
@@ -277,6 +358,7 @@ public actor AgentCoreSessionRunner {
 
     public func closeSession(id sessionID: String) async {
         sessions.removeValue(forKey: sessionID)
+        lastKnownSessionSnapshots.removeValue(forKey: sessionID)
         await backend?.closeSession(id: sessionID)
     }
 
@@ -287,6 +369,7 @@ public actor AgentCoreSessionRunner {
         activePromptTasks.removeAll()
         promptAuthorizationHandlers.removeAll()
         sessions.removeAll()
+        lastKnownSessionSnapshots.removeAll()
         activeRuntimeConfiguration = nil
         let backendToShutdown = backend
         backend = nil
@@ -346,9 +429,65 @@ public actor AgentCoreSessionRunner {
 
     private func resetBackend() async {
         sessions.removeAll()
+        lastKnownSessionSnapshots.removeAll()
         activeRuntimeConfiguration = nil
         await backend?.shutdown()
         backend = nil
+    }
+
+    private func recoveredSessionSnapshot(
+        backend: AgentCoreBackend,
+        configuration: AgentCoreSessionConfiguration,
+        recorder: AgentCorePromptTurnRecorder
+    ) async -> AgentCoreSessionSnapshotRecovery {
+        let recordedSnapshot = await recorder.snapshot()
+        if let backendSnapshot = await backend.snapshotSession(id: configuration.sessionID),
+           backendSnapshot.includesLikelyTurn(from: recordedSnapshot) {
+            cacheSessionSnapshot(backendSnapshot, baseConfiguration: configuration)
+            return AgentCoreSessionSnapshotRecovery(
+                snapshot: backendSnapshot,
+                shouldRestoreBackend: false
+            )
+        }
+
+        cacheSessionSnapshot(recordedSnapshot, baseConfiguration: configuration)
+        return AgentCoreSessionSnapshotRecovery(
+            snapshot: recordedSnapshot,
+            shouldRestoreBackend: true
+        )
+    }
+
+    private func restoreSessionIfNeeded(
+        _ recovery: AgentCoreSessionSnapshotRecovery,
+        backend: AgentCoreBackend,
+        baseConfiguration: AgentCoreSessionConfiguration
+    ) async {
+        guard recovery.shouldRestoreBackend else {
+            return
+        }
+        let configuration = baseConfiguration.replacingRuntimeState(
+            with: recovery.snapshot
+        )
+        await backend.createSession(
+            id: configuration.sessionID,
+            cwd: configuration.workingDirectoryPath,
+            systemPrompt: configuration.systemPrompt,
+            history: configuration.history,
+            cacheKey: configuration.cacheKey,
+            allowedToolNames: configuration.allowedToolNames,
+            thinkingSelection: configuration.thinkingSelection,
+            preserveThinking: configuration.preserveThinking
+        )
+    }
+
+    private func cacheSessionSnapshot(
+        _ snapshot: AgentRuntimeSessionSnapshot,
+        baseConfiguration: AgentCoreSessionConfiguration
+    ) {
+        lastKnownSessionSnapshots[snapshot.sessionID] = snapshot
+        sessions[snapshot.sessionID] = baseConfiguration.replacingRuntimeState(
+            with: snapshot
+        )
     }
 
     private func authorizeTool(_ request: AgentToolAuthorizationRequest) async -> Bool {
@@ -359,5 +498,185 @@ public actor AgentCoreSessionRunner {
             return true
         }
         return await defaultToolAuthorizationHandler(request)
+    }
+}
+
+private struct AgentCoreSessionSnapshotRecovery {
+    let snapshot: AgentRuntimeSessionSnapshot
+    let shouldRestoreBackend: Bool
+}
+
+private actor AgentCorePromptTurnRecorder {
+    private let initialSnapshot: AgentRuntimeSessionSnapshot
+    private var history: [AgentRuntimeMessage]
+    private var assistantContent = ""
+    private var assistantReasoning = ""
+    private var assistantToolCalls: [AgentRuntimeToolCall] = []
+
+    init(
+        initialSnapshot: AgentRuntimeSessionSnapshot,
+        prompt: String,
+        attachments: [AgentRuntimeAttachment]
+    ) {
+        self.initialSnapshot = initialSnapshot
+        self.history = initialSnapshot.history
+
+        let normalizedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !normalizedPrompt.isEmpty || !attachments.isEmpty {
+            history.append(
+                AgentRuntimeMessage(
+                    role: .user,
+                    content: normalizedPrompt,
+                    attachments: attachments
+                )
+            )
+        }
+    }
+
+    func record(_ event: DirectAgentEvent) {
+        switch event {
+        case let .thought(delta):
+            assistantReasoning.append(delta)
+        case let .content(delta):
+            assistantContent.append(delta)
+        case let .toolCallStarted(toolCall):
+            recordToolCall(toolCall)
+        case let .toolCallCompleted(toolCall, result):
+            recordToolCall(toolCall)
+            flushAssistantIfNeeded()
+            history.append(
+                AgentRuntimeMessage(
+                    role: .tool,
+                    content: result.output,
+                    toolCallID: toolCall.id,
+                    toolName: toolCall.name
+                )
+            )
+        case .status,
+             .diagnostic,
+             .modelLoaded,
+             .modelLoadedDetails,
+             .metrics,
+             .contextWindow,
+             .sessionSnapshot,
+             .turnEnded:
+            break
+        }
+    }
+
+    func snapshot() -> AgentRuntimeSessionSnapshot {
+        var snapshotHistory = history
+        if let assistantMessage = pendingAssistantMessage() {
+            snapshotHistory.append(assistantMessage)
+        }
+        return AgentRuntimeSessionSnapshot(
+            sessionID: initialSnapshot.sessionID,
+            workingDirectoryPath: initialSnapshot.workingDirectoryPath,
+            systemPrompt: initialSnapshot.systemPrompt,
+            cacheKey: initialSnapshot.cacheKey,
+            history: snapshotHistory,
+            allowedToolNames: initialSnapshot.allowedToolNames,
+            thinkingSelection: initialSnapshot.thinkingSelection,
+            preserveThinking: initialSnapshot.preserveThinking
+        )
+    }
+
+    private func recordToolCall(_ toolCall: DirectAgentToolCall) {
+        let runtimeToolCall = AgentRuntimeToolCall(
+            id: toolCall.id,
+            name: toolCall.name,
+            argumentsJSON: toolCall.argumentsJSON
+        )
+        guard !assistantToolCalls.contains(runtimeToolCall) else {
+            return
+        }
+        assistantToolCalls.append(runtimeToolCall)
+    }
+
+    private func flushAssistantIfNeeded() {
+        guard let assistantMessage = pendingAssistantMessage() else {
+            return
+        }
+        history.append(assistantMessage)
+        assistantContent = ""
+        assistantReasoning = ""
+        assistantToolCalls = []
+    }
+
+    private func pendingAssistantMessage() -> AgentRuntimeMessage? {
+        let hasContent = !assistantContent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
+        let hasReasoning = !assistantReasoning
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
+        guard hasContent || hasReasoning || !assistantToolCalls.isEmpty else {
+            return nil
+        }
+        return AgentRuntimeMessage(
+            role: .assistant,
+            content: assistantContent,
+            reasoningContent: assistantReasoning,
+            toolCalls: assistantToolCalls
+        )
+    }
+}
+
+private extension AgentRuntimeSessionSnapshot {
+    init(configuration: AgentCoreSessionConfiguration) {
+        self.init(
+            sessionID: configuration.sessionID,
+            workingDirectoryPath: configuration.workingDirectoryPath,
+            systemPrompt: configuration.systemPrompt,
+            cacheKey: configuration.cacheKey,
+            history: configuration.history,
+            allowedToolNames: configuration.allowedToolNames,
+            thinkingSelection: configuration.thinkingSelection,
+            preserveThinking: configuration.preserveThinking
+        )
+    }
+
+    func isLikelyNewerThan(_ other: AgentRuntimeSessionSnapshot) -> Bool {
+        sessionID == other.sessionID && history.count > other.history.count
+    }
+
+    func includesLikelyTurn(from recordedSnapshot: AgentRuntimeSessionSnapshot) -> Bool {
+        guard sessionID == recordedSnapshot.sessionID else {
+            return false
+        }
+        if history.count >= recordedSnapshot.history.count {
+            return true
+        }
+
+        let tail = recordedSnapshot.history.suffix(
+            min(3, recordedSnapshot.history.count)
+        )
+        return !tail.isEmpty && tail.allSatisfy { history.contains($0) }
+    }
+}
+
+private extension AgentCoreSessionConfiguration {
+    func replacingRuntimeState(
+        with snapshot: AgentRuntimeSessionSnapshot
+    ) -> AgentCoreSessionConfiguration {
+        AgentCoreSessionConfiguration(
+            sessionID: snapshot.sessionID,
+            modelID: modelID,
+            bearerToken: bearerToken,
+            workingDirectory: URL(fileURLWithPath: snapshot.workingDirectoryPath),
+            systemPrompt: snapshot.systemPrompt,
+            cacheKey: snapshot.cacheKey,
+            sessionRevision: sessionRevision,
+            history: snapshot.history,
+            allowedToolNames: snapshot.allowedToolNames,
+            configuredContextWindowLimit: configuredContextWindowLimit,
+            generationParameterOverrides: generationParameterOverrides,
+            maxToolRounds: maxToolRounds,
+            maxOutputTokens: maxOutputTokens,
+            verboseLogging: verboseLogging,
+            appMode: appMode,
+            thinkingSelection: snapshot.thinkingSelection,
+            preserveThinking: snapshot.preserveThinking
+        )
     }
 }

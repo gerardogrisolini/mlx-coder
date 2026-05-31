@@ -29,6 +29,10 @@ let package = Package(
             name: "MLXCoderSetup",
             targets: ["MLXCoderSetup"]
         ),
+        .library(
+            name: "MLXFeatureKit",
+            targets: ["MLXFeatureKit"]
+        ),
         .executable(
             name: "mlx-server",
             targets: ["mlx-server"]
@@ -36,6 +40,30 @@ let package = Package(
         .executable(
             name: "mlx-coder",
             targets: ["mlx-coder"]
+        ),
+        .executable(
+            name: "mlx-search-tools-feature",
+            targets: ["mlx-search-tools-feature"]
+        ),
+        .executable(
+            name: "mlx-web-tools-feature",
+            targets: ["mlx-web-tools-feature"]
+        ),
+        .executable(
+            name: "mlx-git-tools-feature",
+            targets: ["mlx-git-tools-feature"]
+        ),
+        .executable(
+            name: "mlx-xcode-tools-feature",
+            targets: ["mlx-xcode-tools-feature"]
+        ),
+        .executable(
+            name: "mlx-figma-tools-feature",
+            targets: ["mlx-figma-tools-feature"]
+        ),
+        .executable(
+            name: "mlx-jira-tools-feature",
+            targets: ["mlx-jira-tools-feature"]
         )
     ],
     dependencies: [
@@ -76,11 +104,21 @@ let package = Package(
             name: "MLXCoderCore",
             dependencies: [
                 .product(name: "Crypto", package: "swift-crypto"),
-                .product(name: "Markdown", package: "swift-markdown")
+                .product(name: "Markdown", package: "swift-markdown"),
+                "MLXFeatureKit",
+                "MLXLocalToolsSupport"
             ],
             swiftSettings: [
                 .define("SWIFTPM_NON_SANDBOX_TUI")
             ]
+        ),
+        .target(
+            name: "MLXFeatureKit",
+            dependencies: []
+        ),
+        .target(
+            name: "MLXLocalToolsSupport",
+            dependencies: ["MLXFeatureKit"]
         ),
         .target(
             name: "MLXCoderSetup",
@@ -98,6 +136,48 @@ let package = Package(
             swiftSettings: [
                 .define("SWIFTPM_NON_SANDBOX_TUI")
             ]
+        ),
+        .executableTarget(
+            name: "mlx-search-tools-feature",
+            dependencies: [
+                "MLXFeatureKit",
+                "MLXLocalToolsSupport"
+            ],
+            path: "Features/MLXSearchToolsFeature"
+        ),
+        .executableTarget(
+            name: "mlx-web-tools-feature",
+            dependencies: ["MLXFeatureKit"],
+            path: "Features/MLXWebToolsFeature"
+        ),
+        .executableTarget(
+            name: "mlx-git-tools-feature",
+            dependencies: ["MLXFeatureKit"],
+            path: "Features/MLXGitToolsFeature"
+        ),
+        .executableTarget(
+            name: "mlx-xcode-tools-feature",
+            dependencies: [
+                "MLXCoderCore",
+                "MLXFeatureKit"
+            ],
+            path: "Features/MLXXcodeToolsFeature"
+        ),
+        .executableTarget(
+            name: "mlx-figma-tools-feature",
+            dependencies: [
+                "MLXCoderCore",
+                "MLXFeatureKit"
+            ],
+            path: "Features/MLXFigmaToolsFeature"
+        ),
+        .executableTarget(
+            name: "mlx-jira-tools-feature",
+            dependencies: [
+                "MLXCoderCore",
+                "MLXFeatureKit"
+            ],
+            path: "Features/MLXJiraToolsFeature"
         ),
         .target(
             name: "MLXServerSetup",

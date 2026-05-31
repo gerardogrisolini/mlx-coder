@@ -19,6 +19,7 @@ public struct MLXServerChatMessage: Sendable, Equatable {
 
     public var role: Role
     public var content: String
+    public var reasoningContent: String?
     public var imageURLs: [URL]
     public var videoURLs: [URL]
     public var toolCalls: [MLXServerChatToolCall]
@@ -27,6 +28,7 @@ public struct MLXServerChatMessage: Sendable, Equatable {
     public init(
         role: Role,
         content: String,
+        reasoningContent: String? = nil,
         imageURLs: [URL] = [],
         videoURLs: [URL] = [],
         toolCalls: [MLXServerChatToolCall] = [],
@@ -34,6 +36,11 @@ public struct MLXServerChatMessage: Sendable, Equatable {
     ) {
         self.role = role
         self.content = content
+        let trimmedReasoningContent = reasoningContent?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        self.reasoningContent = trimmedReasoningContent?.isEmpty == false
+            ? trimmedReasoningContent
+            : nil
         self.imageURLs = imageURLs
         self.videoURLs = videoURLs
         self.toolCalls = toolCalls
@@ -54,9 +61,15 @@ public struct MLXServerChatMessage: Sendable, Equatable {
 
     public static func assistant(
         _ content: String,
+        reasoningContent: String? = nil,
         toolCalls: [MLXServerChatToolCall] = []
     ) -> Self {
-        Self(role: .assistant, content: content, toolCalls: toolCalls)
+        Self(
+            role: .assistant,
+            content: content,
+            reasoningContent: reasoningContent,
+            toolCalls: toolCalls
+        )
     }
 
     public static func tool(_ content: String, toolCallID: String? = nil) -> Self {

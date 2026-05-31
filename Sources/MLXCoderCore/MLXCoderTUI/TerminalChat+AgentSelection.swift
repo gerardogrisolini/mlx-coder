@@ -57,7 +57,9 @@ extension TerminalChat {
 
     public func applyAgentSelection(_ agent: AgentProfile) async throws {
         selectedAgent = agent
-        applyAgentProfile(agent)
+        interactiveReader.setPanelCommandSuggestions(commandSuggestionsForCurrentAgent())
+        await applyAgentProfile(agent)
+        activeSessionSystemPromptOverride = nil
         manualModelIDOverride = configuration.hostedModels == nil
             ? nil
             : configuration.modelID
@@ -75,9 +77,11 @@ extension TerminalChat {
         writeSystemMessage("Switched to agent: \(agent.displayName). Session reset.\n")
     }
 
-    public func applyAgentProfile(_ agent: AgentProfile) {
-        selectedToolGroups = Set(
-            agent.tools.compactMap { TerminalToolGroup.group(named: $0) }
+    public func applyAgentProfile(_ agent: AgentProfile) async {
+        let items = await toolSelectionItems()
+        selectedToolKeys = Self.toolSelectionKeys(
+            from: agent.tools,
+            items: items
         )
         selectedSkillIDs = agent.selectedSkillIDs(
             availableSkills: availableSkills()
@@ -96,7 +100,7 @@ extension TerminalChat {
             TerminalCheckboxMenuItem(
                 value: agent,
                 title: agent.displayName,
-                detail: agentSelectionDetail(agent)
+                detail: Self.agentSelectionDetail(agent)
             )
         }
     }
@@ -141,7 +145,7 @@ extension TerminalChat {
         writeSystemMessage("\nAvailable agents:\n")
         for (offset, agent) in agents.enumerated() {
             let marker = selectedAgent == agent ? " *" : ""
-            let detail = agentSelectionDetail(agent)
+            let detail = Self.agentSelectionDetail(agent)
             writeSystemMessage(
                 "  \(offset + 1). \(agent.displayName) - \(detail)\(marker)\n"
             )
@@ -149,22 +153,70 @@ extension TerminalChat {
         writeSystemMessage("\n")
     }
 
-    public func agentSelectionDetail(_ agent: AgentProfile) -> String {
-        var parts: [String] = []
+    public static func agentSelectionDetail(_ agent: AgentProfile) -> String {
+        var parts = [agentPurposeSummary(agent)]
         if let modelID = agent.modelID {
-            parts.append(modelID)
-        } else {
-            parts.append("default model")
-        }
-        if !agent.tools.isEmpty {
-            parts.append("tools: \(agent.tools.joined(separator: ", "))")
-        } else {
-            parts.append("tools: none")
+            parts.append("model: \(modelID)")
         }
         if !agent.skills.isEmpty {
             parts.append("skills: \(agent.skills.count)")
         }
         return parts.joined(separator: " · ")
+    }
+
+    private static func agentPurposeSummary(_ agent: AgentProfile) -> String {
+        switch agent.id.lowercased() {
+        case AgentProfileStore.defaultAgentID.uuidString.lowercased():
+            return "General coding with web, memory, and sub-agents"
+        case AgentProfileStore.bugfixAgentID.uuidString.lowercased():
+            return "Focused bug fixes with minimal code changes"
+        case AgentProfileStore.builderAgentID.uuidString.lowercased():
+            return "Create, build, and manage Swift feature tools"
+        case AgentProfileStore.featureAgentID.uuidString.lowercased():
+            return "Build complete product features with normal coding tools"
+        case AgentProfileStore.reviewAgentID.uuidString.lowercased():
+            return "Code review only: findings first, no edits unless asked"
+        case AgentProfileStore.researchAgentID.uuidString.lowercased():
+            return "Research, source inspection, web lookup, and synthesis"
+        case AgentProfileStore.refactorAgentID.uuidString.lowercased():
+            return "Behavior-preserving cleanup and targeted refactors"
+        default:
+            return customAgentToolSummary(agent.tools)
+        }
+    }
+
+    private static func customAgentToolSummary(_ tools: [String]) -> String {
+        let visibleTools = tools.filter { tool in
+            let trimmedTool = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmedTool != TerminalToolSelectionCatalog.featureBuilderKey
+                && !trimmedTool.hasPrefix("feature.")
+        }
+        guard !visibleTools.isEmpty else {
+            return "No tools enabled"
+        }
+
+        let labels: [(String, String)] = [
+            ("shell", "shell"),
+            ("files", "files"),
+            ("text", "text"),
+            (TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-search-tools"), "search"),
+            (TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-git-tools"), "git"),
+            ("memory", "memory"),
+            (TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-web-tools"), "web"),
+            ("orchestration", "sub-agents"),
+            (TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-xcode-tools"), "Xcode"),
+            (TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-figma-tools"), "Figma")
+        ]
+        let selectedLabels = labels.compactMap { pair in
+            visibleTools.contains(pair.0) ? pair.1 : nil
+        }
+        let unknownCount = visibleTools.filter { tool in
+            !labels.contains { pair in pair.0 == tool }
+        }.count
+        let summaryLabels = unknownCount > 0
+            ? selectedLabels + ["\(unknownCount) custom"]
+            : selectedLabels
+        return "Tools: \(summaryLabels.joined(separator: ", "))"
     }
 
     public static func renderSelectedAgent(_ agent: AgentProfile?) -> String {

@@ -28,6 +28,7 @@ public actor DirectToolExecutor {
     public let authorizationHandler: AgentToolAuthorizationHandler?
     public let subAgentRuntime: DirectSubAgentRuntime
     public let mcpRuntime: DirectMCPToolRuntime
+    public let swiftFeatureRuntime: SwiftFeatureRuntime
     public let orchestrationRuntime = DirectOrchestrationRuntime()
     public var borrowedOrchestrationToolExecutor: AgentBorrowedToolExecutor?
     public var toolProviderRegistry = AgentToolProviderRegistry()
@@ -36,12 +37,14 @@ public actor DirectToolExecutor {
         outputLimit: Int,
         authorizationHandler: AgentToolAuthorizationHandler? = nil,
         mcpRuntime: DirectMCPToolRuntime = DirectMCPToolRuntime(),
+        swiftFeatureRuntime: SwiftFeatureRuntime = SwiftFeatureRuntime(),
         borrowedOrchestrationToolExecutor: AgentBorrowedToolExecutor? = nil,
         subAgentBackendFactory: @escaping DirectSubAgentBackendFactory
     ) {
         self.outputLimit = outputLimit
         self.authorizationHandler = authorizationHandler
         self.mcpRuntime = mcpRuntime
+        self.swiftFeatureRuntime = swiftFeatureRuntime
         self.borrowedOrchestrationToolExecutor = borrowedOrchestrationToolExecutor
         self.subAgentRuntime = DirectSubAgentRuntime(
             backendFactory: subAgentBackendFactory
@@ -73,16 +76,20 @@ public actor DirectToolExecutor {
             return []
         }
 
-        var descriptors = DirectToolCatalog.baseDescriptors
-        descriptors.append(contentsOf: toolProviderRegistry.descriptors)
-        descriptors.append(
-            contentsOf: await mcpRuntime.descriptors(
-                allowedToolNames: allowedToolNames
-            )
-        )
-        return Self.filtered(
-            Self.canonicalized(descriptors),
+        let coreDescriptors = Self.filtered(
+            Self.canonicalized(
+                DirectToolCatalog.baseDescriptors + toolProviderRegistry.descriptors
+            ),
             allowedToolNames: allowedToolNames
+        )
+        let featureDescriptors = await swiftFeatureRuntime.descriptors(
+            allowedToolNames: allowedToolNames
+        )
+        let mcpDescriptors = await mcpRuntime.descriptors(
+            allowedToolNames: allowedToolNames
+        )
+        return Self.canonicalized(
+            coreDescriptors + featureDescriptors + mcpDescriptors
         )
     }
 
@@ -129,7 +136,15 @@ public actor DirectToolExecutor {
         allowedToolNames: Set<String>? = nil
     ) async -> DirectAgentToolResult {
         do {
-            guard Self.isAllowed(toolCall.name, allowedToolNames: allowedToolNames) else {
+            let isAllowed = Self.isAllowed(
+                toolCall.name,
+                allowedToolNames: allowedToolNames
+            )
+            let featureToolIsAllowed = await swiftFeatureRuntime.featureToolIsAllowed(
+                toolName: toolCall.name,
+                allowedToolNames: allowedToolNames
+            )
+            guard isAllowed || featureToolIsAllowed else {
                 throw DirectToolExecutorError.toolNotAllowed(toolCall.name)
             }
             let output = try await executeThrowing(

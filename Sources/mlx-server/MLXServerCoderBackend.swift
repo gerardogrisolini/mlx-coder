@@ -12,6 +12,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
     private struct SessionState {
         var cwd: URL
         var messages: [MLXServerChatMessage]
+        var cacheKey: String?
         var allowedToolNames: Set<String>?
         var thinkingSelection: AgentThinkingSelection?
         var preserveThinking: Bool
@@ -60,7 +61,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         cwd: String,
         systemPrompt: String?,
         history: [AgentRuntimeMessage],
-        cacheKey _: String?,
+        cacheKey: String?,
         allowedToolNames: Set<String>?,
         thinkingSelection: AgentThinkingSelection?,
         preserveThinking: Bool
@@ -71,6 +72,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
                 systemPrompt: systemPrompt,
                 history: history
             ),
+            cacheKey: cacheKey,
             allowedToolNames: allowedToolNames,
             thinkingSelection: thinkingSelection,
             preserveThinking: preserveThinking
@@ -217,6 +219,23 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
 
     func subAgentSnapshots() async -> [DirectSubAgentRuntime.AgentSnapshot] {
         await toolExecutor.subAgentSnapshots()
+    }
+
+    func snapshotSession(id: String) -> AgentRuntimeSessionSnapshot? {
+        guard let session = sessions[id] else {
+            return nil
+        }
+        let splitMessages = Self.snapshotMessages(from: session.messages)
+        return AgentRuntimeSessionSnapshot(
+            sessionID: id,
+            workingDirectoryPath: session.cwd.path,
+            systemPrompt: splitMessages.systemPrompt,
+            cacheKey: session.cacheKey,
+            history: splitMessages.history,
+            allowedToolNames: session.allowedToolNames,
+            thinkingSelection: session.thinkingSelection,
+            preserveThinking: session.preserveThinking
+        )
     }
 
     func sendPrompt(
@@ -449,6 +468,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
             session.messages.append(
                 .assistant(
                     turn.visibleText,
+                    reasoningContent: turn.reasoningText,
                     toolCalls: structuredToolCalls
                 )
             )
@@ -548,6 +568,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
                 serverMessage(
                     role: message.role,
                     content: message.content,
+                    reasoningContent: message.reasoningContent,
                     attachments: message.attachments
                 )
             }
@@ -571,6 +592,61 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
             updatedMessages.insert(.system(prompt), at: 0)
         }
         return updatedMessages
+    }
+
+    private static func snapshotMessages(
+        from messages: [MLXServerChatMessage]
+    ) -> (systemPrompt: String?, history: [AgentRuntimeMessage]) {
+        var remainingMessages = messages[...]
+        let systemPrompt: String?
+        if remainingMessages.first?.role == .system {
+            systemPrompt = remainingMessages.first?.content.nilIfBlank
+            remainingMessages = remainingMessages.dropFirst()
+        } else {
+            systemPrompt = nil
+        }
+
+        return (
+            systemPrompt,
+            remainingMessages.map(snapshotMessage(from:))
+        )
+    }
+
+    private static func snapshotMessage(
+        from message: MLXServerChatMessage
+    ) -> AgentRuntimeMessage {
+        let attachments =
+            message.imageURLs.map {
+                AgentRuntimeAttachment(
+                    kind: .image,
+                    fileURL: $0,
+                    originalFilename: $0.lastPathComponent
+                )
+            }
+            + message.videoURLs.map {
+                AgentRuntimeAttachment(
+                    kind: .video,
+                    fileURL: $0,
+                    originalFilename: $0.lastPathComponent
+                )
+            }
+        let toolCalls = message.toolCalls.map { toolCall in
+            AgentRuntimeToolCall(
+                id: toolCall.id,
+                name: toolCall.function.name,
+                argumentsJSON: jsonString(
+                    from: toolCall.function.arguments.mapValues(\.anyValue)
+                ) ?? "{}"
+            )
+        }
+        return AgentRuntimeMessage(
+            role: AgentRuntimeMessage.Role(rawValue: message.role.rawValue) ?? .user,
+            content: message.content,
+            reasoningContent: message.reasoningContent,
+            attachments: attachments,
+            toolCalls: toolCalls,
+            toolCallID: message.toolCallID
+        )
     }
 
     private static func agentRuntimeMessage(
@@ -619,14 +695,20 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         serverMessage(
             role: message.role,
             content: message.content,
-            attachments: message.attachments
+            reasoningContent: message.reasoningContent,
+            attachments: message.attachments,
+            toolCalls: message.toolCalls,
+            toolCallID: message.toolCallID
         )
     }
 
     private static func serverMessage(
         role: AgentRuntimeMessage.Role,
         content: String,
-        attachments: [AgentRuntimeAttachment]
+        reasoningContent: String? = nil,
+        attachments: [AgentRuntimeAttachment],
+        toolCalls runtimeToolCalls: [AgentRuntimeToolCall] = [],
+        toolCallID: String? = nil
     ) -> MLXServerChatMessage {
         let imageURLs = attachments.compactMap { attachment -> URL? in
             attachment.kind == .image ? attachment.fileURL : nil
@@ -641,9 +723,20 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         case .user:
             return .user(content, imageURLs: imageURLs, videoURLs: videoURLs)
         case .assistant:
-            return .assistant(content)
+            let toolCalls = runtimeToolCalls.map { toolCall in
+                MLXServerChatToolCall(
+                    id: toolCall.id,
+                    name: toolCall.name,
+                    arguments: sendableJSONObject(from: toolCall.argumentsJSON) ?? [:]
+                )
+            }
+            return .assistant(
+                content,
+                reasoningContent: reasoningContent,
+                toolCalls: toolCalls
+            )
         case .tool:
-            return .tool(content)
+            return .tool(content, toolCallID: toolCallID)
         }
     }
 

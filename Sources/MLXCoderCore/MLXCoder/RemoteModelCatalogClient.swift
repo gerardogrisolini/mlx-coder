@@ -48,7 +48,11 @@ public final class RemoteModelCatalogClient {
                     ?? id,
                 contextLength: contextLength(from: entry.values),
                 pricing: pricing(from: entry.values),
-                thinkingSupport: MLXModelThinkingSupport.fromModelMetadata(metadata),
+                thinkingSupport: Self.thinkingSupport(
+                    fromModelMetadata: metadata,
+                    baseURL: baseURL,
+                    modelID: id
+                ),
                 generationParameterOverrides: generationParameterOverrides(from: entry.values),
                 installed: boolValue(entry.values, "installed"),
                 loaded: boolValue(entry.values, "loaded"),
@@ -77,6 +81,28 @@ public final class RemoteModelCatalogClient {
                 generationParameterOverrides: model.generationParameterOverrides
             )
         }
+    }
+
+    static func thinkingSupport(
+        fromModelMetadata metadata: [String: Any],
+        baseURL: String,
+        modelID: String
+    ) -> MLXModelThinkingSupport? {
+        if let support = MLXModelThinkingSupport.fromModelMetadata(metadata) {
+            return support
+        }
+
+        guard AgentRemoteProvider.isNVIDIABaseURL(baseURL)
+            || AgentRemoteProvider.isModalDirectBaseURL(baseURL) else {
+            return nil
+        }
+
+        if AgentRemoteProvider.isNVIDIABaseURL(baseURL),
+           let support = inferredNVIDIAThinkingSupport(modelID: modelID) {
+            return support
+        }
+
+        return MLXModelThinkingSupport.fromSparseRemoteModelIdentifier(modelID)
     }
 }
 
@@ -164,6 +190,34 @@ public enum RemoteModelCatalogClientError: LocalizedError {
 }
 
 private extension RemoteModelCatalogClient {
+    static func inferredNVIDIAThinkingSupport(modelID: String) -> MLXModelThinkingSupport? {
+        let normalizedID = normalizedSparseModelIdentifier(modelID)
+        let hasNVIDIANemotronReasoningShape = [
+            "cosmosreason",
+            "nemotronreasoning",
+            "nemotroncontentreasoning",
+            "nemotronsuper",
+            "nemotronultra",
+            "nemotronnano",
+            "nemotron3super",
+            "nemotron3ultra",
+            "nemotron3nano"
+        ].contains { normalizedID.contains($0) }
+
+        return hasNVIDIANemotronReasoningShape ? .generic : nil
+    }
+
+    static func normalizedSparseModelIdentifier(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: ".", with: "")
+            .replacingOccurrences(of: "/", with: "")
+            .replacingOccurrences(of: " ", with: "")
+    }
+
     func endpointURL(
         baseURL: String,
         path: String
