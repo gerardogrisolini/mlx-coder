@@ -67,7 +67,7 @@ Run setup once:
 swift run -c release mlx-server --setup
 ```
 
-The setup writes `settings.json` under `~/.mlx-server/` and then asks whether to configure models too. If accepted, it starts model setup and writes `models.json` in the same directory.
+The setup writes `settings.json` under `~/.mlx-server/`. Model setup is separate and runs only when `mlx-server --setup-models` is launched explicitly.
 
 ## Model Loading
 

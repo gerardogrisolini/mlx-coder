@@ -6,6 +6,46 @@
 import Crypto
 import Foundation
 
+public struct MLXTerminalSavedSessionContextWindow: Codable, Equatable, Sendable {
+    public let usedTokens: Int?
+    public let maxTokens: Int?
+    public let modelID: String
+    public let isApproximate: Bool
+
+    public init(
+        usedTokens: Int?,
+        maxTokens: Int?,
+        modelID: String,
+        isApproximate: Bool
+    ) {
+        self.usedTokens = usedTokens
+        self.maxTokens = maxTokens
+        self.modelID = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.isApproximate = isApproximate
+    }
+
+    public init(_ status: DirectAgentContextWindowStatus) {
+        self.init(
+            usedTokens: status.usedTokens,
+            maxTokens: status.maxTokens,
+            modelID: status.modelID,
+            isApproximate: status.isApproximate
+        )
+    }
+
+    public var runtimeStatus: DirectAgentContextWindowStatus? {
+        guard !modelID.isEmpty else {
+            return nil
+        }
+        return DirectAgentContextWindowStatus(
+            usedTokens: usedTokens,
+            maxTokens: maxTokens,
+            modelID: modelID,
+            isApproximate: isApproximate
+        )
+    }
+}
+
 public struct MLXTerminalSavedSession: Codable, Equatable, Sendable {
     public static let currentVersion = 2
 
@@ -22,8 +62,10 @@ public struct MLXTerminalSavedSession: Codable, Equatable, Sendable {
     public let selectedTools: [String]
     public let selectedSkillIDs: [String]
     public let thinkingSelection: String?
+    public let contextWindow: MLXTerminalSavedSessionContextWindow?
     public let systemPrompt: String?
     public let history: [AgentRuntimeMessage]
+    public let transcriptHistory: [AgentRuntimeMessage]?
 
     public init(
         version: Int = Self.currentVersion,
@@ -39,8 +81,10 @@ public struct MLXTerminalSavedSession: Codable, Equatable, Sendable {
         selectedTools: [String],
         selectedSkillIDs: [String],
         thinkingSelection: String?,
+        contextWindow: MLXTerminalSavedSessionContextWindow? = nil,
         systemPrompt: String?,
-        history: [AgentRuntimeMessage]
+        history: [AgentRuntimeMessage],
+        transcriptHistory: [AgentRuntimeMessage]? = nil
     ) {
         self.version = version
         self.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -57,12 +101,18 @@ public struct MLXTerminalSavedSession: Codable, Equatable, Sendable {
         self.selectedTools = selectedTools
         self.selectedSkillIDs = selectedSkillIDs
         self.thinkingSelection = thinkingSelection?.nilIfBlank
+        self.contextWindow = contextWindow
         self.systemPrompt = systemPrompt?.nilIfBlank
         self.history = history
+        self.transcriptHistory = transcriptHistory
+    }
+
+    public var displayHistory: [AgentRuntimeMessage] {
+        transcriptHistory ?? history
     }
 
     public var messageCount: Int {
-        history.filter { $0.role != .system }.count
+        displayHistory.filter { $0.role != .system }.count
     }
 }
 
@@ -154,6 +204,26 @@ public enum MLXTerminalSessionStore {
                 }
                 return $0.savedAt > $1.savedAt
             }
+    }
+
+    @discardableResult
+    public static func delete(
+        name: String,
+        workingDirectory: URL,
+        fileManager: FileManager = .default,
+        supportDirectoryURL: URL? = nil
+    ) throws -> Bool {
+        let fileURL = sessionFileURL(
+            name: name,
+            workingDirectory: workingDirectory,
+            fileManager: fileManager,
+            supportDirectoryURL: supportDirectoryURL
+        )
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            return false
+        }
+        try fileManager.removeItem(at: fileURL)
+        return true
     }
 
     public static func sessionFileURL(

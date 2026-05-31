@@ -5,14 +5,10 @@
 
 import Foundation
 import MLXServerCore
-#if os(macOS)
-import Darwin
-#elseif os(Linux)
-import Glibc
-#endif
 
 public enum MLXServerSetupRunner {
     public static let option = "--setup"
+    private static let interactiveLineReader = MLXServerSetupInteractiveLineReader()
 
     public static func shouldRunSetup(arguments: [String]) -> Bool {
         arguments.contains(option)
@@ -22,7 +18,7 @@ public enum MLXServerSetupRunner {
         arguments.filter { $0 != option }
     }
 
-    public static func run(arguments: [String]) throws -> Bool {
+    public static func run(arguments: [String]) throws {
         _ = arguments
         guard supportsInteractiveInput() else {
             throw MLXServerSetupError.nonInteractiveTerminal
@@ -47,7 +43,8 @@ public enum MLXServerSetupRunner {
                     defaultValue: false
                 )
                 guard shouldReconfigure else {
-                    return try promptConfigureModels()
+                    printRuntimeSetupCompleted()
+                    return
                 }
                 FileHandle.standardError.writeString("Using current values as defaults. Press Return to keep them.\n\n")
             } catch {
@@ -64,16 +61,11 @@ public enum MLXServerSetupRunner {
         let settings = try buildSettings(defaultSettings: defaultSettings)
         try MLXServerSettingsStore.save(settings, to: settingsURL)
         FileHandle.standardError.writeString("Updated: settings.json\n")
-        return try promptConfigureModels()
+        printRuntimeSetupCompleted()
     }
 
-    private static func promptConfigureModels() throws -> Bool {
+    private static func printRuntimeSetupCompleted() {
         FileHandle.standardError.writeString("\nRuntime setup completed.\n")
-        let modelsURL = MLXServerModelsManifestStore.modelsURL()
-        return try promptYesNo(
-            "Configure models now?",
-            defaultValue: !FileManager.default.fileExists(atPath: modelsURL.path)
-        )
     }
 
     private static func buildSettings(defaultSettings: MLXServerSettings) throws -> MLXServerSettings {
@@ -276,8 +268,7 @@ public enum MLXServerSetupRunner {
     ) throws -> String {
         while true {
             let suffix = defaultValue.map { " [\($0)]" } ?? ""
-            FileHandle.standardError.writeString("\(prompt)\(suffix): ")
-            guard let line = readLine() else {
+            guard let line = interactiveLineReader.readLine(prompt: "\(prompt)\(suffix): ") else {
                 throw MLXServerSetupError.inputClosed
             }
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -344,8 +335,7 @@ public enum MLXServerSetupRunner {
     ) throws -> Bool {
         let defaultLabel = defaultValue ? "Y/n" : "y/N"
         while true {
-            FileHandle.standardError.writeString("\(prompt) [\(defaultLabel)]: ")
-            guard let line = readLine() else {
+            guard let line = interactiveLineReader.readLine(prompt: "\(prompt) [\(defaultLabel)]: ") else {
                 throw MLXServerSetupError.inputClosed
             }
             let normalized = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -362,11 +352,7 @@ public enum MLXServerSetupRunner {
     }
 
     private static func supportsInteractiveInput() -> Bool {
-        #if os(macOS) || os(Linux)
-        return isatty(STDIN_FILENO) == 1
-        #else
-        return true
-        #endif
+        MLXServerSetupInteractiveLineReader.supportsInteractiveInput()
     }
 }
 

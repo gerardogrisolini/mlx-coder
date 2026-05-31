@@ -10,6 +10,7 @@ import MLXCoderCore
 
 public enum MLXCoderSetupRunner {
     public static let option = "--setup"
+    private static let interactiveLineReader = TerminalInteractiveLineReader()
 
     public static func shouldRunSetup(arguments: [String]) -> Bool {
         arguments.dropFirst().contains(option)
@@ -35,9 +36,10 @@ public enum MLXCoderSetupRunner {
         )
 
         let settingsURL = AgentSettingsManifestStore.settingsURL()
+        var existingManifest: AgentSettingsManifest?
         if FileManager.default.fileExists(atPath: settingsURL.path) {
             do {
-                _ = try AgentSettingsManifestStore.loadRequired(from: settingsURL)
+                existingManifest = try AgentSettingsManifestStore.loadRequired(from: settingsURL)
                 let shouldReconfigure = try promptYesNo(
                     "settings.json already exists. Reconfigure providers and models?",
                     defaultValue: false
@@ -59,7 +61,7 @@ public enum MLXCoderSetupRunner {
             }
         }
 
-        let manifest = try await buildSettingsManifest()
+        let manifest = try await buildSettingsManifest(existingManifest: existingManifest)
         let result = try MLXCoderSupportFileService.ensureRequiredFiles(
             settingsManifest: manifest,
             overwriteSettings: true
@@ -72,11 +74,21 @@ public enum MLXCoderSetupRunner {
         AgentOutput.standardError.writeString("\nSetup completed.\n\n")
     }
 
-    private static func buildSettingsManifest() async throws -> AgentSettingsManifest {
-        var providerInputs: [SetupProviderInput] = []
-        repeat {
-            providerInputs.append(try await readProvider())
-        } while try promptYesNo("Add another provider?", defaultValue: false)
+    private static func buildSettingsManifest(
+        existingManifest: AgentSettingsManifest? = nil
+    ) async throws -> AgentSettingsManifest {
+        var providerInputs = try await reconfigureExistingProviders(
+            existingManifest
+        )
+        if providerInputs.isEmpty {
+            repeat {
+                providerInputs.append(try await readProvider())
+            } while try promptYesNo("Add another provider?", defaultValue: false)
+        } else {
+            while try promptYesNo("Add another provider?", defaultValue: false) {
+                providerInputs.append(try await readProvider())
+            }
+        }
 
         let providers = providerInputs.map { input in
             AgentSettingsProviderManifest(
@@ -95,7 +107,10 @@ public enum MLXCoderSetupRunner {
         if models.count == 1 {
             selectedModelID = models[0].id
         } else {
-            selectedModelID = try selectDefaultModel(from: models)
+            selectedModelID = try selectDefaultModel(
+                from: models,
+                defaultModelID: existingManifest?.selectedModelID
+            )
         }
 
         let selectedThinkingSelection = models
@@ -119,6 +134,119 @@ public enum MLXCoderSetupRunner {
         )
     }
 
+    private static func reconfigureExistingProviders(
+        _ manifest: AgentSettingsManifest?
+    ) async throws -> [SetupProviderInput] {
+        guard let manifest,
+              !manifest.providers.isEmpty else {
+            return []
+        }
+
+        AgentOutput.standardError.writeString("Configured providers:\n")
+        for (index, provider) in manifest.providers.enumerated() {
+            let models = models(for: provider, in: manifest.models)
+            AgentOutput.standardError.writeString(
+                "  \(index + 1). \(provider.displayTitle) (\(models.count) models)\n"
+            )
+        }
+        AgentOutput.standardError.writeString("\n")
+
+        let selectedProviderIndexes = try promptProviderIndexes(
+            providerCount: manifest.providers.count
+        )
+        var providerInputs: [SetupProviderInput] = []
+        for (index, provider) in manifest.providers.enumerated() {
+            let existingModels = models(for: provider, in: manifest.models)
+            let existingAPIKey = manifest.remoteAPIKeysByProviderID[
+                provider.id.uuidString.lowercased()
+            ]
+            if selectedProviderIndexes.contains(index) {
+                if isChatGPTSubscriptionProvider(provider) {
+                    providerInputs.append(
+                        try await readChatGPTSubscriptionProvider(
+                            existingModels: existingModels
+                        )
+                    )
+                } else {
+                    providerInputs.append(
+                        try await readRemoteAPIProvider(
+                            existingProvider: provider,
+                            existingModels: existingModels,
+                            existingAPIKey: existingAPIKey
+                        )
+                    )
+                }
+            } else {
+                providerInputs.append(
+                    preserveProviderInput(
+                        provider: provider,
+                        models: existingModels,
+                        apiKey: existingAPIKey
+                    )
+                )
+            }
+        }
+        return providerInputs
+    }
+
+    private static func promptProviderIndexes(
+        providerCount: Int
+    ) throws -> Set<Int> {
+        let value = try promptString(
+            "Provider to reconfigure (number, list like 1,3, all, or none)",
+            defaultValue: "none",
+            allowEmpty: false
+        )
+        let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if ["none", "no", "n", "skip"].contains(normalizedValue) {
+            return []
+        }
+        if normalizedValue == "all" {
+            return Set(0..<providerCount)
+        }
+
+        let tokens = normalizedValue
+            .split { $0 == "," || $0 == " " || $0 == ";" }
+            .map(String.init)
+        guard !tokens.isEmpty else {
+            throw MLXCoderSetupError.invalidChoice(value)
+        }
+
+        var selectedIndexes = Set<Int>()
+        for token in tokens {
+            guard let index = Int(token),
+                  (1...providerCount).contains(index) else {
+                throw MLXCoderSetupError.invalidChoice(value)
+            }
+            selectedIndexes.insert(index - 1)
+        }
+        return selectedIndexes
+    }
+
+    private static func models(
+        for provider: AgentSettingsProviderManifest,
+        in models: [AgentSettingsModelManifest]
+    ) -> [AgentSettingsModelManifest] {
+        models.filter { model in
+            (model.providerID ?? model.provider?.id) == provider.id
+        }
+    }
+
+    private static func preserveProviderInput(
+        provider: AgentSettingsProviderManifest,
+        models: [AgentSettingsModelManifest],
+        apiKey: String?
+    ) -> SetupProviderInput {
+        SetupProviderInput(
+            id: provider.id,
+            name: provider.name,
+            baseURL: provider.baseURL,
+            chatEndpoint: provider.chatEndpoint,
+            apiKey: apiKey,
+            models: models
+        )
+    }
+
     private static func readProvider() async throws -> SetupProviderInput {
         switch try promptProviderKind() {
         case .remoteAPI:
@@ -128,33 +256,47 @@ public enum MLXCoderSetupRunner {
         }
     }
 
-    private static func readRemoteAPIProvider() async throws -> SetupProviderInput {
+    private static func readRemoteAPIProvider(
+        existingProvider: AgentSettingsProviderManifest? = nil,
+        existingModels: [AgentSettingsModelManifest] = [],
+        existingAPIKey: String? = nil
+    ) async throws -> SetupProviderInput {
         AgentOutput.standardError.writeString("\nProvider OpenAI-compatible\n")
-        let id = UUID()
+        let id = existingProvider?.id ?? UUID()
         let name = try promptString(
             "Provider name",
-            defaultValue: AgentRemoteProvider.defaultOpenRouterName,
+            defaultValue: existingProvider?.name ?? AgentRemoteProvider.defaultOpenRouterName,
             allowEmpty: false
         )
         let baseURL = try promptString(
             "Base URL",
-            defaultValue: AgentRemoteProvider.defaultOpenRouterBaseURL,
+            defaultValue: existingProvider?.baseURL ?? AgentRemoteProvider.defaultOpenRouterBaseURL,
             allowEmpty: false
         )
-        let chatEndpoint = try promptEndpoint()
-        let apiKey = try promptString(
-            "API key (optional)",
-            defaultValue: nil,
-            allowEmpty: true
+        let chatEndpoint = try promptEndpoint(
+            defaultValue: existingProvider?.chatEndpoint ?? .chatCompletions
         )
+        let apiKey = try promptAPIKey(existingAPIKey: existingAPIKey, providerName: name)
 
-        let models = try await readModels(
-            providerID: id,
-            providerName: name,
-            baseURL: baseURL,
-            chatEndpoint: chatEndpoint,
-            apiKey: apiKey.nilIfBlank
-        )
+        let models: [AgentSettingsModelManifest]
+        if existingModels.isEmpty {
+            models = try await readModels(
+                providerID: id,
+                providerName: name,
+                baseURL: baseURL,
+                chatEndpoint: chatEndpoint,
+                apiKey: apiKey.nilIfBlank
+            )
+        } else {
+            models = try await reconfigureModels(
+                providerID: id,
+                providerName: name,
+                baseURL: baseURL,
+                chatEndpoint: chatEndpoint,
+                apiKey: apiKey.nilIfBlank,
+                existingModels: existingModels
+            )
+        }
 
         guard !models.isEmpty else {
             throw MLXCoderSetupError.noModelsConfigured
@@ -170,7 +312,9 @@ public enum MLXCoderSetupRunner {
         )
     }
 
-    private static func readChatGPTSubscriptionProvider() async throws -> SetupProviderInput {
+    private static func readChatGPTSubscriptionProvider(
+        existingModels: [AgentSettingsModelManifest] = []
+    ) async throws -> SetupProviderInput {
         AgentOutput.standardError.writeString("\nChatGPT Subscription\n")
         try await ensureChatGPTSubscriptionCredentials()
 
@@ -178,7 +322,9 @@ public enum MLXCoderSetupRunner {
         let name = CodexAgentModel.displayTitle
         let baseURL = AgentRemoteProvider.chatGPTSubscriptionBaseURL
         let chatEndpoint = AgentRemoteChatEndpoint.responses
-        let models = try selectChatGPTSubscriptionModels().map { option in
+        let models = try selectChatGPTSubscriptionModels(
+            defaultModels: existingModels
+        ).map { option in
             chatGPTSubscriptionModelManifest(
                 option: option,
                 providerID: id,
@@ -200,6 +346,202 @@ public enum MLXCoderSetupRunner {
             apiKey: nil,
             models: models
         )
+    }
+
+    private static func promptAPIKey(
+        existingAPIKey: String?,
+        providerName: String
+    ) throws -> String {
+        guard existingAPIKey?.nilIfBlank != nil else {
+            return try promptString(
+                "API key (optional)",
+                defaultValue: nil,
+                allowEmpty: true
+            )
+        }
+
+        guard try promptYesNo(
+            "Replace stored API key for \(providerName)?",
+            defaultValue: false
+        ) else {
+            return existingAPIKey ?? ""
+        }
+
+        return try promptString(
+            "New API key (empty clears it)",
+            defaultValue: nil,
+            allowEmpty: true
+        )
+    }
+
+    private static func reconfigureModels(
+        providerID: UUID,
+        providerName: String,
+        baseURL: String,
+        chatEndpoint: AgentRemoteChatEndpoint,
+        apiKey: String?,
+        existingModels: [AgentSettingsModelManifest]
+    ) async throws -> [AgentSettingsModelManifest] {
+        AgentOutput.standardError.writeString("\nConfigured models for \(providerName):\n")
+        for (index, model) in existingModels.enumerated() {
+            AgentOutput.standardError.writeString("  \(index + 1). \(model.displayTitle)\n")
+        }
+        AgentOutput.standardError.writeString("\n")
+
+        let deletedModelIndexes = try promptModelIndexes(
+            modelCount: existingModels.count
+        )
+        var models: [AgentSettingsModelManifest] = existingModels.enumerated().compactMap { item -> AgentSettingsModelManifest? in
+            let index = item.offset
+            let model = item.element
+            if deletedModelIndexes.contains(index) {
+                return nil
+            }
+            return modelWithProvider(
+                model,
+                providerID: providerID,
+                providerName: providerName,
+                baseURL: baseURL,
+                chatEndpoint: chatEndpoint
+            )
+        }
+
+        while try promptYesNo(
+            "Add another model for \(providerName)?",
+            defaultValue: false
+        ) {
+            let selectedModels = try await readAdditionalModelsFromCatalog(
+                providerID: providerID,
+                providerName: providerName,
+                baseURL: baseURL,
+                chatEndpoint: chatEndpoint,
+                apiKey: apiKey,
+                existingModels: models
+            )
+            guard !selectedModels.isEmpty else {
+                break
+            }
+            models.append(contentsOf: selectedModels)
+        }
+
+        return models
+    }
+
+    private static func promptModelIndexes(
+        modelCount: Int
+    ) throws -> Set<Int> {
+        let value = try promptString(
+            "Models to delete (number, list like 1,3, all, or none)",
+            defaultValue: "none",
+            allowEmpty: false
+        )
+        let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if ["none", "no", "n", "skip"].contains(normalizedValue) {
+            return []
+        }
+        if normalizedValue == "all" {
+            return Set(0..<modelCount)
+        }
+
+        let tokens = normalizedValue
+            .split { $0 == "," || $0 == " " || $0 == ";" }
+            .map(String.init)
+        guard !tokens.isEmpty else {
+            throw MLXCoderSetupError.invalidChoice(value)
+        }
+
+        var selectedIndexes = Set<Int>()
+        for token in tokens {
+            guard let index = Int(token),
+                  (1...modelCount).contains(index) else {
+                throw MLXCoderSetupError.invalidChoice(value)
+            }
+            selectedIndexes.insert(index - 1)
+        }
+        return selectedIndexes
+    }
+
+    private static func readAdditionalModelsFromCatalog(
+        providerID: UUID,
+        providerName: String,
+        baseURL: String,
+        chatEndpoint: AgentRemoteChatEndpoint,
+        apiKey: String?,
+        existingModels: [AgentSettingsModelManifest]
+    ) async throws -> [AgentSettingsModelManifest] {
+        let existingModelIDs = Set(
+            existingModels.map { normalizedRemoteModelID($0.modelID) }
+        )
+        let catalogModels: [OpenRouterModelInfo]
+        do {
+            catalogModels = try await RemoteModelCatalogClient()
+                .fetchModels(baseURL: baseURL, apiKey: apiKey)
+                .sorted(by: remoteModelSort)
+                .filter { model in
+                    !existingModelIDs.contains(normalizedRemoteModelID(model.id))
+                }
+        } catch {
+            AgentOutput.standardError.writeString(
+                "Unable to load /models: \(error.localizedDescription)\n"
+            )
+            throw error
+        }
+        guard !catalogModels.isEmpty else {
+            AgentOutput.standardError.writeString(
+                "No additional models available from /models for \(providerName).\n"
+            )
+            return []
+        }
+
+        let selectedModels = try selectRemoteModels(from: catalogModels)
+        return selectedModels.map {
+            remoteModelManifest(
+                from: $0,
+                providerID: providerID,
+                providerName: providerName,
+                baseURL: baseURL,
+                chatEndpoint: chatEndpoint
+            )
+        }
+    }
+
+    private static func normalizedRemoteModelID(_ modelID: String) -> String {
+        AgentRemoteProvider.normalizedModelID(modelID).lowercased()
+    }
+
+    private static func modelWithProvider(
+        _ model: AgentSettingsModelManifest,
+        providerID: UUID,
+        providerName: String,
+        baseURL: String,
+        chatEndpoint: AgentRemoteChatEndpoint
+    ) -> AgentSettingsModelManifest {
+        AgentSettingsModelManifest(
+            id: model.id,
+            kind: model.kind,
+            title: model.title,
+            llmID: model.llmID,
+            modelID: model.modelID,
+            providerID: providerID,
+            provider: AgentRemoteProvider(
+                id: providerID,
+                name: providerName,
+                baseURL: baseURL,
+                modelID: model.modelID,
+                chatEndpoint: chatEndpoint
+            ),
+            configuredContextWindowLimit: model.configuredContextWindowLimit,
+            generationParameterOverrides: model.generationParameterOverrides,
+            thinkingOptions: model.thinkingOptions,
+            defaultThinkingSelection: model.defaultThinkingSelection
+        )
+    }
+
+    private static func isChatGPTSubscriptionProvider(
+        _ provider: AgentSettingsProviderManifest
+    ) -> Bool {
+        provider.id == AgentRemoteProvider.chatGPTSubscriptionProviderID
+            || provider.baseURL == AgentRemoteProvider.chatGPTSubscriptionBaseURL
     }
 
     private static func ensureChatGPTSubscriptionCredentials() async throws {
@@ -337,7 +679,9 @@ public enum MLXCoderSetupRunner {
         return selected
     }
 
-    private static func selectChatGPTSubscriptionModels() throws -> [CodexAgentModel.ModelOption] {
+    private static func selectChatGPTSubscriptionModels(
+        defaultModels: [AgentSettingsModelManifest] = []
+    ) throws -> [CodexAgentModel.ModelOption] {
         let models = CodexAgentModel.availableModels
         AgentOutput.standardError.writeString("\nChatGPT Subscription models:\n")
         for (index, model) in models.enumerated() {
@@ -347,9 +691,13 @@ public enum MLXCoderSetupRunner {
             )
         }
 
+        let defaultSelection = chatGPTSubscriptionModelSelectionDefault(
+            models: models,
+            defaultModels: defaultModels
+        )
         let value = try promptString(
             "Model selection (number, list like 1,3, or all)",
-            defaultValue: "1",
+            defaultValue: defaultSelection,
             allowEmpty: false
         )
         let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -375,6 +723,28 @@ public enum MLXCoderSetupRunner {
             selected.append(models[index - 1])
         }
         return selected
+    }
+
+    private static func chatGPTSubscriptionModelSelectionDefault(
+        models: [CodexAgentModel.ModelOption],
+        defaultModels: [AgentSettingsModelManifest]
+    ) -> String {
+        guard !defaultModels.isEmpty else {
+            return "1"
+        }
+        let selectedIndexes = defaultModels.compactMap { defaultModel in
+            models.firstIndex { option in
+                option.modelID == defaultModel.modelID
+                    || CodexAgentModel.selectionID(forModelID: option.modelID) == defaultModel.id
+            }.map { $0 + 1 }
+        }
+        guard !selectedIndexes.isEmpty else {
+            return "1"
+        }
+        if selectedIndexes.count == models.count {
+            return "all"
+        }
+        return selectedIndexes.map(String.init).joined(separator: ",")
     }
 
     private static func remoteModelManifest(
@@ -501,20 +871,6 @@ public enum MLXCoderSetupRunner {
             defaultValue: defaultModelID,
             allowEmpty: false
         )
-        let title = try promptString(
-            "Display title (optional)",
-            defaultValue: nil,
-            allowEmpty: true
-        )
-        let contextLimit = try promptPositiveInt(
-            "Context window token limit (optional)",
-            defaultValue: nil
-        )
-        let maxTokens = try promptPositiveInt(
-            "Max output tokens per request (optional)",
-            defaultValue: nil
-        )
-        let thinking = try promptThinking()
         let provider = AgentRemoteProvider(
             id: providerID,
             name: providerName,
@@ -526,21 +882,21 @@ public enum MLXCoderSetupRunner {
         return AgentSettingsModelManifest(
             id: manifestID,
             kind: .remoteAPI,
-            title: title.nilIfBlank,
+            title: nil,
             llmID: manifestID,
             modelID: modelID,
             providerID: providerID,
             provider: provider,
-            configuredContextWindowLimit: contextLimit,
-            generationParameterOverrides: AgentGenerationParameterOverrides(
-                maxTokens: maxTokens
-            ),
-            thinkingOptions: thinking.options,
-            defaultThinkingSelection: thinking.defaultSelection
+            configuredContextWindowLimit: nil,
+            generationParameterOverrides: nil,
+            thinkingOptions: nil,
+            defaultThinkingSelection: nil
         )
     }
 
-    private static func promptEndpoint() throws -> AgentRemoteChatEndpoint {
+    private static func promptEndpoint(
+        defaultValue: AgentRemoteChatEndpoint = .chatCompletions
+    ) throws -> AgentRemoteChatEndpoint {
         AgentOutput.standardError.writeString(
             """
             Endpoint:
@@ -548,7 +904,14 @@ public enum MLXCoderSetupRunner {
               2. responses
             """ + "\n"
         )
-        let value = try promptString("Choice", defaultValue: "1", allowEmpty: false)
+        let defaultChoice: String
+        switch defaultValue {
+        case .chatCompletions:
+            defaultChoice = "1"
+        case .responses:
+            defaultChoice = "2"
+        }
+        let value = try promptString("Choice", defaultValue: defaultChoice, allowEmpty: false)
         switch value.trimmingCharacters(in: .whitespacesAndNewlines) {
         case "1", "chat", "chat_completions", "chat/completions":
             return .chatCompletions
@@ -578,47 +941,31 @@ public enum MLXCoderSetupRunner {
         }
     }
 
-    private static func promptThinking() throws -> SetupThinkingInput {
-        guard try promptYesNo("Does the model support thinking/reasoning?", defaultValue: false) else {
-            return SetupThinkingInput(options: nil, defaultSelection: nil)
-        }
-
-        AgentOutput.standardError.writeString(
-            """
-            Thinking type:
-              1. on/off
-              2. effort levels (minimal, low, medium, high, xhigh)
-            """
-        )
-        let value = try promptString("Choice", defaultValue: "2", allowEmpty: false)
-        let options: [AgentThinkingSelection]
-        let defaultSelection: AgentThinkingSelection
-        switch value.trimmingCharacters(in: .whitespacesAndNewlines) {
-        case "1", "on", "enabled":
-            options = [.off, .enabled]
-            defaultSelection = .enabled
-        case "2", "effort", "levels":
-            options = [.off, .minimal, .low, .medium, .high, .xhigh]
-            defaultSelection = .medium
-        default:
-            throw MLXCoderSetupError.invalidChoice(value)
-        }
-        return SetupThinkingInput(options: options, defaultSelection: defaultSelection)
-    }
-
     private static func selectDefaultModel(
-        from models: [AgentSettingsModelManifest]
+        from models: [AgentSettingsModelManifest],
+        defaultModelID: String? = nil
     ) throws -> String {
         AgentOutput.standardError.writeString("\nDefault model:\n")
+        let defaultIndex = defaultModelID
+            .flatMap { selectedID in models.firstIndex { $0.matches(selectedID) } }
+            ?? 0
         for (index, model) in models.enumerated() {
-            AgentOutput.standardError.writeString("  \(index + 1). \(model.displayTitle)\n")
+            let marker = index == defaultIndex ? " *" : ""
+            AgentOutput.standardError.writeString("  \(index + 1). \(model.displayTitle)\(marker)\n")
         }
-        let value = try promptString("Choice", defaultValue: "1", allowEmpty: false)
-        guard let index = Int(value),
-              models.indices.contains(index - 1) else {
-            throw MLXCoderSetupError.invalidChoice(value)
+        let value = try promptString(
+            "Choice",
+            defaultValue: String(defaultIndex + 1),
+            allowEmpty: false
+        )
+        if let index = Int(value),
+           models.indices.contains(index - 1) {
+            return models[index - 1].id
         }
-        return models[index - 1].id
+        if let model = models.first(where: { $0.matches(value) }) {
+            return model.id
+        }
+        throw MLXCoderSetupError.invalidChoice(value)
     }
 
     private static func promptString(
@@ -627,8 +974,7 @@ public enum MLXCoderSetupRunner {
         allowEmpty: Bool
     ) throws -> String {
         let suffix = defaultValue.map { " [\($0)]" } ?? ""
-        AgentOutput.standardError.writeString("\(label)\(suffix): ")
-        guard let rawValue = readLine() else {
+        guard let rawValue = interactiveLineReader.readLine(prompt: "\(label)\(suffix): ") else {
             throw MLXCoderSetupError.cancelled
         }
         let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -662,21 +1008,6 @@ public enum MLXCoderSetupRunner {
         }
     }
 
-    private static func promptPositiveInt(
-        _ label: String,
-        defaultValue: Int?
-    ) throws -> Int? {
-        let defaultText = defaultValue.map { String($0) }
-        let value = try promptString(label, defaultValue: defaultText, allowEmpty: true)
-        guard !value.isEmpty else {
-            return defaultValue
-        }
-        guard let intValue = Int(value), intValue > 0 else {
-            throw MLXCoderSetupError.invalidChoice(value)
-        }
-        return intValue
-    }
-
     private static func printResult(
         _ result: MLXCoderSupportFileResult,
         settingsWasWritten: Bool
@@ -704,11 +1035,6 @@ private struct SetupProviderInput {
     let chatEndpoint: AgentRemoteChatEndpoint
     let apiKey: String?
     let models: [AgentSettingsModelManifest]
-}
-
-private struct SetupThinkingInput {
-    let options: [AgentThinkingSelection]?
-    let defaultSelection: AgentThinkingSelection?
 }
 
 private enum SetupProviderKind {

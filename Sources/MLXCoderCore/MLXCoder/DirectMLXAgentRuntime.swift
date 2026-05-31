@@ -141,6 +141,29 @@ public struct DirectAgentLoadedModelDetails: Sendable, Equatable {
     }
 }
 
+public struct DirectAgentTurnOutcome: Sendable, Equatable {
+    public enum Status: String, Sendable, Equatable {
+        case completed
+        case cancelled
+        case failed
+    }
+
+    public let status: Status
+    public let message: String?
+
+    public init(status: Status, message: String? = nil) {
+        self.status = status
+        self.message = message?.nilIfBlank
+    }
+
+    public static let completed = DirectAgentTurnOutcome(status: .completed)
+    public static let cancelled = DirectAgentTurnOutcome(status: .cancelled)
+
+    public static func failed(message: String?) -> DirectAgentTurnOutcome {
+        DirectAgentTurnOutcome(status: .failed, message: message)
+    }
+}
+
 public enum DirectAgentEvent: Sendable {
     case status(String)
     case diagnostic(String)
@@ -152,6 +175,8 @@ public enum DirectAgentEvent: Sendable {
     case content(String)
     case toolCallStarted(DirectAgentToolCall)
     case toolCallCompleted(DirectAgentToolCall, DirectAgentToolResult)
+    case sessionSnapshot(AgentRuntimeSessionSnapshot)
+    case turnEnded(DirectAgentTurnOutcome)
 }
 
 public struct AgentKVCachePersistencePolicy {

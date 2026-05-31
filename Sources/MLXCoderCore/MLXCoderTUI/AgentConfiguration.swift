@@ -48,7 +48,7 @@ public struct AgentConfiguration {
     Tool discovery:
       In chat mode, use /agents to switch agent profiles without restarting the TUI.
       In chat mode, use /tools to enable local, shell, search, git, memory, sub-agent, Xcode, or Figma tools.
-      In chat mode, use /feature to create and manage generated Swift feature packages.
+      In chat mode, use the Builder agent to create and manage generated Swift feature packages with /feature.
       In chat mode, use /skills to select prompt skills installed by the app or install a skill from GitHub or a local folder.
       In chat mode, use /attach to add image or video files to the next prompt.
       In chat mode, use /changes to review tracked file changes and /undo to revert the latest tracked changes.

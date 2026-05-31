@@ -520,6 +520,8 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
     private var panelCommandSuggestions: [TerminalCommandSuggestion] = []
     private var panelCommandSuggestionIndex = 0
 
+    public init() {}
+
     public func readLine(prompt: String) -> String? {
         var buffer: [Character] = []
         var cursorIndex = 0
@@ -721,6 +723,14 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
     public func setPanelProcessing(_ isProcessing: Bool) {
         panelLock.lock()
         panelIsProcessing = isProcessing
+        panelLock.unlock()
+        renderPanel()
+    }
+
+    public func setPanelCommandSuggestions(_ suggestions: [TerminalCommandSuggestion]) {
+        panelLock.lock()
+        panelCommandSuggestions = suggestions
+        panelCommandSuggestionIndex = 0
         panelLock.unlock()
         renderPanel()
     }

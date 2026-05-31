@@ -131,9 +131,10 @@ extension TerminalChat {
     public func selectedAllowedToolNames(
         discoverExternalTools: Bool = true
     ) async -> Set<String> {
+        let intrinsicToolNames = intrinsicAllowedToolNamesForSelectedAgent()
         let baseItems = await toolSelectionItems()
         guard !selectedToolKeys.isEmpty else {
-            return []
+            return intrinsicToolNames
         }
 
         selectedToolKeys = TerminalToolSelectionCatalog.normalizedSelectionKeys(
@@ -163,10 +164,12 @@ extension TerminalChat {
         let items = await toolSelectionItems(
             additionalDescriptors: mcpDescriptors
         )
-        return TerminalToolSelectionCatalog.allowedToolNames(
+        var allowedToolNames = TerminalToolSelectionCatalog.allowedToolNames(
             for: selectedToolKeys,
             items: items
         )
+        allowedToolNames.formUnion(intrinsicToolNames)
+        return allowedToolNames
     }
 
     @discardableResult

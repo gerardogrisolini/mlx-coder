@@ -71,6 +71,101 @@ struct MLXTerminalSessionStoreTests {
     }
 
     @Test
+    func deletesSavedSessionByName() throws {
+        let supportDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: supportDirectory)
+        }
+
+        let projectURL = supportDirectory
+            .appendingPathComponent("Project", isDirectory: true)
+        let session = sampleSession(
+            name: "daily checkpoint",
+            workingDirectory: projectURL
+        )
+        _ = try MLXTerminalSessionStore.save(
+            session,
+            supportDirectoryURL: supportDirectory
+        )
+
+        let didDelete = try MLXTerminalSessionStore.delete(
+            name: "daily checkpoint",
+            workingDirectory: projectURL,
+            supportDirectoryURL: supportDirectory
+        )
+        let sessions = try MLXTerminalSessionStore.savedSessions(
+            for: projectURL,
+            supportDirectoryURL: supportDirectory
+        )
+
+        #expect(didDelete)
+        #expect(sessions.isEmpty)
+    }
+
+    @Test
+    func messageCountUsesTranscriptWhenAvailable() {
+        let projectURL = temporaryDirectory()
+            .appendingPathComponent("Project", isDirectory: true)
+        let session = sampleSession(
+            name: "compacted",
+            workingDirectory: projectURL,
+            transcriptHistory: [
+                AgentRuntimeMessage(role: .user, content: "first"),
+                AgentRuntimeMessage(role: .assistant, content: "first answer"),
+                AgentRuntimeMessage(role: .user, content: "second"),
+                AgentRuntimeMessage(role: .assistant, content: "second answer")
+            ]
+        )
+
+        #expect(session.history.filter { $0.role != .system }.count == 3)
+        #expect(session.messageCount == 4)
+        #expect(session.displayHistory.map(\.content) == [
+            "first",
+            "first answer",
+            "second",
+            "second answer"
+        ])
+    }
+
+    @Test
+    func displayHistoryFallsBackToCompactionSummary() {
+        let projectURL = temporaryDirectory()
+            .appendingPathComponent("Project", isDirectory: true)
+        let session = MLXTerminalSavedSession(
+            name: "old compacted",
+            sessionID: "terminal-test",
+            cacheKey: "cache-test",
+            workingDirectoryPath: projectURL.path,
+            createdAt: Date(timeIntervalSince1970: 10),
+            savedAt: Date(timeIntervalSince1970: 20),
+            modelID: "model-test",
+            agentID: "default",
+            agentName: "Default",
+            selectedTools: [],
+            selectedSkillIDs: [],
+            thinkingSelection: nil,
+            systemPrompt: """
+            Base prompt
+
+            Conversation memory summary from earlier turns.
+            Preserve the facts, decisions, files, code directions, and unresolved requests below as continuing context.
+            User request: keep compacted sessions recoverable.
+            """,
+            history: [
+                AgentRuntimeMessage(role: .user, content: "recent")
+            ]
+        )
+
+        let displayHistory = TerminalChat.savedSessionDisplayHistory(session)
+
+        #expect(displayHistory.count == 2)
+        #expect(displayHistory[0].role == .assistant)
+        #expect(displayHistory[0].content.contains("Restored compacted context"))
+        #expect(displayHistory[0].content.contains("keep compacted sessions recoverable"))
+        #expect(displayHistory[1].content == "recent")
+    }
+
+    @Test
     func filenameStemSanitizesSessionName() {
         #expect(
             MLXTerminalSessionStore.filenameStem(for: " daily/checkpoint ") == "daily_checkpoint"
@@ -80,7 +175,8 @@ struct MLXTerminalSessionStoreTests {
 
     private func sampleSession(
         name: String,
-        workingDirectory: URL
+        workingDirectory: URL,
+        transcriptHistory: [AgentRuntimeMessage]? = nil
     ) -> MLXTerminalSavedSession {
         MLXTerminalSavedSession(
             name: name,
@@ -98,6 +194,12 @@ struct MLXTerminalSessionStoreTests {
             ],
             selectedSkillIDs: ["skill-a"],
             thinkingSelection: "on",
+            contextWindow: MLXTerminalSavedSessionContextWindow(
+                usedTokens: 2_048,
+                maxTokens: 65_536,
+                modelID: "model-test",
+                isApproximate: false
+            ),
             systemPrompt: "System",
             history: [
                 AgentRuntimeMessage(role: .user, content: "ciao"),
@@ -117,7 +219,8 @@ struct MLXTerminalSessionStoreTests {
                     content: "/tmp",
                     toolCallID: "call_1"
                 )
-            ]
+            ],
+            transcriptHistory: transcriptHistory
         )
     }
 

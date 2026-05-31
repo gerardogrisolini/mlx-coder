@@ -22,7 +22,7 @@ struct AgentConfigurationTests {
         )
 
         let selectedKeys = try TerminalChat.parseToolSelection(
-            "shell files text feature-builder search git",
+            "shell files text search git",
             items: items
         )
         let allowedToolNames = TerminalToolSelectionCatalog.allowedToolNames(
@@ -33,7 +33,7 @@ struct AgentConfigurationTests {
         #expect(allowedToolNames.contains("local.exec"))
         #expect(allowedToolNames.contains("local.readFile"))
         #expect(allowedToolNames.contains("text.wc"))
-        #expect(allowedToolNames.contains("feature.list"))
+        #expect(!allowedToolNames.contains("feature.list"))
         #expect(allowedToolNames.contains("search.grep"))
         #expect(allowedToolNames.contains("git.status"))
     }
@@ -51,7 +51,7 @@ struct AgentConfigurationTests {
         #expect(allowedToolNames.contains("local.readFile"))
         #expect(allowedToolNames.contains("search.grep"))
         #expect(allowedToolNames.contains("text.wc"))
-        #expect(allowedToolNames.contains("feature.list"))
+        #expect(!allowedToolNames.contains("feature.list"))
     }
 
     @Test
@@ -65,6 +65,7 @@ struct AgentConfigurationTests {
         let featureBuilderKey = TerminalToolSelectionCatalog.featureBuilderKey
         let defaultProfile = try #require(profiles["Default"])
         let bugfixProfile = try #require(profiles["Bugfix"])
+        let builderProfile = try #require(profiles["Builder"])
         let featureProfile = try #require(profiles["Feature"])
         let reviewProfile = try #require(profiles["Review"])
         let researchProfile = try #require(profiles["Research"])
@@ -78,14 +79,12 @@ struct AgentConfigurationTests {
             #expect(profile.tools.contains("memory"))
         }
 
-        #expect(defaultProfile.tools.contains(featureBuilderKey))
-        #expect(featureProfile.tools.contains(featureBuilderKey))
-        #expect(!bugfixProfile.tools.contains(featureBuilderKey))
-        #expect(!reviewProfile.tools.contains(featureBuilderKey))
-        #expect(!researchProfile.tools.contains(featureBuilderKey))
-        #expect(!refactorProfile.tools.contains(featureBuilderKey))
+        for profile in profiles.values {
+            #expect(!profile.tools.contains(featureBuilderKey))
+        }
 
         #expect(defaultProfile.tools.contains(webKey))
+        #expect(builderProfile.tools.contains(webKey))
         #expect(featureProfile.tools.contains(webKey))
         #expect(researchProfile.tools.contains(webKey))
         #expect(!bugfixProfile.tools.contains(webKey))
@@ -101,7 +100,8 @@ struct AgentConfigurationTests {
 
         #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Default"])).contains("General coding"))
         #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Bugfix"])).contains("Focused bug fixes"))
-        #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Feature"])).contains("Build complete features"))
+        #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Builder"])).contains("Create, build"))
+        #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Feature"])).contains("Build complete product features"))
         #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Review"])).contains("Code review only"))
         #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Research"])).contains("Research"))
         #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Refactor"])).contains("Behavior-preserving"))
@@ -141,7 +141,7 @@ struct AgentConfigurationTests {
             ]
         )
 
-        #expect(items.map(\.title).contains("Feature Builder"))
+        #expect(!items.map(\.title).contains("Feature Builder"))
         #expect(items.map(\.title).contains("Git"))
         #expect(items.map(\.title).contains("Live Git Branch"))
 
@@ -161,7 +161,7 @@ struct AgentConfigurationTests {
     }
 
     @Test
-    func featureBuilderSelectionEnablesLifecycleTools() throws {
+    func featureBuilderIsIntrinsicToBuilderAgentAndNotSelectable() throws {
         let items = TerminalChat.toolSelectionItems(
             featureStatuses: [
                 featureStatus(
@@ -177,24 +177,110 @@ struct AgentConfigurationTests {
             ]
         )
 
-        let selectedKeys = try TerminalChat.parseToolSelection(
-            "feature-builder",
-            items: items
+        do {
+            _ = try TerminalChat.parseToolSelection("feature-builder", items: items)
+            Issue.record("Expected feature-builder to be unavailable in /tools.")
+        } catch TerminalToolSelectionError.unknownToken(let token) {
+            #expect(token == "feature-builder")
+        } catch {
+            Issue.record("Expected unknown token error, got \(error).")
+        }
+
+        let builderAgent = AgentProfile(
+            id: AgentProfileStore.builderAgentID.uuidString,
+            name: AgentProfileStore.builderAgentName,
+            tools: []
         )
-        let allowedToolNames = TerminalToolSelectionCatalog.allowedToolNames(
-            for: selectedKeys,
-            items: items
+        let customAgent = AgentProfile(
+            id: "custom",
+            name: "Custom",
+            tools: ["feature.list", "feature-builder"]
+        )
+        let builderAllowedToolNames = builderAgent.allowedToolNames()
+        let customAllowedToolNames = customAgent.allowedToolNames()
+
+        #expect(builderAllowedToolNames.contains("feature.list"))
+        #expect(builderAllowedToolNames.contains("feature.enable"))
+        #expect(builderAllowedToolNames.contains("feature.disable"))
+        #expect(builderAllowedToolNames.contains("feature.delete"))
+        #expect(builderAllowedToolNames.contains("feature.scaffold"))
+        #expect(!builderAllowedToolNames.contains("web.search"))
+        #expect(!builderAllowedToolNames.contains("clock.now"))
+        #expect(!builderAllowedToolNames.contains(SwiftFeatureRuntime.featurePackageToolsAllowedName))
+        #expect(customAllowedToolNames.isEmpty)
+    }
+
+    @Test
+    func appSessionToolOverridesKeepBuilderIntrinsicTools() {
+        let builderAgent = AgentProfile(
+            id: AgentProfileStore.builderAgentID.uuidString,
+            name: AgentProfileStore.builderAgentName,
+            tools: []
+        )
+        let customAgent = AgentProfile(
+            id: "custom",
+            name: "Custom",
+            tools: []
         )
 
-        #expect(selectedKeys.contains(TerminalToolSelectionCatalog.featureBuilderKey))
-        #expect(allowedToolNames.contains("feature.list"))
-        #expect(allowedToolNames.contains("feature.enable"))
-        #expect(allowedToolNames.contains("feature.disable"))
-        #expect(allowedToolNames.contains("feature.delete"))
-        #expect(allowedToolNames.contains("feature.scaffold"))
-        #expect(!allowedToolNames.contains("web.search"))
-        #expect(!allowedToolNames.contains("clock.now"))
-        #expect(!allowedToolNames.contains(SwiftFeatureRuntime.featurePackageToolsAllowedName))
+        let builderAllowedToolNames = AgentCoreAppSessionFactory.resolvedAllowedToolNames(
+            selectedToolKeys: ["shell"],
+            explicitAllowedToolNames: nil,
+            selectedAgent: builderAgent
+        )
+        let customAllowedToolNames = AgentCoreAppSessionFactory.resolvedAllowedToolNames(
+            selectedToolKeys: ["shell"],
+            explicitAllowedToolNames: nil,
+            selectedAgent: customAgent
+        )
+
+        #expect(builderAllowedToolNames?.contains("local.exec") == true)
+        #expect(builderAllowedToolNames?.contains("feature.list") == true)
+        #expect(builderAllowedToolNames?.contains("feature.scaffold") == true)
+        #expect(customAllowedToolNames?.contains("local.exec") == true)
+        #expect(customAllowedToolNames?.contains("feature.list") == false)
+    }
+
+    @Test
+    func agentProfileSaveRemovesFeatureBuilderToolReferences() {
+        let builderAgent = AgentProfile(
+            id: AgentProfileStore.builderAgentID.uuidString,
+            name: AgentProfileStore.builderAgentName,
+            tools: ["shell", "feature.list", "feature-builder", "shell"]
+        )
+        let customAgent = AgentProfile(
+            id: "custom",
+            name: "Custom",
+            tools: ["files", TerminalToolSelectionCatalog.featureBuilderKey, "feature.build"]
+        )
+
+        let normalizedAgents = AgentProfileStore.normalizedAgentsForSave([
+            builderAgent,
+            customAgent
+        ])
+        let normalizedBuilder = normalizedAgents[0]
+        let normalizedCustom = normalizedAgents[1]
+
+        #expect(normalizedBuilder.tools == ["shell"])
+        #expect(normalizedCustom.tools == ["files"])
+    }
+
+    @Test
+    func activeToolRenderingHidesIntrinsicFeatureManagementTools() {
+        let items = TerminalChat.toolSelectionItems(featureStatuses: [])
+        let rendered = TerminalChat.renderActiveTools(
+            ["local.exec", "feature.list", "feature.build"],
+            items: items,
+            selectedKeys: ["shell"]
+        )
+        let hiddenOnly = TerminalChat.renderActiveTools(
+            ["feature.list", "feature.build"],
+            items: items,
+            selectedKeys: []
+        )
+
+        #expect(rendered == "Active tools: Shell (1)\n")
+        #expect(hiddenOnly == "Active tools: none\n")
     }
 
     @Test
@@ -203,9 +289,10 @@ struct AgentConfigurationTests {
         #expect(TerminalChat.featureCommandRequiresActiveBuilder(rawArguments: "reload"))
         #expect(TerminalChat.featureCommandRequiresActiveBuilder(rawArguments: "enable git"))
         #expect(TerminalChat.featureCommandRequiresActiveBuilder(rawArguments: "delete test1"))
-        #expect(!TerminalChat.featureCommandRequiresActiveBuilder(rawArguments: "list"))
-        #expect(!TerminalChat.featureCommandRequiresActiveBuilder(rawArguments: "status"))
-        #expect(TerminalChat.renderFeatureBuilderInactiveWarning().contains("/tools feature-builder"))
+        #expect(TerminalChat.featureCommandRequiresActiveBuilder(rawArguments: "list"))
+        #expect(TerminalChat.featureCommandRequiresActiveBuilder(rawArguments: "status"))
+        #expect(TerminalChat.renderFeatureBuilderInactiveWarning().contains("Builder agent"))
+        #expect(!TerminalChat.renderFeatureBuilderInactiveWarning().contains("/tools"))
     }
 
     @Test

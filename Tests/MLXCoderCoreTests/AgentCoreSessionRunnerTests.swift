@@ -43,33 +43,121 @@ struct AgentCoreSessionRunnerTests {
         #expect(await backend.lastUpdatedSystemPrompt() == "Memory tools are unavailable.")
         #expect(await backend.lastUpdatedAllowedToolNames() == [])
     }
+
+    @Test
+    func failedPromptPublishesRecoveredSessionSnapshot() async throws {
+        let backend = CapturingAgentRuntimeBackend(
+            promptEvents: [.content("partial answer")],
+            sendPromptError: SyntheticPromptError()
+        )
+        let runner = AgentCoreSessionRunner(
+            backendFactory: { _, _ in backend }
+        )
+        let sessionID = "session-\(UUID().uuidString)"
+        let configuration = AgentCoreSessionConfiguration(
+            sessionID: sessionID,
+            modelID: "test-model",
+            workingDirectory: FileManager.default.temporaryDirectory,
+            systemPrompt: nil,
+            cacheKey: nil,
+            history: [],
+            allowedToolNames: []
+        )
+        let snapshotCollector = SnapshotCollector()
+        var didThrow = false
+
+        do {
+            _ = try await runner.sendPrompt(
+                configuration: configuration,
+                prompt: "hello",
+                attachments: [],
+                onEvent: { event in
+                    await snapshotCollector.record(event)
+                }
+            )
+        } catch is SyntheticPromptError {
+            didThrow = true
+        }
+
+        let snapshots = await snapshotCollector.snapshots()
+        let outcomes = await snapshotCollector.outcomes()
+        #expect(didThrow)
+        #expect(snapshots.count == 1)
+        #expect(outcomes == [.failed(message: "Synthetic prompt failed.")])
+        let history = try #require(snapshots.first?.history)
+        #expect(history.count == 2)
+        #expect(history[safe: 0]?.role == .user)
+        #expect(history[safe: 0]?.content == "hello")
+        #expect(history[safe: 1]?.role == .assistant)
+        #expect(history[safe: 1]?.content == "partial answer")
+        #expect(await runner.snapshotSession(id: sessionID)?.history == history)
+        #expect(await backend.lastCreatedHistory() == history)
+    }
 }
 
 private actor CapturingAgentRuntimeBackend: AgentRuntimeBackend {
     private var updatedSystemPrompt: String?
     private var updatedAllowedToolNames: Set<String>?
+    private var sessions: [String: AgentRuntimeSessionSnapshot] = [:]
+    private var createdHistories: [[AgentRuntimeMessage]] = []
+    private let promptEvents: [DirectAgentEvent]
+    private let sendPromptError: Error?
+
+    init(
+        promptEvents: [DirectAgentEvent] = [],
+        sendPromptError: Error? = nil
+    ) {
+        self.promptEvents = promptEvents
+        self.sendPromptError = sendPromptError
+    }
 
     func createSession(
-        id _: String,
-        cwd _: String,
-        systemPrompt _: String?,
-        history _: [AgentRuntimeMessage],
-        cacheKey _: String?,
-        allowedToolNames _: Set<String>?,
-        thinkingSelection _: AgentThinkingSelection?,
-        preserveThinking _: Bool
-    ) {}
+        id: String,
+        cwd: String,
+        systemPrompt: String?,
+        history: [AgentRuntimeMessage],
+        cacheKey: String?,
+        allowedToolNames: Set<String>?,
+        thinkingSelection: AgentThinkingSelection?,
+        preserveThinking: Bool
+    ) {
+        sessions[id] = AgentRuntimeSessionSnapshot(
+            sessionID: id,
+            workingDirectoryPath: cwd,
+            systemPrompt: systemPrompt,
+            cacheKey: cacheKey,
+            history: history,
+            allowedToolNames: allowedToolNames,
+            thinkingSelection: thinkingSelection,
+            preserveThinking: preserveThinking
+        )
+        createdHistories.append(history)
+    }
 
     func createSessionIfNeeded(
-        id _: String,
-        cwd _: String,
-        systemPrompt _: String?,
-        history _: [AgentRuntimeMessage],
-        cacheKey _: String?,
-        allowedToolNames _: Set<String>?,
-        thinkingSelection _: AgentThinkingSelection?,
-        preserveThinking _: Bool
-    ) {}
+        id: String,
+        cwd: String,
+        systemPrompt: String?,
+        history: [AgentRuntimeMessage],
+        cacheKey: String?,
+        allowedToolNames: Set<String>?,
+        thinkingSelection: AgentThinkingSelection?,
+        preserveThinking: Bool
+    ) {
+        guard sessions[id] == nil else {
+            return
+        }
+        createSession(
+            id: id,
+            cwd: cwd,
+            systemPrompt: systemPrompt,
+            history: history,
+            cacheKey: cacheKey,
+            allowedToolNames: allowedToolNames,
+            thinkingSelection: thinkingSelection,
+            preserveThinking: preserveThinking
+        )
+    }
 
     func updateSessionOptions(
         id _: String,
@@ -90,7 +178,9 @@ private actor CapturingAgentRuntimeBackend: AgentRuntimeBackend {
 
     func closeSession(id _: String) {}
 
-    func shutdown() async {}
+    func shutdown() async {
+        sessions.removeAll()
+    }
 
     func preloadModel(
         onEvent _: @escaping @Sendable (DirectAgentEvent) async -> Void
@@ -110,9 +200,19 @@ private actor CapturingAgentRuntimeBackend: AgentRuntimeBackend {
         sessionID _: String,
         prompt _: String,
         attachments _: [AgentRuntimeAttachment],
-        onEvent _: @escaping @Sendable (DirectAgentEvent) async -> Void
+        onEvent: @escaping @Sendable (DirectAgentEvent) async -> Void
     ) async throws -> DirectAgentResponse {
-        DirectAgentResponse(text: "", stopReason: "end_turn", modelID: "test-model")
+        for event in promptEvents {
+            await onEvent(event)
+        }
+        if let sendPromptError {
+            throw sendPromptError
+        }
+        return DirectAgentResponse(text: "", stopReason: "end_turn", modelID: "test-model")
+    }
+
+    func snapshotSession(id: String) -> AgentRuntimeSessionSnapshot? {
+        sessions[id]
     }
 
     func lastUpdatedSystemPrompt() -> String? {
@@ -121,5 +221,43 @@ private actor CapturingAgentRuntimeBackend: AgentRuntimeBackend {
 
     func lastUpdatedAllowedToolNames() -> Set<String>? {
         updatedAllowedToolNames
+    }
+
+    func lastCreatedHistory() -> [AgentRuntimeMessage]? {
+        createdHistories.last
+    }
+}
+
+private struct SyntheticPromptError: Error, LocalizedError {
+    var errorDescription: String? {
+        "Synthetic prompt failed."
+    }
+}
+
+private actor SnapshotCollector {
+    private var values: [AgentRuntimeSessionSnapshot] = []
+    private var outcomeValues: [DirectAgentTurnOutcome] = []
+
+    func record(_ event: DirectAgentEvent) {
+        if case let .sessionSnapshot(snapshot) = event {
+            values.append(snapshot)
+        }
+        if case let .turnEnded(outcome) = event {
+            outcomeValues.append(outcome)
+        }
+    }
+
+    func snapshots() -> [AgentRuntimeSessionSnapshot] {
+        values
+    }
+
+    func outcomes() -> [DirectAgentTurnOutcome] {
+        outcomeValues
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }

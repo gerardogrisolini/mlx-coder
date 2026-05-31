@@ -236,7 +236,7 @@ public enum TerminalToolSelectionCatalog {
         let descriptorNames = Set(descriptors.map(\.name))
         let coreGroup = "Core"
 
-        return [
+        let items = [
             TerminalToolSelectionItem(
                 key: "shell",
                 title: "Shell",
@@ -286,16 +286,10 @@ public enum TerminalToolSelectionCatalog {
                     $0.hasPrefix("agent.") || $0.hasPrefix("task.")
                 },
                 aliases: ["agents", "agent", "subagents", "sub-agents", "tasks", "task"]
-            ),
-            TerminalToolSelectionItem(
-                key: featureBuilderKey,
-                title: "Feature Builder",
-                detail: "create, build, install, validate, enable, disable, and reload Swift feature packages",
-                groupTitle: coreGroup,
-                allowedToolNames: descriptorNames.filter { $0.hasPrefix("feature.") },
-                aliases: ["features", "feature", "feature-manager", "kernel"]
             )
-        ].filter { !$0.allowedToolNames.isEmpty }
+        ]
+
+        return items.filter { !$0.allowedToolNames.isEmpty }
     }
 
     private static func featurePackageItems(

@@ -207,6 +207,24 @@ public final class TerminalStatusBar: @unchecked Sendable {
         return true
     }
 
+    public func currentContextWindowStatus() -> DirectAgentContextWindowStatus? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if let latestContextWindow {
+            return latestContextWindow
+        }
+        guard let latestModelID else {
+            return nil
+        }
+        return DirectAgentContextWindowStatus(
+            usedTokens: latestMetrics?.totalTokenCount,
+            maxTokens: nil,
+            modelID: latestModelID,
+            isApproximate: true
+        )
+    }
+
     public func reservedRowsForOverlay() -> Int {
         lock.lock()
         defer { lock.unlock() }

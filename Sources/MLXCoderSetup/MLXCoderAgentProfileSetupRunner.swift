@@ -8,6 +8,7 @@ import MLXCoderCore
 
 public enum MLXCoderAgentProfileSetupRunner {
     public static let option = "--setup-agents"
+    private static let interactiveLineReader = TerminalInteractiveLineReader()
 
     public static func shouldRunSetup(arguments: [String]) -> Bool {
         arguments.dropFirst().contains(option)
@@ -45,7 +46,9 @@ public enum MLXCoderAgentProfileSetupRunner {
             agents = try editAgents(agents)
         }
 
-        let normalizedAgents = ensureDefaultAgent(in: uniqueAgents(agents))
+        let normalizedAgents = AgentProfileStore.normalizedAgentsForSave(
+            ensureRequiredDefaultAgents(in: uniqueAgents(agents))
+        )
         try AgentProfileStore.save(normalizedAgents)
         AgentOutput.standardError.writeString(
             "\nUpdated: agents.json (\(normalizedAgents.count) agents)\n\n"
@@ -88,14 +91,14 @@ public enum MLXCoderAgentProfileSetupRunner {
     private static func initialAgents(existingAgents: [AgentProfile]?) throws -> [AgentProfile] {
         if let existingAgents {
             let useRecommended = try promptYesNo(
-                "Regenerate the 6 recommended agents?",
+                "Regenerate the 7 recommended agents?",
                 defaultValue: false
             )
             return useRecommended ? AgentProfileStore.defaultProfiles() : existingAgents
         }
 
         let useRecommended = try promptYesNo(
-            "Create the 6 recommended agents?",
+            "Create the 7 recommended agents?",
             defaultValue: true
         )
         guard !useRecommended else {
@@ -177,7 +180,7 @@ public enum MLXCoderAgentProfileSetupRunner {
         ).nilIfBlank
         let instructions = try promptInstructions(defaultValue: defaultAgent?.instructions)
 
-        return AgentProfile(
+        return AgentProfileStore.normalizedAgentForSave(AgentProfile(
             id: defaultAgent?.id ?? UUID().uuidString,
             name: name,
             instructions: instructions,
@@ -186,7 +189,7 @@ public enum MLXCoderAgentProfileSetupRunner {
             skills: skillIDs.map { AgentProfileSkill(id: $0) },
             modelID: modelID,
             modelProvider: modelProvider
-        )
+        ))
     }
 
     private static func promptInstructions(defaultValue: String?) throws -> String? {
@@ -206,8 +209,7 @@ public enum MLXCoderAgentProfileSetupRunner {
         )
         var lines: [String] = []
         while true {
-            AgentOutput.standardError.writeString("> ")
-            guard let line = readLine() else {
+            guard let line = interactiveLineReader.readLine(prompt: "> ") else {
                 throw MLXCoderAgentProfileSetupError.inputClosed
             }
             if line.trimmingCharacters(in: .whitespacesAndNewlines) == "." {
@@ -232,7 +234,7 @@ public enum MLXCoderAgentProfileSetupRunner {
         var seen = Set<String>()
         var result: [AgentProfile] = []
         for agent in agents {
-            let key = agent.displayName.agentSetupKey
+            let key = agentSetupNameKey(agent.name)
             guard seen.insert(key).inserted else {
                 continue
             }
@@ -241,11 +243,30 @@ public enum MLXCoderAgentProfileSetupRunner {
         return result
     }
 
-    private static func ensureDefaultAgent(in agents: [AgentProfile]) -> [AgentProfile] {
-        if agents.contains(where: { $0.displayName.agentSetupKey == AgentProfileStore.defaultAgentName.agentSetupKey }) {
-            return agents
+    private static func ensureRequiredDefaultAgents(in agents: [AgentProfile]) -> [AgentProfile] {
+        var result = agents
+        let defaults = AgentProfileStore.defaultProfiles()
+        if !containsAgent(named: AgentProfileStore.defaultAgentName, in: result),
+           let defaultAgent = defaults.first(where: { $0.name == AgentProfileStore.defaultAgentName }) {
+            result.insert(defaultAgent, at: 0)
         }
-        return [AgentProfileStore.defaultProfiles()[0]] + agents
+        if !containsAgent(named: AgentProfileStore.builderAgentName, in: result),
+           let builderAgent = defaults.first(where: { AgentProfileStore.isBuilderAgent($0) }) {
+            let insertIndex = result.firstIndex {
+                agentSetupNameKey($0.name) == agentSetupNameKey(AgentProfileStore.defaultAgentName)
+            }.map { $0 + 1 } ?? 0
+            result.insert(builderAgent, at: insertIndex)
+        }
+        return result
+    }
+
+    private static func containsAgent(named name: String, in agents: [AgentProfile]) -> Bool {
+        let expectedKey = agentSetupNameKey(name)
+        return agents.contains { agentSetupNameKey($0.name) == expectedKey }
+    }
+
+    private static func agentSetupNameKey(_ name: String) -> String {
+        name.agentSetupKey
     }
 
     private static func promptString(
@@ -255,8 +276,7 @@ public enum MLXCoderAgentProfileSetupRunner {
     ) throws -> String {
         while true {
             let suffix = defaultValue.map { " [\($0)]" } ?? ""
-            AgentOutput.standardError.writeString("\(prompt)\(suffix): ")
-            guard let line = readLine() else {
+            guard let line = interactiveLineReader.readLine(prompt: "\(prompt)\(suffix): ") else {
                 throw MLXCoderAgentProfileSetupError.inputClosed
             }
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -278,8 +298,7 @@ public enum MLXCoderAgentProfileSetupRunner {
     ) throws -> Bool {
         let defaultLabel = defaultValue ? "Y/n" : "y/N"
         while true {
-            AgentOutput.standardError.writeString("\(prompt) [\(defaultLabel)]: ")
-            guard let line = readLine() else {
+            guard let line = interactiveLineReader.readLine(prompt: "\(prompt) [\(defaultLabel)]: ") else {
                 throw MLXCoderAgentProfileSetupError.inputClosed
             }
             let normalized = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -335,7 +354,9 @@ private extension String {
     }
 
     var agentSetupKey: String {
-        trimmingCharacters(in: .whitespacesAndNewlines)
+        components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
             .lowercased()
     }

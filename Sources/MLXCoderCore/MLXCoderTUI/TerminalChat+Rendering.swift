@@ -45,10 +45,14 @@ extension TerminalChat {
             lines.append(selectedSkills)
         }
 
+        let commands = AgentProfileStore.isBuilderAgent(selectedAgent)
+            ? "Commands: /help, /models, /agents, /tools, /feature, /skills, /sessions, /attach, /retry, /changes, /undo, /subagents, /clear, /exit"
+            : "Commands: /help, /models, /agents, /tools, /skills, /sessions, /attach, /retry, /changes, /undo, /subagents, /clear, /exit"
+
         lines.append(contentsOf: [
             "Working directory: \(configuration.workingDirectory.path)",
             "",
-            "Commands: /help, /models, /agents, /tools, /feature, /skills, /sessions, /attach, /changes, /undo, /subagents, /clear, /exit"
+            commands
         ])
 
         let startupBox = Self.renderStartupBox(lines: lines)
@@ -83,11 +87,11 @@ extension TerminalChat {
         items: [TerminalToolSelectionItem],
         selectedKeys: Set<String>
     ) -> String {
-        guard !toolNames.isEmpty else {
+        let uniqueToolNames = Set(toolNames).subtracting(AgentProfileStore.featureManagementToolNames)
+        guard !uniqueToolNames.isEmpty else {
             return "Active tools: none\n"
         }
 
-        let uniqueToolNames = Set(toolNames)
         var groupedToolNames = Set<String>()
         var renderedGroups: [String] = []
         let normalizedKeys = TerminalToolSelectionCatalog.normalizedSelectionKeys(

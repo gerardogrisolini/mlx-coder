@@ -39,6 +39,9 @@ public enum MLXCoderCommandLineRunner {
 
             switch resolvedRunMode {
             case .chat:
+                if interactiveInputAvailable {
+                    AgentOutput.clearTerminalScreenIfNeeded()
+                }
                 AgentOutput.silenceInheritedProcessOutput(
                     keepStandardError: configuration.verboseLogging
                 )

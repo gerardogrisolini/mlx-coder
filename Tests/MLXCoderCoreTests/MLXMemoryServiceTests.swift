@@ -203,6 +203,7 @@ struct MLXMemoryServiceTests {
         #expect(names == Set([
             "Default",
             "Bugfix",
+            "Builder",
             "Feature",
             "Review",
             "Research",

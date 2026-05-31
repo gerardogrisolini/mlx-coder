@@ -468,6 +468,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
             session.messages.append(
                 .assistant(
                     turn.visibleText,
+                    reasoningContent: turn.reasoningText,
                     toolCalls: structuredToolCalls
                 )
             )
@@ -567,6 +568,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
                 serverMessage(
                     role: message.role,
                     content: message.content,
+                    reasoningContent: message.reasoningContent,
                     attachments: message.attachments
                 )
             }
@@ -640,6 +642,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         return AgentRuntimeMessage(
             role: AgentRuntimeMessage.Role(rawValue: message.role.rawValue) ?? .user,
             content: message.content,
+            reasoningContent: message.reasoningContent,
             attachments: attachments,
             toolCalls: toolCalls,
             toolCallID: message.toolCallID
@@ -692,6 +695,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         serverMessage(
             role: message.role,
             content: message.content,
+            reasoningContent: message.reasoningContent,
             attachments: message.attachments,
             toolCalls: message.toolCalls,
             toolCallID: message.toolCallID
@@ -701,6 +705,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
     private static func serverMessage(
         role: AgentRuntimeMessage.Role,
         content: String,
+        reasoningContent: String? = nil,
         attachments: [AgentRuntimeAttachment],
         toolCalls runtimeToolCalls: [AgentRuntimeToolCall] = [],
         toolCallID: String? = nil
@@ -725,7 +730,11 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
                     arguments: sendableJSONObject(from: toolCall.argumentsJSON) ?? [:]
                 )
             }
-            return .assistant(content, toolCalls: toolCalls)
+            return .assistant(
+                content,
+                reasoningContent: reasoningContent,
+                toolCalls: toolCalls
+            )
         case .tool:
             return .tool(content, toolCallID: toolCallID)
         }

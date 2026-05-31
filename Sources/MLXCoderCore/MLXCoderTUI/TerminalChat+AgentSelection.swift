@@ -57,6 +57,7 @@ extension TerminalChat {
 
     public func applyAgentSelection(_ agent: AgentProfile) async throws {
         selectedAgent = agent
+        interactiveReader.setPanelCommandSuggestions(commandSuggestionsForCurrentAgent())
         await applyAgentProfile(agent)
         activeSessionSystemPromptOverride = nil
         manualModelIDOverride = configuration.hostedModels == nil
@@ -166,11 +167,13 @@ extension TerminalChat {
     private static func agentPurposeSummary(_ agent: AgentProfile) -> String {
         switch agent.id.lowercased() {
         case AgentProfileStore.defaultAgentID.uuidString.lowercased():
-            return "General coding, research, sub-agents, and feature building"
+            return "General coding with web, memory, and sub-agents"
         case AgentProfileStore.bugfixAgentID.uuidString.lowercased():
             return "Focused bug fixes with minimal code changes"
+        case AgentProfileStore.builderAgentID.uuidString.lowercased():
+            return "Create, build, and manage Swift feature tools"
         case AgentProfileStore.featureAgentID.uuidString.lowercased():
-            return "Build complete features and generate Swift tools when useful"
+            return "Build complete product features with normal coding tools"
         case AgentProfileStore.reviewAgentID.uuidString.lowercased():
             return "Code review only: findings first, no edits unless asked"
         case AgentProfileStore.researchAgentID.uuidString.lowercased():
@@ -183,7 +186,12 @@ extension TerminalChat {
     }
 
     private static func customAgentToolSummary(_ tools: [String]) -> String {
-        guard !tools.isEmpty else {
+        let visibleTools = tools.filter { tool in
+            let trimmedTool = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmedTool != TerminalToolSelectionCatalog.featureBuilderKey
+                && !trimmedTool.hasPrefix("feature.")
+        }
+        guard !visibleTools.isEmpty else {
             return "No tools enabled"
         }
 
@@ -196,14 +204,13 @@ extension TerminalChat {
             ("memory", "memory"),
             (TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-web-tools"), "web"),
             ("orchestration", "sub-agents"),
-            (TerminalToolSelectionCatalog.featureBuilderKey, "feature builder"),
             (TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-xcode-tools"), "Xcode"),
             (TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-figma-tools"), "Figma")
         ]
         let selectedLabels = labels.compactMap { pair in
-            tools.contains(pair.0) ? pair.1 : nil
+            visibleTools.contains(pair.0) ? pair.1 : nil
         }
-        let unknownCount = tools.filter { tool in
+        let unknownCount = visibleTools.filter { tool in
             !labels.contains { pair in pair.0 == tool }
         }.count
         let summaryLabels = unknownCount > 0

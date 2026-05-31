@@ -87,6 +87,13 @@ public enum AgentOutput {
         isatty(standardOutput.fileDescriptor) == 1
     }
 
+    public static func clearTerminalScreenIfNeeded() {
+        guard standardErrorIsTerminal else {
+            return
+        }
+        standardError.writeString("\u{1B}[2J\u{1B}[H")
+    }
+
     public static func silenceInheritedProcessOutput(keepStandardError: Bool) {
         _ = standardOutput
         _ = standardError

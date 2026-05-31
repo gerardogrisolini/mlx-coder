@@ -368,6 +368,7 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
             return AgentRuntimeMessage(
                 role: role,
                 content: content,
+                reasoningContent: reasoningContent(from: message),
                 attachments: imageAttachments,
                 toolCalls: runtimeToolCalls(from: message),
                 toolCallID: stringValue(message["tool_call_id"])?.nilIfBlank,
@@ -414,6 +415,13 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
                 argumentsJSON: toolArgumentsJSON(from: function["arguments"])
             )
         }
+    }
+
+    private static func reasoningContent(from message: [String: Any]) -> String? {
+        stringValue(message["reasoning_content"])?.nilIfBlank
+            ?? stringValue(message["reasoning"])?.nilIfBlank
+            ?? stringValue(message["reasoning_text"])?.nilIfBlank
+            ?? contentString(from: message["reasoning_details"])?.nilIfBlank
     }
 
     public static func toolArgumentsJSON(from value: Any?) -> String {

@@ -109,6 +109,7 @@ public struct AgentRuntimeMessage: Codable, Equatable, Sendable {
 
     public let role: Role
     public let content: String
+    public let reasoningContent: String?
     public let attachments: [AgentRuntimeAttachment]
     public let toolCalls: [AgentRuntimeToolCall]
     public let toolCallID: String?
@@ -117,6 +118,7 @@ public struct AgentRuntimeMessage: Codable, Equatable, Sendable {
     public init(
         role: Role,
         content: String,
+        reasoningContent: String? = nil,
         attachments: [AgentRuntimeAttachment] = [],
         toolCalls: [AgentRuntimeToolCall] = [],
         toolCallID: String? = nil,
@@ -124,6 +126,7 @@ public struct AgentRuntimeMessage: Codable, Equatable, Sendable {
     ) {
         self.role = role
         self.content = content
+        self.reasoningContent = reasoningContent?.nilIfBlank
         self.attachments = attachments
         self.toolCalls = toolCalls
         self.toolCallID = toolCallID?.nilIfBlank

@@ -57,18 +57,17 @@ struct MLXServerMain {
         }
 
         var didRunSetup = false
-        var shouldRunModelSetup = false
         if MLXServerSetupRunner.shouldRunSetup(arguments: arguments) {
             didRunSetup = true
-            shouldRunModelSetup = try MLXServerSetupRunner.run(arguments: arguments)
+            try MLXServerSetupRunner.run(arguments: arguments)
             arguments = MLXServerSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
         }
 
-        if shouldRunModelSetup || MLXServerModelSetupRunner.shouldRunSetup(arguments: arguments) {
+        if MLXServerModelSetupRunner.shouldRunSetup(arguments: arguments) {
             didRunSetup = true
             try await MLXServerModelSetupRunner.run(
                 arguments: arguments,
-                configureRetentionPolicy: !shouldRunModelSetup
+                configureRetentionPolicy: true
             )
             arguments = MLXServerModelSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
         }
@@ -187,9 +186,13 @@ struct MLXServerMain {
             verboseLogging: options.verboseLogging,
             appMode: false
         )
+        let stdinIsTerminal = TerminalRawInput.supportsInteractiveInput()
+        if stdinIsTerminal {
+            AgentOutput.clearTerminalScreenIfNeeded()
+        }
         let terminal = TerminalChat(
             configuration: configuration,
-            stdinIsTerminal: TerminalRawInput.supportsInteractiveInput(),
+            stdinIsTerminal: stdinIsTerminal,
             sessionRunner: sessionRunner
         )
 
@@ -753,7 +756,7 @@ private enum MLXServerHelp {
                  [--max-output-tokens <count>] [--max-tool-rounds <count>] [--verbose]
       mlx-server --chat [initial text] [--model <id>] [--max-tokens <count>] [--quiet]
 
-    Run mlx-server --setup once to create ~/.mlx-server/settings.json. At the end it can launch model setup too.
+    Run mlx-server --setup once to create ~/.mlx-server/settings.json.
     Run mlx-server --setup-models directly to create or update ~/.mlx-server/models.json and download MLX models.
     Run mlx-coder --setup-agents to create or update mlx-coder profiles in ~/.mlx-coder/agents.json.
     Run mlx-server --setup-agents to configure Codex CLI, Codex App, Xcode Codex App, and Xcode Claude Code integrations.

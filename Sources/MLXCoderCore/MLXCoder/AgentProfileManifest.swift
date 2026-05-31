@@ -117,6 +117,9 @@ public struct AgentProfile: Codable, Hashable, Sendable {
             )
             if matchingKeys.isEmpty {
                 if let normalizedName = tool.nilIfBlank {
+                    guard !AgentProfileStore.isFeatureManagementToolReference(normalizedName) else {
+                        continue
+                    }
                     allowedToolNames.insert(normalizedName)
                 }
             } else {
@@ -129,6 +132,9 @@ public struct AgentProfile: Codable, Hashable, Sendable {
                 items: items
             )
         )
+        if AgentProfileStore.isBuilderAgent(self) {
+            allowedToolNames.formUnion(AgentProfileStore.featureManagementToolNames)
+        }
         return allowedToolNames
     }
 
@@ -223,6 +229,8 @@ public enum AgentProfileStore {
     public static let reviewAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000004")!
     public static let researchAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000005")!
     public static let refactorAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000006")!
+    public static let builderAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000007")!
+    public static let builderAgentName = "Builder"
     public static let manifestFilename = "agents.json"
     public static let codingToolNames: [String] = [
         "shell",
@@ -234,20 +242,20 @@ public enum AgentProfileStore {
     ]
     public static let defaultToolNames: [String] = codingToolNames + [
         TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-web-tools"),
-        "orchestration",
-        TerminalToolSelectionCatalog.featureBuilderKey
+        "orchestration"
     ]
     public static let implementationToolNames: [String] = codingToolNames
     public static let featureToolNames: [String] = codingToolNames + [
         TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-web-tools"),
-        "orchestration",
-        TerminalToolSelectionCatalog.featureBuilderKey
+        "orchestration"
     ]
+    public static let builderToolNames: [String] = defaultToolNames
     public static let reviewToolNames: [String] = codingToolNames
     public static let researchToolNames: [String] = codingToolNames + [
         TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-web-tools"),
         "orchestration"
     ]
+    public static let featureManagementToolNames = Set(DirectToolCatalog.featureDescriptors.map(\.name))
 
     public static func loadRequired(fileManager: FileManager = .default) throws -> [AgentProfile] {
         let url = agentsManifestURL(fileManager: fileManager)
@@ -294,7 +302,7 @@ public enum AgentProfileStore {
         )
 
         let manifest = AgentProfileManifest(
-            agents: agents.sorted {
+            agents: normalizedAgentsForSave(agents).sorted {
                 $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
             }
         )
@@ -337,6 +345,15 @@ public enum AgentProfileStore {
                 tools: implementationToolNames
             ),
             AgentProfile(
+                id: builderAgentID.uuidString,
+                name: builderAgentName,
+                instructions: """
+                Work as the dedicated feature-builder agent. Create, install, validate, build, enable, disable, and delete Swift feature packages only when the user asks for reusable runtime capability. Keep generated feature packages focused, Swift tools 6.3 compatible, and aligned with the existing feature runtime contract.
+                """,
+                symbolName: "hammer",
+                tools: builderToolNames
+            ),
+            AgentProfile(
                 id: featureAgentID.uuidString,
                 name: "Feature",
                 instructions: """
@@ -375,6 +392,33 @@ public enum AgentProfileStore {
         ]
     }
 
+    public static func isBuilderAgent(_ agent: AgentProfile?) -> Bool {
+        guard let agent else {
+            return false
+        }
+        return agent.id.selectionKey == builderAgentID.uuidString.selectionKey
+            || agent.name.selectionKey == builderAgentName.selectionKey
+    }
+
+    public static func normalizedAgentsForSave(_ agents: [AgentProfile]) -> [AgentProfile] {
+        agents.map(normalizedAgentForSave)
+    }
+
+    public static func normalizedAgentForSave(_ agent: AgentProfile) -> AgentProfile {
+        let tools = normalizedToolReferencesForSave(agent.tools)
+
+        return AgentProfile(
+            id: agent.id,
+            name: agent.name,
+            instructions: agent.instructions,
+            symbolName: agent.symbolName,
+            tools: tools,
+            skills: agent.skills,
+            modelID: agent.modelID,
+            modelProvider: agent.modelProvider
+        )
+    }
+
     public static func defaultProfile(in agents: [AgentProfile]) throws -> AgentProfile {
         guard let agent = agents.first(where: { $0.name.selectionKey == defaultAgentName.selectionKey }) else {
             throw AgentProfileStoreError.defaultAgentMissing(agentsManifestURL())
@@ -387,6 +431,50 @@ public enum AgentProfileStore {
             .deletingLastPathComponent()
             .appendingPathComponent(manifestFilename)
             .standardizedFileURL
+    }
+
+    private static func normalizedToolReferencesForSave(_ tools: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for rawTool in tools {
+            guard let tool = rawTool.nilIfBlank,
+                  !isFeatureManagementToolReference(tool) else {
+                continue
+            }
+            let key = toolReferenceKey(tool)
+            guard seen.insert(key).inserted else {
+                continue
+            }
+            result.append(tool)
+        }
+        return result
+    }
+
+    fileprivate static func isFeatureManagementToolReference(_ value: String) -> Bool {
+        let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedValue.lowercased().hasPrefix("feature.") {
+            return true
+        }
+        let normalizedValue = toolReferenceKey(value)
+        return normalizedValue == toolReferenceKey(TerminalToolSelectionCatalog.featureBuilderKey)
+            || normalizedValue == "feature-builder"
+            || normalizedValue == "feature-manager"
+            || normalizedValue == "feature"
+            || normalizedValue == "features"
+            || normalizedValue == "kernel"
+    }
+
+    private static func toolReferenceKey(_ value: String) -> String {
+        let foldedValue = value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive],
+            locale: .current
+        )
+        let characters = foldedValue.unicodeScalars.map { scalar -> Character in
+            CharacterSet.alphanumerics.contains(scalar) ? Character(String(scalar)) : "-"
+        }
+        return String(characters)
+            .replacingOccurrences(of: #"-+"#, with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
     }
 }
 

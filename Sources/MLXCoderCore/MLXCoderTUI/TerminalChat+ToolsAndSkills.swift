@@ -152,6 +152,12 @@ extension TerminalChat {
         )
     }
 
+    public func intrinsicAllowedToolNamesForSelectedAgent() -> Set<String> {
+        AgentProfileStore.isBuilderAgent(selectedAgent)
+            ? AgentProfileStore.featureManagementToolNames
+            : []
+    }
+
     public static func toolSelectionKeys(
         from rawValues: [String],
         items: [TerminalToolSelectionItem]

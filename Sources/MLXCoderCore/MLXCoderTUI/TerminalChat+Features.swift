@@ -83,13 +83,7 @@ extension TerminalChat {
     }
 
     private func featureBuilderIsActive() async -> Bool {
-        let items = await toolSelectionItems()
-        let normalizedKeys = TerminalToolSelectionCatalog.normalizedSelectionKeys(
-            selectedToolKeys,
-            items: items
-        )
-        return items.contains { $0.key == TerminalToolSelectionCatalog.featureBuilderKey }
-            && normalizedKeys.contains(TerminalToolSelectionCatalog.featureBuilderKey)
+        AgentProfileStore.isBuilderAgent(selectedAgent)
     }
 
     private func printFeatureList() async {
@@ -238,13 +232,8 @@ extension TerminalChat {
             }
         }
 
-        let shouldBuild = promptFeatureYesNo(
-            "Build feature now?",
-            defaultValue: template == .mcpBridge
-        ) ?? false
-        let shouldEnable = shouldBuild
-            ? (promptFeatureYesNo("Enable feature after build?", defaultValue: true) ?? false)
-            : false
+        let shouldBuild = true
+        let shouldEnable = promptFeatureYesNo("Enable feature after build?", defaultValue: true) ?? false
         let shouldSelect = shouldEnable
             ? (promptFeatureYesNo("Select feature for this session?", defaultValue: true) ?? false)
             : false
@@ -433,7 +422,11 @@ extension TerminalChat {
     }
 
     public static func renderFeatureBuilderInactiveWarning() -> String {
-        "mlx-coder: Feature Builder is not active. Enable it with /tools feature-builder before using /feature.\n"
+        renderFeatureCommandUnavailableForAgent()
+    }
+
+    public static func renderFeatureCommandUnavailableForAgent() -> String {
+        "mlx-coder: /feature is only available with the Builder agent. Switch with /agents Builder.\n"
     }
 
     public static func renderFeatureWizardCompletion(
@@ -576,13 +569,8 @@ extension TerminalChat {
         }
     }
 
-    public static func featureCommandRequiresActiveBuilder(rawArguments: String) -> Bool {
-        let trimmedArguments = rawArguments.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedArguments.isEmpty else {
-            return true
-        }
-        let action = trimmedArguments.split(separator: " ").first?.lowercased() ?? ""
-        return !["list", "ls", "status"].contains(action)
+    public static func featureCommandRequiresActiveBuilder(rawArguments _: String) -> Bool {
+        true
     }
 
     private static func renderFeatureValidationReport(

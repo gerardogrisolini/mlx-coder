@@ -269,7 +269,15 @@ extension TerminalChat {
                 if emitStatus {
                     self.printLoadedModelDetails(details)
                 }
-            case .diagnostic, .thought, .metrics, .contextWindow, .content, .toolCallStarted, .toolCallCompleted:
+            case .diagnostic,
+                 .thought,
+                 .metrics,
+                 .contextWindow,
+                 .content,
+                 .toolCallStarted,
+                 .toolCallCompleted,
+                 .sessionSnapshot,
+                 .turnEnded:
                 break
             }
         }
