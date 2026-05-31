@@ -15,6 +15,8 @@ public actor AgentCoreSessionRunner {
     private var sessions: [String: AgentCoreSessionConfiguration] = [:]
     private var lastKnownSessionSnapshots: [String: AgentRuntimeSessionSnapshot] = [:]
     private var activePromptTasks: [UUID: Task<Void, Never>] = [:]
+    private var activePromptTaskIDsBySessionID: [String: Set<UUID>] = [:]
+    private var activePromptSessionIDsByTaskID: [UUID: String] = [:]
     private var promptAuthorizationHandlers: [UUID: AgentToolAuthorizationHandler] = [:]
     private let defaultToolAuthorizationHandler: AgentToolAuthorizationHandler?
     private let mcpRuntime: DirectMCPToolRuntime
@@ -274,6 +276,7 @@ public actor AgentCoreSessionRunner {
     ) -> AsyncThrowingStream<DirectAgentEvent, Error> {
         let (stream, continuation) = AsyncThrowingStream<DirectAgentEvent, Error>.makeStream()
         let promptID = UUID()
+        let outcomeTracker = AgentCorePromptOutcomeTracker()
         let task = Task(priority: .userInitiated) {
             let activity = ProcessInfo.processInfo.beginActivity(
                 options: [.userInitiated, .latencyCritical],
@@ -294,11 +297,18 @@ public actor AgentCoreSessionRunner {
                     borrowedXcodeExecutor: borrowedXcodeExecutor,
                     borrowedXcodeTools: borrowedXcodeTools
                 ) { event in
+                    await outcomeTracker.record(event)
                     continuation.yield(event)
+                }
+                if await outcomeTracker.shouldEmitFallback() {
+                    continuation.yield(.turnEnded(.completed))
                 }
                 clearActivePromptTask(id: promptID)
                 continuation.finish()
             } catch is CancellationError {
+                if await outcomeTracker.shouldEmitFallback() {
+                    continuation.yield(.turnEnded(.cancelled))
+                }
                 clearActivePromptTask(id: promptID)
                 continuation.finish(throwing: CancellationError())
             } catch {
@@ -306,11 +316,18 @@ public actor AgentCoreSessionRunner {
                     .viewModelRuntime,
                     "agent core session runner stream failed: \(error.localizedDescription)"
                 )
+                if await outcomeTracker.shouldEmitFallback() {
+                    continuation.yield(.turnEnded(.failed(message: error.localizedDescription)))
+                }
                 clearActivePromptTask(id: promptID)
                 continuation.finish(throwing: error)
             }
         }
-        activePromptTasks[promptID] = task
+        registerActivePromptTask(
+            task,
+            id: promptID,
+            sessionID: configuration.sessionID
+        )
         continuation.onTermination = { _ in
             task.cancel()
             Task {
@@ -325,6 +342,8 @@ public actor AgentCoreSessionRunner {
             task.cancel()
         }
         activePromptTasks.removeAll()
+        activePromptTaskIDsBySessionID.removeAll()
+        activePromptSessionIDsByTaskID.removeAll()
         promptAuthorizationHandlers.removeAll()
         sessions.removeAll()
         lastKnownSessionSnapshots.removeAll()
@@ -334,19 +353,32 @@ public actor AgentCoreSessionRunner {
         await backendToShutdown?.shutdown()
     }
 
-    public func resetSession(id sessionID: String? = nil) async {
-        for task in activePromptTasks.values {
-            task.cancel()
+    public func cancelPrompt(sessionID: String) async {
+        guard let promptIDs = activePromptTaskIDsBySessionID[sessionID] else {
+            return
         }
-        activePromptTasks.removeAll()
-        promptAuthorizationHandlers.removeAll()
 
+        for promptID in promptIDs {
+            activePromptTasks[promptID]?.cancel()
+        }
+    }
+
+    public func resetSession(id sessionID: String? = nil) async {
         if let sessionID {
+            cancelPromptTasks(for: sessionID)
             sessions.removeValue(forKey: sessionID)
             lastKnownSessionSnapshots.removeValue(forKey: sessionID)
             await backend?.clearSession(id: sessionID)
             return
         }
+
+        for task in activePromptTasks.values {
+            task.cancel()
+        }
+        activePromptTasks.removeAll()
+        activePromptTaskIDsBySessionID.removeAll()
+        activePromptSessionIDsByTaskID.removeAll()
+        promptAuthorizationHandlers.removeAll()
 
         let sessionIDs = Array(sessions.keys)
         sessions.removeAll()
@@ -357,6 +389,7 @@ public actor AgentCoreSessionRunner {
     }
 
     public func closeSession(id sessionID: String) async {
+        cancelPromptTasks(for: sessionID)
         sessions.removeValue(forKey: sessionID)
         lastKnownSessionSnapshots.removeValue(forKey: sessionID)
         await backend?.closeSession(id: sessionID)
@@ -367,6 +400,8 @@ public actor AgentCoreSessionRunner {
             task.cancel()
         }
         activePromptTasks.removeAll()
+        activePromptTaskIDsBySessionID.removeAll()
+        activePromptSessionIDsByTaskID.removeAll()
         promptAuthorizationHandlers.removeAll()
         sessions.removeAll()
         lastKnownSessionSnapshots.removeAll()
@@ -377,8 +412,36 @@ public actor AgentCoreSessionRunner {
         await mcpRuntime.shutdown()
     }
 
+    private func registerActivePromptTask(
+        _ task: Task<Void, Never>,
+        id promptID: UUID,
+        sessionID: String
+    ) {
+        activePromptTasks[promptID] = task
+        activePromptSessionIDsByTaskID[promptID] = sessionID
+        activePromptTaskIDsBySessionID[sessionID, default: []].insert(promptID)
+    }
+
+    private func cancelPromptTasks(for sessionID: String) {
+        guard let promptIDs = activePromptTaskIDsBySessionID.removeValue(forKey: sessionID) else {
+            return
+        }
+
+        for promptID in promptIDs {
+            activePromptTasks.removeValue(forKey: promptID)?.cancel()
+            activePromptSessionIDsByTaskID.removeValue(forKey: promptID)
+            promptAuthorizationHandlers.removeValue(forKey: promptID)
+        }
+    }
+
     private func clearActivePromptTask(id promptID: UUID) {
         activePromptTasks.removeValue(forKey: promptID)
+        if let sessionID = activePromptSessionIDsByTaskID.removeValue(forKey: promptID) {
+            activePromptTaskIDsBySessionID[sessionID]?.remove(promptID)
+            if activePromptTaskIDsBySessionID[sessionID]?.isEmpty == true {
+                activePromptTaskIDsBySessionID.removeValue(forKey: sessionID)
+            }
+        }
         promptAuthorizationHandlers.removeValue(forKey: promptID)
     }
 
@@ -504,6 +567,24 @@ public actor AgentCoreSessionRunner {
 private struct AgentCoreSessionSnapshotRecovery {
     let snapshot: AgentRuntimeSessionSnapshot
     let shouldRestoreBackend: Bool
+}
+
+private actor AgentCorePromptOutcomeTracker {
+    private var didEmitOutcome = false
+
+    func record(_ event: DirectAgentEvent) {
+        if case .turnEnded = event {
+            didEmitOutcome = true
+        }
+    }
+
+    func shouldEmitFallback() -> Bool {
+        guard !didEmitOutcome else {
+            return false
+        }
+        didEmitOutcome = true
+        return true
+    }
 }
 
 private actor AgentCorePromptTurnRecorder {
