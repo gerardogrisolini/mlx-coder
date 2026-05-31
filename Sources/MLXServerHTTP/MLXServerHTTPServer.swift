@@ -3494,7 +3494,11 @@ private struct ModelsResponse: Encodable {
 
     init(models: [MLXServerModelDescriptor]) {
         self.data = models.map { model in
-            Model(id: model.id, ownedBy: Self.owner(for: model.id))
+            Model(
+                id: model.id,
+                ownedBy: Self.owner(for: model.id),
+                thinking: model.thinking.supportsThinking ? model.thinking : nil
+            )
         }
     }
 
@@ -3510,12 +3514,14 @@ private struct ModelsResponse: Encodable {
         var object = "model"
         var created = 0
         var ownedBy: String
+        var thinking: MLXServerModelThinkingConfiguration?
 
         enum CodingKeys: String, CodingKey {
             case id
             case object
             case created
             case ownedBy = "owned_by"
+            case thinking
         }
     }
 }

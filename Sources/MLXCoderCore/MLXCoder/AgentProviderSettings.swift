@@ -121,6 +121,7 @@ public struct AgentRemoteProvider: Codable, Hashable, Sendable {
         }
         return Self.isOpenRouterBaseURL(baseURL)
             || Self.isNVIDIABaseURL(baseURL)
+            || Self.isModalDirectBaseURL(baseURL)
     }
 
     public var isChatGPTSubscriptionProvider: Bool {
@@ -162,6 +163,14 @@ public struct AgentRemoteProvider: Codable, Hashable, Sendable {
             return host == "integrate.api.nvidia.com"
         }
         return normalizedValue.lowercased().contains("integrate.api.nvidia.com")
+    }
+
+    public static func isModalDirectBaseURL(_ value: String) -> Bool {
+        let normalizedValue = normalizedBaseURL(value)
+        if let host = URL(string: normalizedValue)?.host?.lowercased() {
+            return host == "modal.direct" || host.hasSuffix(".modal.direct")
+        }
+        return normalizedValue.lowercased().contains("modal.direct")
     }
 
     public static func isChatGPTSubscriptionBaseURL(_ value: String) -> Bool {

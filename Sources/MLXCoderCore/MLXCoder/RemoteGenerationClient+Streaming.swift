@@ -36,12 +36,8 @@ extension RemoteGenerationClient {
     }
 
     public var thinkingPayloadStyle: AgentThinkingPayloadStyle {
-        guard let host = URL(string: provider.baseURL)?.host?.lowercased() else {
-            return .openRouterReasoning
-        }
-        if host == "modal.direct"
-            || host.hasSuffix(".modal.direct")
-            || host == "integrate.api.nvidia.com" {
+        if AgentRemoteProvider.isModalDirectBaseURL(provider.baseURL)
+            || AgentRemoteProvider.isNVIDIABaseURL(provider.baseURL) {
             return .chatTemplateKwargs
         }
         return .openRouterReasoning
