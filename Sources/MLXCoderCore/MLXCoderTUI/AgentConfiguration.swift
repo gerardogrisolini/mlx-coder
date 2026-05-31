@@ -11,18 +11,18 @@ import Glibc
 import Dispatch
 import Foundation
 
-public enum AgentRunMode: String {
+public enum AgentRunMode: String, Sendable {
     case automatic
     case acp
     case chat
 }
 
-public enum AgentResolvedRunMode {
+public enum AgentResolvedRunMode: Sendable {
     case acp
     case chat
 }
 
-public struct AgentConfiguration {
+public struct AgentConfiguration: Sendable {
     public static let helpText = """
     mlx-coder
 

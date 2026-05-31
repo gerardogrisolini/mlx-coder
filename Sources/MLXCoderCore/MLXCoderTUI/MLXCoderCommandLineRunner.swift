@@ -20,8 +20,9 @@ public enum MLXCoderCommandLineRunner {
         do {
             SwiftPMResourceBundleDirectory.configure()
 
+            let sanitizedArguments = MLXCoderCommandLineArgumentSanitizer.sanitized(rawArguments)
             let configuration = try AgentConfiguration(
-                arguments: MLXCoderCommandLineArgumentSanitizer.sanitized(rawArguments)
+                arguments: sanitizedArguments
             )
             if configuration.printHelp {
                 AgentOutput.standardOutput.writeString(AgentConfiguration.helpText)

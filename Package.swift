@@ -60,6 +60,10 @@ let package = Package(
         .executable(
             name: "mlx-figma-tools-feature",
             targets: ["mlx-figma-tools-feature"]
+        ),
+        .executable(
+            name: "mlx-jira-tools-feature",
+            targets: ["mlx-jira-tools-feature"]
         )
     ],
     dependencies: [
@@ -166,6 +170,14 @@ let package = Package(
                 "MLXFeatureKit"
             ],
             path: "Features/MLXFigmaToolsFeature"
+        ),
+        .executableTarget(
+            name: "mlx-jira-tools-feature",
+            dependencies: [
+                "MLXCoderCore",
+                "MLXFeatureKit"
+            ],
+            path: "Features/MLXJiraToolsFeature"
         ),
         .target(
             name: "MLXServerSetup",

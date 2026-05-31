@@ -524,22 +524,64 @@ public struct SwiftFeatureDeleteReport: Codable, Sendable {
 
 public struct SwiftFeatureState: Codable, Sendable {
     public static let currentVersion = 1
+    public static let defaultDisabledBundledFeatureIDs: Set<String> = [
+        "mlx-jira-tools"
+    ]
 
     public var version: Int
     public var disabledBundledFeatureIDs: [String]
+    public var enabledBundledFeatureIDs: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case disabledBundledFeatureIDs
+        case enabledBundledFeatureIDs
+    }
 
     public init(
         version: Int = Self.currentVersion,
-        disabledBundledFeatureIDs: [String] = []
+        disabledBundledFeatureIDs: [String] = [],
+        enabledBundledFeatureIDs: [String] = []
     ) {
         self.version = version
         self.disabledBundledFeatureIDs = Array(
             Set(disabledBundledFeatureIDs.compactMap { $0.nilIfBlank })
         ).sorted()
+        self.enabledBundledFeatureIDs = Array(
+            Set(enabledBundledFeatureIDs.compactMap { $0.nilIfBlank })
+        ).sorted()
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            version: try container.decodeIfPresent(Int.self, forKey: .version) ?? Self.currentVersion,
+            disabledBundledFeatureIDs: try container.decodeIfPresent(
+                [String].self,
+                forKey: .disabledBundledFeatureIDs
+            ) ?? [],
+            enabledBundledFeatureIDs: try container.decodeIfPresent(
+                [String].self,
+                forKey: .enabledBundledFeatureIDs
+            ) ?? []
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encode(disabledBundledFeatureIDs, forKey: .disabledBundledFeatureIDs)
+        try container.encode(enabledBundledFeatureIDs, forKey: .enabledBundledFeatureIDs)
     }
 
     public func bundledFeatureIsEnabled(id: String) -> Bool {
-        !disabledBundledFeatureIDs.contains(id)
+        guard !disabledBundledFeatureIDs.contains(id) else {
+            return false
+        }
+        if Self.defaultDisabledBundledFeatureIDs.contains(id) {
+            return enabledBundledFeatureIDs.contains(id)
+        }
+        return true
     }
 }
 
@@ -563,7 +605,8 @@ public enum SwiftFeatureStateStore {
         }
         return SwiftFeatureState(
             version: SwiftFeatureState.currentVersion,
-            disabledBundledFeatureIDs: state.disabledBundledFeatureIDs
+            disabledBundledFeatureIDs: state.disabledBundledFeatureIDs,
+            enabledBundledFeatureIDs: state.enabledBundledFeatureIDs
         )
     }
 
@@ -576,14 +619,29 @@ public enum SwiftFeatureStateStore {
             throw DirectToolError.missingArgument("id")
         }
 
-        var disabledIDs = Set(load(fileManager: fileManager).disabledBundledFeatureIDs)
-        if enabled {
+        let state = load(fileManager: fileManager)
+        var disabledIDs = Set(state.disabledBundledFeatureIDs)
+        var enabledIDs = Set(state.enabledBundledFeatureIDs)
+        if SwiftFeatureState.defaultDisabledBundledFeatureIDs.contains(id) {
+            if enabled {
+                enabledIDs.insert(id)
+                disabledIDs.remove(id)
+            } else {
+                enabledIDs.remove(id)
+                disabledIDs.insert(id)
+            }
+        } else if enabled {
             disabledIDs.remove(id)
+            enabledIDs.remove(id)
         } else {
             disabledIDs.insert(id)
+            enabledIDs.remove(id)
         }
         try save(
-            SwiftFeatureState(disabledBundledFeatureIDs: Array(disabledIDs)),
+            SwiftFeatureState(
+                disabledBundledFeatureIDs: Array(disabledIDs),
+                enabledBundledFeatureIDs: Array(enabledIDs)
+            ),
             fileManager: fileManager
         )
     }
@@ -2697,6 +2755,11 @@ public actor SwiftFeatureRuntime {
                 tools: bundledGitToolDescriptors()
             ),
             BundledFeatureDefinition(
+                id: "mlx-jira-tools",
+                executableName: "mlx-jira-tools-feature",
+                tools: bundledJiraToolDescriptors()
+            ),
+            BundledFeatureDefinition(
                 id: "mlx-xcode-tools",
                 executableName: "mlx-xcode-tools-feature",
                 tools: [],
@@ -2876,6 +2939,26 @@ public actor SwiftFeatureRuntime {
         #else
         []
         #endif
+    }
+
+    private static func bundledJiraToolDescriptors() -> [ToolDescriptor] {
+        [
+            ToolDescriptor(
+                name: "jira.search",
+                description: "Searches Jira issues by issue key, issue URL, or text and returns selectable issue summaries.",
+                inputSchema: #"{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}"#
+            ),
+            ToolDescriptor(
+                name: "jira.read",
+                description: "Loads a Jira issue and returns task context for the model without creating a local task.",
+                inputSchema: #"{"type":"object","properties":{"issueKey":{"type":"string"},"issue_key":{"type":"string"},"key":{"type":"string"},"url":{"type":"string"},"query":{"type":"string"},"includeRaw":{"type":"boolean"},"include_raw":{"type":"boolean"}}}"#
+            ),
+            ToolDescriptor(
+                name: "jira.signOut",
+                description: "Clears the persisted Jira API token used by the Jira tools.",
+                inputSchema: #"{"type":"object","properties":{}}"#
+            )
+        ]
     }
 
     private static func availableBundledExecutableURL(

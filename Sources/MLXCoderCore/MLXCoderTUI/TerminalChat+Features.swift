@@ -61,6 +61,11 @@ extension TerminalChat {
                 writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
                 return .none
             }
+            if action == "enable",
+               id == Self.jiraFeatureID,
+               !(await runJiraFeatureSetupBeforeEnable()) {
+                return .none
+            }
             let toolName = "feature.\(action)"
             let didSucceed = await runFeatureManagementTool(
                 name: toolName,
@@ -92,6 +97,58 @@ extension TerminalChat {
             includeDisabled: true
         )
         writeSystemMessage(Self.renderFeatureStatusList(statuses))
+    }
+
+    private func runJiraFeatureSetupBeforeEnable() async -> Bool {
+        guard stdinIsTerminal else {
+            writeFailureMessage("mlx-coder: Jira setup requires an interactive terminal.\n")
+            return false
+        }
+
+        let statuses = await SwiftFeatureRuntime().featureStatuses(
+            includeTools: false,
+            includeDisabled: true
+        )
+        guard let status = statuses.first(where: { $0.id == Self.jiraFeatureID }) else {
+            writeFailureMessage("mlx-coder: Jira feature is not available in this build.\n")
+            return false
+        }
+        guard status.available else {
+            writeFailureMessage("mlx-coder: Jira feature executable was not found at \(status.executablePath).\n")
+            return false
+        }
+
+        do {
+            let exitCode = try runInteractiveFeatureSetupProcess(
+                executablePath: status.executablePath,
+                arguments: ["--setup"]
+            )
+            guard exitCode == 0 else {
+                writeFailureMessage("mlx-coder: Jira setup did not complete.\n")
+                return false
+            }
+            return true
+        } catch {
+            writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
+            return false
+        }
+    }
+
+    private func runInteractiveFeatureSetupProcess(
+        executablePath: String,
+        arguments: [String]
+    ) throws -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+        process.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        process.environment = ProcessInfo.processInfo.environment
+        process.standardInput = FileHandle.standardInput
+        process.standardOutput = FileHandle.standardOutput
+        process.standardError = FileHandle.standardError
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus
     }
 
     private func resolvedFeatureID(_ rawValue: String) async throws -> String {
@@ -572,6 +629,8 @@ extension TerminalChat {
     public static func featureCommandRequiresActiveBuilder(rawArguments _: String) -> Bool {
         true
     }
+
+    private static let jiraFeatureID = "mlx-jira-tools"
 
     private static func renderFeatureValidationReport(
         _ report: SwiftFeatureValidationReport
