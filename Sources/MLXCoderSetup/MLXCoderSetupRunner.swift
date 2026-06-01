@@ -45,8 +45,16 @@ public enum MLXCoderSetupRunner {
                     defaultValue: false
                 )
                 if !shouldReconfigure {
+                    guard let existingManifest else {
+                        throw MLXCoderSetupError.noModelsConfigured
+                    }
+                    let updatedManifest = try configureTelegram(in: existingManifest)
+                    let settingsWasWritten = updatedManifest != existingManifest
+                    if settingsWasWritten {
+                        try AgentSettingsManifestStore.save(updatedManifest, to: settingsURL)
+                    }
                     let result = try MLXCoderSupportFileService.ensureBaseFiles()
-                    printResult(result, settingsWasWritten: false)
+                    printResult(result, settingsWasWritten: settingsWasWritten)
                     printCompletion()
                     return
                 }
@@ -61,7 +69,9 @@ public enum MLXCoderSetupRunner {
             }
         }
 
-        let manifest = try await buildSettingsManifest(existingManifest: existingManifest)
+        let manifest = try configureTelegram(
+            in: try await buildSettingsManifest(existingManifest: existingManifest)
+        )
         let result = try MLXCoderSupportFileService.ensureRequiredFiles(
             settingsManifest: manifest,
             overwriteSettings: true
@@ -132,6 +142,47 @@ public enum MLXCoderSetupRunner {
             selectedThinkingSelection: selectedThinkingSelection,
             remoteAPIKeysByProviderID: apiKeysByProviderID
         )
+    }
+
+    private static func configureTelegram(
+        in manifest: AgentSettingsManifest
+    ) throws -> AgentSettingsManifest {
+        AgentOutput.standardError.writeString("\nTelegram remote control\n")
+        AgentOutput.standardError.writeString(
+            "Optional. Create a Telegram bot with BotFather and paste the full token here.\n"
+        )
+
+        let hasStoredToken = manifest.telegramBotToken != nil
+        if hasStoredToken {
+            let shouldReset = try promptYesNo(
+                "Reset stored Telegram bot token?",
+                defaultValue: false
+            )
+            guard shouldReset else {
+                return manifest
+            }
+            let token = try promptString(
+                "New Telegram bot token (empty clears it)",
+                defaultValue: nil,
+                allowEmpty: true
+            )
+            return manifest.withTelegramBotToken(token)
+        }
+
+        let shouldConfigure = try promptYesNo(
+            "Configure Telegram remote control?",
+            defaultValue: false
+        )
+        guard shouldConfigure else {
+            return manifest.withTelegramBotToken(nil)
+        }
+
+        let token = try promptString(
+            "Telegram bot token",
+            defaultValue: nil,
+            allowEmpty: false
+        )
+        return manifest.withTelegramBotToken(token)
     }
 
     private static func reconfigureExistingProviders(

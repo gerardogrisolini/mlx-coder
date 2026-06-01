@@ -186,6 +186,21 @@ struct MLXServerMain {
             verboseLogging: options.verboseLogging,
             appMode: false
         )
+        if options.telegram {
+            let telegram = try AgentTelegramControlRuntime(
+                configuration: configuration,
+                sessionRunner: sessionRunner
+            )
+            do {
+                try await telegram.run()
+                await sessionRunner.shutdown()
+            } catch {
+                await sessionRunner.shutdown()
+                throw error
+            }
+            return
+        }
+
         let stdinIsTerminal = TerminalRawInput.supportsInteractiveInput()
         if stdinIsTerminal {
             AgentOutput.clearTerminalScreenIfNeeded()
@@ -564,6 +579,7 @@ private struct MLXServerCoderOptions {
     var maxToolRounds: Int
     var maxOutputTokens: Int?
     var verboseLogging: Bool
+    var telegram: Bool
 
     init(arguments: [String]) throws {
         var modelID: String?
@@ -574,6 +590,7 @@ private struct MLXServerCoderOptions {
         var maxToolRounds = 100
         var maxOutputTokens: Int?
         var verboseLogging = false
+        var telegram = false
         var didSeeCoder = false
         var index = arguments.startIndex
 
@@ -607,6 +624,8 @@ private struct MLXServerCoderOptions {
                 maxOutputTokens = parsed
             case "--verbose":
                 verboseLogging = true
+            case "--telegram":
+                telegram = true
             default:
                 throw MLXServerMainError.unsupportedArguments([argument])
             }
@@ -626,6 +645,7 @@ private struct MLXServerCoderOptions {
         self.maxToolRounds = maxToolRounds
         self.maxOutputTokens = maxOutputTokens
         self.verboseLogging = verboseLogging
+        self.telegram = telegram
     }
 
     private static func requiredValue(
@@ -752,7 +772,7 @@ private enum MLXServerHelp {
       mlx-server --reset
       mlx-server --reset-disk-cache
       mlx-server
-      mlx-server --coder [--cwd <path>] [--model <id>] [--agent <name>] [--skills <list>]
+      mlx-server --coder [--telegram] [--cwd <path>] [--model <id>] [--agent <name>] [--skills <list>]
                  [--max-output-tokens <count>] [--max-tool-rounds <count>] [--verbose]
       mlx-server --chat [initial text] [--model <id>] [--max-tokens <count>] [--quiet]
 
@@ -763,6 +783,7 @@ private enum MLXServerHelp {
     Run mlx-server --reset to delete managed files in ~/.mlx-server and ~/.mlx-coder.
     Run mlx-server --reset-disk-cache to empty the configured disk KV cache directory. Default: ~/.mlx-server/KVCaches.
     Run mlx-server --coder to start the mlx-coder TUI with the local MLXServerRuntime directly, without HTTP or ACP.
+    Add --telegram to --coder to run Telegram control on the direct local MLXServerRuntime.
     Run mlx-server --chat to start an interactive terminal chat. Press Ctrl+D to exit.
     The server reads runtime settings from ~/.mlx-server/settings.json and models only from ~/.mlx-server/models.json.
     """

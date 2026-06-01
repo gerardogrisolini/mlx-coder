@@ -21,8 +21,10 @@ public enum MLXCoderCommandLineRunner {
             SwiftPMResourceBundleDirectory.configure()
 
             let sanitizedArguments = MLXCoderCommandLineArgumentSanitizer.sanitized(rawArguments)
+            let shouldRunTelegram = sanitizedArguments.dropFirst().contains("--telegram")
+            let configurationArguments = sanitizedArguments.filter { $0 != "--telegram" }
             let configuration = try AgentConfiguration(
-                arguments: sanitizedArguments
+                arguments: configurationArguments
             )
             if configuration.printHelp {
                 AgentOutput.standardOutput.writeString(AgentConfiguration.helpText)
@@ -34,6 +36,12 @@ public enum MLXCoderCommandLineRunner {
             }
 
             try ensureProjectAgentsFileExists(workingDirectory: configuration.workingDirectory)
+
+            if shouldRunTelegram {
+                let runtime = try AgentTelegramControlRuntime(configuration: configuration)
+                try await runtime.run()
+                return
+            }
 
             let interactiveInputAvailable = TerminalRawInput.supportsInteractiveInput()
             let resolvedRunMode = configuration.resolvedRunMode(
@@ -134,6 +142,7 @@ public enum MLXCoderCommandLineRunner {
             || argument == "--version"
             || argument == "--model"
             || argument == "--agent"
+            || argument == "--telegram"
             || argument == "--bearer-token"
             || argument == "--acp"
             || argument == "--app"
