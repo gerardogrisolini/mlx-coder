@@ -9,9 +9,9 @@ import Foundation
 
 extension TerminalChat {
     public func publishFileChangeSummaryIfNeeded(
-        from tracker: TurnFileChangeTracker
+        from coordinator: TurnFileChangeCoordinator
     ) async {
-        guard let summary = await tracker.makeSummary() else {
+        guard let summary = await coordinator.publishSummaryIfNeeded() else {
             return
         }
 
@@ -34,25 +34,15 @@ extension TerminalChat {
     }
 
     public func handleUndoFileChangesCommand() async {
-        guard let summary = lastFileChangeSummary else {
-            writeSystemMessage("No tracked file changes to undo.\n")
-            return
-        }
-
-        guard summary.canUndo else {
-            writeSystemMessage(
-                "Undo is not available for the latest file change summary.\n"
-            )
-            return
-        }
-
         do {
-            try await TurnFileChangeUndoService.undo(
-                summary: summary,
+            try await TurnFileChangeUndoService.undoLatest(
+                summary: lastFileChangeSummary,
                 baseDirectoryURL: configuration.workingDirectory
             )
             lastFileChangeSummary = nil
             writeSystemMessage("File changes reverted.\n")
+        } catch let error as TurnFileChangeUndoError {
+            writeSystemMessage("\(error.localizedDescription)\n")
         } catch {
             writeFailureMessage(
                 "mlx-coder: unable to undo file changes: \(error.localizedDescription)\n"

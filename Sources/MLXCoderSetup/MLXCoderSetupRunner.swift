@@ -142,20 +142,38 @@ public enum MLXCoderSetupRunner {
             return []
         }
 
-        AgentOutput.standardError.writeString("Configured providers:\n")
-        for (index, provider) in manifest.providers.enumerated() {
-            let models = models(for: provider, in: manifest.models)
-            AgentOutput.standardError.writeString(
-                "  \(index + 1). \(provider.displayTitle) (\(models.count) models)\n"
-            )
-        }
-        AgentOutput.standardError.writeString("\n")
+        printProviders(
+            title: "Configured providers",
+            providers: manifest.providers,
+            allModels: manifest.models
+        )
 
-        let selectedProviderIndexes = try promptProviderIndexes(
+        let deletedProviderIndexes = try promptProviderIndexes(
+            "Provider to delete (number, list like 1,3, all, or none)",
             providerCount: manifest.providers.count
         )
+        let remainingProviders = manifest.providers.enumerated()
+            .filter { !deletedProviderIndexes.contains($0.offset) }
+            .map(\.element)
+
+        guard !remainingProviders.isEmpty else {
+            return []
+        }
+
+        if !deletedProviderIndexes.isEmpty {
+            printProviders(
+                title: "Remaining providers",
+                providers: remainingProviders,
+                allModels: manifest.models
+            )
+        }
+
+        let selectedProviderIndexes = try promptProviderIndexes(
+            "Provider to reconfigure (number, list like 1,3, all, or none)",
+            providerCount: remainingProviders.count
+        )
         var providerInputs: [SetupProviderInput] = []
-        for (index, provider) in manifest.providers.enumerated() {
+        for (index, provider) in remainingProviders.enumerated() {
             let existingModels = models(for: provider, in: manifest.models)
             let existingAPIKey = manifest.remoteAPIKeysByProviderID[
                 provider.id.uuidString.lowercased()
@@ -189,11 +207,27 @@ public enum MLXCoderSetupRunner {
         return providerInputs
     }
 
+    private static func printProviders(
+        title: String,
+        providers: [AgentSettingsProviderManifest],
+        allModels: [AgentSettingsModelManifest]
+    ) {
+        AgentOutput.standardError.writeString("\(title):\n")
+        for (index, provider) in providers.enumerated() {
+            let providerModels = models(for: provider, in: allModels)
+            AgentOutput.standardError.writeString(
+                "  \(index + 1). \(provider.displayTitle) (\(providerModels.count) models)\n"
+            )
+        }
+        AgentOutput.standardError.writeString("\n")
+    }
+
     private static func promptProviderIndexes(
+        _ prompt: String,
         providerCount: Int
     ) throws -> Set<Int> {
         let value = try promptString(
-            "Provider to reconfigure (number, list like 1,3, all, or none)",
+            prompt,
             defaultValue: "none",
             allowEmpty: false
         )

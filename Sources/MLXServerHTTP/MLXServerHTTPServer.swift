@@ -32,6 +32,46 @@ public struct MLXServerHTTPTransportConfiguration: Sendable {
     }
 }
 
+public struct MLXServerHTTPCustomRequest: Sendable {
+    public let method: String
+    public let path: String
+    public let queryItems: [String: String]
+    public let headers: [String: String]
+    public let body: Data
+}
+
+public enum MLXServerHTTPCustomResponseStatus: Sendable {
+    case ok
+    case badRequest
+    case notFound
+    case internalServerError
+}
+
+public struct MLXServerHTTPCustomResponse: Sendable {
+    public let status: MLXServerHTTPCustomResponseStatus
+    public let body: [String: String]
+
+    public init(
+        status: MLXServerHTTPCustomResponseStatus = .ok,
+        body: [String: String] = ["status": "ok"]
+    ) {
+        self.status = status
+        self.body = body
+    }
+
+    public static func ok(_ body: [String: String] = ["status": "ok"]) -> Self {
+        Self(status: .ok, body: body)
+    }
+
+    public static func badRequest(_ message: String) -> Self {
+        Self(status: .badRequest, body: ["error": message])
+    }
+}
+
+public typealias MLXServerHTTPCustomRouteHandler = @Sendable (
+    MLXServerHTTPCustomRequest
+) async throws -> MLXServerHTTPCustomResponse?
+
 public final class MLXServerHTTPServer: @unchecked Sendable {
     private let configuration: MLXServerConfiguration
     private let runtime: any MLXServerRuntimeGenerating
@@ -39,6 +79,7 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
     private let kvCacheSettings: MLXServerKVCacheSettings
     private let transport: MLXServerHTTPTransportConfiguration
     private let metricsLogger: MLXServerMetricsLogger?
+    private let customRouteHandler: MLXServerHTTPCustomRouteHandler?
     private let group: MultiThreadedEventLoopGroup
     private var channel: Channel?
 
@@ -49,6 +90,7 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
         kvCacheSettings: MLXServerKVCacheSettings = .init(),
         transport: MLXServerHTTPTransportConfiguration = .init(),
         metricsLogger: MLXServerMetricsLogger? = nil,
+        customRouteHandler: MLXServerHTTPCustomRouteHandler? = nil,
         eventLoopThreadCount: Int = MLXServerSettings.defaultWebServerThreadCount
     ) {
         self.configuration = configuration
@@ -57,6 +99,7 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
         self.kvCacheSettings = kvCacheSettings.validated()
         self.transport = transport
         self.metricsLogger = metricsLogger
+        self.customRouteHandler = customRouteHandler
         self.group = MultiThreadedEventLoopGroup(
             numberOfThreads: max(1, eventLoopThreadCount)
         )
@@ -148,6 +191,11 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
 
     fileprivate func respond(to request: HTTPRequest, writer: MLXServerNIOResponseWriter) async {
         do {
+            if let customResponse = try await customRouteHandler?(MLXServerHTTPCustomRequest(request)) {
+                try await writer.sendJSON(customResponse.body, status: customResponse.status.httpStatus)
+                return
+            }
+
             switch (request.method, request.path) {
             case ("GET", "/health"):
                 try await writer.sendJSON(["status": "ok"])
@@ -710,12 +758,20 @@ private struct MLXServerNIOResponseWriter: Sendable {
 private struct HTTPRequest: Sendable {
     var method: String
     var path: String
+    var queryItems: [String: String]
     var headers: [String: String]
     var body: Data
 
-    init(method: String, path: String, headers: [String: String], body: Data) {
+    init(
+        method: String,
+        path: String,
+        queryItems: [String: String] = [:],
+        headers: [String: String],
+        body: Data
+    ) {
         self.method = method
         self.path = path
+        self.queryItems = queryItems
         self.headers = headers
         self.body = body
     }
@@ -726,11 +782,11 @@ private struct HTTPRequest: Sendable {
             headers[name.lowercased()] = value
         }
 
-        let fullPath = head.uri
-        let path = fullPath.split(separator: "?", maxSplits: 1).first.map(String.init) ?? fullPath
+        let route = Self.parseRoute(from: head.uri)
         self.init(
             method: head.method.mlxServerString,
-            path: path,
+            path: route.path,
+            queryItems: route.queryItems,
             headers: headers,
             body: body.map { Data($0.readableBytesView) } ?? Data()
         )
@@ -738,6 +794,21 @@ private struct HTTPRequest: Sendable {
 
     func decode<T: Decodable>(_ type: T.Type) throws -> T {
         try JSONDecoder().decode(type, from: body)
+    }
+
+    private static func parseRoute(from uri: String) -> (path: String, queryItems: [String: String]) {
+        let parts = uri.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        let path = parts.first.map(String.init) ?? uri
+        guard parts.count == 2 else {
+            return (path, [:])
+        }
+
+        var components = URLComponents()
+        components.query = String(parts[1])
+        let queryItems = (components.queryItems ?? []).reduce(into: [String: String]()) { result, item in
+            result[item.name] = item.value ?? ""
+        }
+        return (path, queryItems)
     }
 }
 
@@ -780,6 +851,33 @@ private extension Error {
             return decodingError.mlxServerHTTPDescription
         }
         return localizedDescription
+    }
+}
+
+private extension MLXServerHTTPCustomRequest {
+    init(_ request: HTTPRequest) {
+        self.init(
+            method: request.method,
+            path: request.path,
+            queryItems: request.queryItems,
+            headers: request.headers,
+            body: request.body
+        )
+    }
+}
+
+private extension MLXServerHTTPCustomResponseStatus {
+    var httpStatus: HTTPStatus {
+        switch self {
+        case .ok:
+            .ok
+        case .badRequest:
+            .badRequest
+        case .notFound:
+            .notFound
+        case .internalServerError:
+            .internalServerError
+        }
     }
 }
 

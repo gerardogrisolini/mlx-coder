@@ -8,6 +8,23 @@
 import Foundation
 
 public enum TurnFileChangeUndoService {
+    @discardableResult
+    public static func undoLatest(
+        summary: TurnFileChangeSummary?,
+        baseDirectoryURL: URL
+    ) async throws -> TurnFileChangeSummary {
+        guard let summary else {
+            throw TurnFileChangeUndoError.noTrackedFileChanges
+        }
+
+        guard summary.canUndo else {
+            throw TurnFileChangeUndoError.unavailable
+        }
+
+        try await undo(summary: summary, baseDirectoryURL: baseDirectoryURL)
+        return summary
+    }
+
     public static func undo(
         summary: TurnFileChangeSummary,
         baseDirectoryURL: URL

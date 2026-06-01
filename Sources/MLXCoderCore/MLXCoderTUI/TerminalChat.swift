@@ -650,8 +650,8 @@ public final class TerminalChat: @unchecked Sendable {
             prompt: attempt.prompt,
             attachments: attempt.attachments
         )
-        let fileChangeTracker = TurnFileChangeTracker(
-            workspacePath: configuration.workingDirectory.path
+        let fileChanges = TurnFileChangeCoordinator(
+            baseDirectoryURL: configuration.workingDirectory
         )
         do {
             let response = try await sessionRunner.sendPrompt(
@@ -659,7 +659,7 @@ public final class TerminalChat: @unchecked Sendable {
                 prompt: attempt.prompt,
                 attachments: attempt.attachments,
                 onToolWillExecute: { toolCall in
-                    await fileChangeTracker.captureBaselineIfNeeded(
+                    await fileChanges.captureBaselineIfNeeded(
                         forAgentToolCall: toolCall
                     )
                 },
@@ -711,12 +711,12 @@ public final class TerminalChat: @unchecked Sendable {
                 }
             )
             activeSessionTranscript.append(contentsOf: await transcriptTurn.messages())
-            await publishFileChangeSummaryIfNeeded(from: fileChangeTracker)
+            await publishFileChangeSummaryIfNeeded(from: fileChanges)
             await publishSubAgentOverviewIfVisible()
             return response
         } catch {
             activeSessionTranscript.append(contentsOf: await transcriptTurn.messages())
-            await publishFileChangeSummaryIfNeeded(from: fileChangeTracker)
+            await publishFileChangeSummaryIfNeeded(from: fileChanges)
             await publishSubAgentOverviewIfVisible()
             throw error
         }
