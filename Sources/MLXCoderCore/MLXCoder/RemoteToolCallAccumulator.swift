@@ -137,34 +137,19 @@ public struct RemoteToolCallAccumulator {
             return [:]
         }
         guard let data = trimmed.data(using: .utf8),
-              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+              let value = try? JSONDecoder().decode(JSONValue.self, from: data),
+              let object = value.mlxObjectValue else {
             throw RemoteGenerationClientError.invalidToolArguments
         }
-        return object
+        return object.mapValues(\.jsonObject)
     }
 
     public static func normalizedArgumentsJSON(from object: [String: Any]) -> String {
-        guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(
-                  withJSONObject: object,
-                  options: [.sortedKeys, .withoutEscapingSlashes]
-              ) else {
-            return "{}"
-        }
-        return String(decoding: data, as: UTF8.self)
+        JSONValue(jsonObject: object).compactString(sortedKeys: true)
     }
 
     public func integerValue(_ value: Any?) -> Int? {
-        if let int = value as? Int {
-            return int
-        }
-        if let number = value as? NSNumber {
-            return number.intValue
-        }
-        if let string = value as? String {
-            return Int(string)
-        }
-        return nil
+        JSONValue(jsonObject: value).intValue
     }
 
     public mutating func responseIndex(
@@ -215,23 +200,10 @@ public struct RemoteToolCallAccumulator {
     }
 
     public func stringValue(_ value: Any?) -> String? {
-        if let string = value as? String {
-            return string
-        }
-        if let number = value as? NSNumber {
-            return number.stringValue
-        }
-        return nil
+        JSONValue(jsonObject: value).flexibleStringValue
     }
 
     public func normalizedJSONValue(from value: Any) -> String? {
-        guard JSONSerialization.isValidJSONObject(value),
-              let data = try? JSONSerialization.data(
-                  withJSONObject: value,
-                  options: [.sortedKeys, .withoutEscapingSlashes]
-              ) else {
-            return nil
-        }
-        return String(decoding: data, as: UTF8.self)
+        JSONValue(jsonObject: value).compactString(sortedKeys: true)
     }
 }

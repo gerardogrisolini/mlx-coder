@@ -1001,7 +1001,7 @@ private extension JSONValue {
     var sendableValue: any Sendable {
         switch self {
         case .null:
-            NSNull()
+            self
         case .bool(let value):
             value
         case .int(let value):
@@ -1030,41 +1030,13 @@ private enum MLXServerHTTPToolArguments {
     static func object(from json: String?) -> [String: any Sendable] {
         guard let json,
               let data = json.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+              let value = try? JSONDecoder().decode(JSONValue.self, from: data),
+              case let .object(object) = value else {
             return [:]
         }
-        return object.mapValues(sendableValue)
+        return object.mapValues(\.sendableValue)
     }
 
-    private static func sendableValue(_ value: Any) -> any Sendable {
-        switch value {
-        case is NSNull:
-            return NSNull()
-        case let value as Bool:
-            return value
-        case let value as Int:
-            return value
-        case let value as Double:
-            return value
-        case let value as String:
-            return value
-        case let value as [Any]:
-            return value.map(sendableValue)
-        case let value as [String: Any]:
-            return value.mapValues(sendableValue)
-        case let value as NSNumber:
-            let objectiveCType = String(cString: value.objCType)
-            if objectiveCType == "c" || objectiveCType == "B" {
-                return value.boolValue
-            }
-            if value.doubleValue.rounded() == value.doubleValue {
-                return value.intValue
-            }
-            return value.doubleValue
-        default:
-            return String(describing: value)
-        }
-    }
 }
 
 private struct FlexibleMessageContent: Decodable, Sendable {

@@ -13,8 +13,7 @@ import Foundation
 
 extension MLXCoderACPBridge {
     public func initialize(id: JSONValue?, params: [String: Any]) async throws {
-        let requestedVersion = (params["protocolVersion"] as? NSNumber)?.intValue ?? 1
-        let protocolVersion = requestedVersion >= 1 ? 1 : requestedVersion
+        let protocolVersion = 1
         let result: [String: Any] = [
             "protocolVersion": protocolVersion,
             "agentCapabilities": [

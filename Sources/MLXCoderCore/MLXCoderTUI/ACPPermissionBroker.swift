@@ -127,24 +127,32 @@ public actor ACPPermissionBroker {
         ].joined(separator: "\u{1f}")
     }
 
-    private static func permissionOptionID(from result: JSONValue?) -> String? {
+    static func permissionOptionID(from result: JSONValue?) -> String? {
         if let optionID = result?.acpStringValue {
             return optionID
         }
         guard let object = result?.mlxObjectValue else {
             return nil
         }
-        if let optionID = object["optionId"]?.acpStringValue {
+        if let optionID = selectedOptionID(in: object) {
             return optionID
         }
         if let outcome = object["outcome"]?.mlxObjectValue,
-           let optionID = outcome["optionId"]?.acpStringValue {
+           let optionID = selectedOptionID(in: outcome) {
             return optionID
         }
         if let selected = object["selected"]?.mlxObjectValue,
-           let optionID = selected["optionId"]?.acpStringValue {
+           let optionID = selectedOptionID(in: selected) {
             return optionID
         }
         return nil
+    }
+
+    private static func selectedOptionID(in object: [String: JSONValue]) -> String? {
+        object["optionId"]?.acpStringValue
+            ?? object["optionID"]?.acpStringValue
+            ?? object["option_id"]?.acpStringValue
+            ?? object["confirmKey"]?.acpStringValue
+            ?? object["confirm_key"]?.acpStringValue
     }
 }

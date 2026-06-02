@@ -102,13 +102,13 @@ public nonisolated struct ToolDescriptor: Codable, Identifiable, Hashable, Senda
         }
 
         do {
-            if let dict = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                let name = dict["name"] as? String ?? jsonString
-                let title = dict["title"] as? String
-                let description = dict["description"] as? String ?? ""
+            if let dict = try JSONDecoder().decode(JSONValue.self, from: data).mlxObjectValue {
+                let name = dict["name"]?.stringValue ?? jsonString
+                let title = dict["title"]?.stringValue
+                let description = dict["description"]?.stringValue ?? ""
                 
-                let inputSchema = (dict["input_schema"] as? String) ?? (dict["inputSchema"] as? String) ?? "{}"
-                let outputSchema = (dict["output_schema"] as? String) ?? (dict["outputSchema"] as? String)
+                let inputSchema = dict["input_schema"]?.stringValue ?? dict["inputSchema"]?.stringValue ?? "{}"
+                let outputSchema = dict["output_schema"]?.stringValue ?? dict["outputSchema"]?.stringValue
 
                 return ToolDescriptor(
                     name: name,

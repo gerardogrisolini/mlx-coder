@@ -564,7 +564,7 @@ private extension JSONValue {
         case let .bool(value):
             return value
         case .null:
-            return NSNull()
+            return JSONValue.null
         }
     }
 }

@@ -1127,7 +1127,7 @@ private extension JSONValue {
     var chatTemplateValue: any Sendable {
         switch self {
         case .null:
-            NSNull()
+            self
         case .bool(let value):
             value
         case .int(let value):

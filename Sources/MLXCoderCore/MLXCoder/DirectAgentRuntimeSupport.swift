@@ -28,21 +28,8 @@ extension Dictionary where Key == String, Value == Any {
 
     public func bool(_ keys: String...) -> Bool? {
         for key in keys {
-            if let value = self[key] as? Bool {
+            if let value = JSONValue(jsonObject: self[key]).flexibleBoolValue {
                 return value
-            }
-            if let value = self[key] as? NSNumber {
-                return value.boolValue
-            }
-            if let value = self[key] as? String {
-                switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-                case "true", "yes", "1":
-                    return true
-                case "false", "no", "0":
-                    return false
-                default:
-                    continue
-                }
             }
         }
         return nil
@@ -50,15 +37,8 @@ extension Dictionary where Key == String, Value == Any {
 
     public func int(_ keys: String...) -> Int? {
         for key in keys {
-            if let value = self[key] as? Int {
+            if let value = JSONValue(jsonObject: self[key]).intValue {
                 return value
-            }
-            if let value = self[key] as? NSNumber {
-                return value.intValue
-            }
-            if let value = self[key] as? String,
-               let intValue = Int(value.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                return intValue
             }
         }
         return nil

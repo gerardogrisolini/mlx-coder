@@ -73,13 +73,6 @@ public enum PromptContentFormatter {
     }
 
     private static func compactJSONString(from value: Any) -> String? {
-        guard JSONSerialization.isValidJSONObject(value),
-              let data = try? JSONSerialization.data(
-                withJSONObject: value,
-                options: [.withoutEscapingSlashes]
-              ) else {
-            return nil
-        }
-        return String(decoding: data, as: UTF8.self)
+        JSONValue(jsonObject: value).compactString()
     }
 }

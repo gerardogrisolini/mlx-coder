@@ -1171,10 +1171,11 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
     private static func argumentsObject(from rawInput: String?) -> [String: Any] {
         guard let rawInput = rawInput?.nilIfBlank,
               let data = rawInput.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+              let value = try? JSONDecoder().decode(JSONValue.self, from: data),
+              let object = value.mlxObjectValue else {
             return [:]
         }
-        return object
+        return object.mapValues(\.jsonObject)
     }
 
     private static func contextWindowStatus(
@@ -1287,13 +1288,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
     }
 
     private static func intValue(_ value: Any?) -> Int? {
-        if let value = value as? Int {
-            return value
-        }
-        if let value = value as? NSNumber {
-            return value.intValue
-        }
-        return nil
+        JSONValue(jsonObject: value).intValue
     }
 
     private static func intValue(
@@ -1309,15 +1304,10 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
     }
 
     private static func compactJSONString(from value: Any?) -> String? {
-        guard let value,
-              JSONSerialization.isValidJSONObject(value),
-              let data = try? JSONSerialization.data(
-                withJSONObject: value,
-                options: [.withoutEscapingSlashes, .sortedKeys]
-              ) else {
+        guard let value else {
             return nil
         }
-        return String(decoding: data, as: UTF8.self)
+        return JSONValue(jsonObject: value).compactString(sortedKeys: true)
     }
 
     private static func displayTitle(forItemType itemType: String) -> String {
@@ -1569,8 +1559,10 @@ public struct ChatGPTSubscriptionResponsesClient {
         }
 
         do {
-            let payload = try JSONSerialization.data(
-                withJSONObject: Self.webSocketRequestPayload(body: body)
+            let payload = try JSONValue(
+                jsonObject: Self.webSocketRequestPayload(body: body)
+            ).jsonData(
+                outputFormatting: [.withoutEscapingSlashes]
             )
             guard let text = String(data: payload, encoding: .utf8) else {
                 throw ChatGPTSubscriptionGenerationError.invalidResponse
@@ -1616,7 +1608,9 @@ public struct ChatGPTSubscriptionResponsesClient {
     ) throws -> URLRequest {
         var request = URLRequest(url: Self.codexResponsesURL(baseURL: baseURL))
         request.httpMethod = "POST"
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        request.httpBody = try JSONValue(jsonObject: body).jsonData(
+            outputFormatting: [.withoutEscapingSlashes]
+        )
         request.timeoutInterval = 600
         request.setValue(
             "Bearer \(credentials.accessToken)",
@@ -1756,8 +1750,9 @@ public struct ChatGPTSubscriptionResponsesClient {
             return []
         }
 
-        if let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            return [jsonObject]
+        if let value = try? JSONDecoder().decode(JSONValue.self, from: data),
+           let jsonObject = value.mlxObjectValue {
+            return [jsonObject.mapValues(\.jsonObject)]
         }
 
         var buffer = data
@@ -1772,14 +1767,15 @@ public struct ChatGPTSubscriptionResponsesClient {
             guard let nextObjectData = extractNextJSONObject(from: &buffer) else {
                 break
             }
-            guard let jsonObject = try JSONSerialization.jsonObject(with: nextObjectData) as? [String: Any] else {
+            guard let value = try? JSONDecoder().decode(JSONValue.self, from: nextObjectData),
+                  let jsonObject = value.mlxObjectValue else {
                 continue
             }
-            objects.append(jsonObject)
+            objects.append(jsonObject.mapValues(\.jsonObject))
         }
 
         if objects.isEmpty {
-            _ = try JSONSerialization.jsonObject(with: data)
+            _ = try JSONDecoder().decode(JSONValue.self, from: data)
         }
         return objects
     }

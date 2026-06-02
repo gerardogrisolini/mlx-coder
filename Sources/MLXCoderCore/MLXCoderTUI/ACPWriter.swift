@@ -15,6 +15,8 @@ public actor ACPWriter {
     private var nextRequestID = 1
     private var pendingRequests: [String: CheckedContinuation<JSONValue?, Error>] = [:]
 
+    public init() {}
+
     public func request(method: String, params: JSONValue) async throws -> JSONValue? {
         let id = nextRequestID
         nextRequestID += 1

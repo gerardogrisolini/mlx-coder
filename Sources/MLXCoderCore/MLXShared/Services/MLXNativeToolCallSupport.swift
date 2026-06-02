@@ -79,11 +79,9 @@ public nonisolated enum MLXNativeToolCallSupport {
             "tool": name,
             "arguments": argumentsObject(from: argumentsJSON)
         ]
-        guard JSONSerialization.isValidJSONObject(payload),
-              let data = try? JSONSerialization.data(
-                  withJSONObject: payload,
-                  options: [.sortedKeys, .withoutEscapingSlashes]
-              ) else {
+        guard let data = try? JSONValue(jsonObject: payload).jsonData(
+            outputFormatting: [.sortedKeys, .withoutEscapingSlashes]
+        ) else {
             return #"{"arguments":{},"tool":"\#(name)"}"#
         }
 
@@ -521,11 +519,10 @@ public nonisolated enum MLXNativeToolCallSupport {
         let trimmedArguments = argumentsJSON.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedArguments.isEmpty,
               let data = trimmedArguments.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data),
-              JSONSerialization.isValidJSONObject(object) else {
+              let value = try? JSONDecoder().decode(JSONValue.self, from: data) else {
             return [:] as [String: Any]
         }
 
-        return object
+        return value.jsonObject
     }
 }

@@ -274,9 +274,9 @@ public nonisolated enum CodexAgentModel {
             throw CodexAgentCredentialError.invalidJWT
         }
         guard let payloadData = base64URLDecodedData(String(parts[1])),
-              let payload = try JSONSerialization.jsonObject(with: payloadData) as? [String: Any],
-              let auth = payload["https://api.openai.com/auth"] as? [String: Any],
-              let accountID = (auth["chatgpt_account_id"] as? String)?
+              let payload = try JSONDecoder().decode(JSONValue.self, from: payloadData).mlxObjectValue,
+              let auth = payload["https://api.openai.com/auth"]?.mlxObjectValue,
+              let accountID = auth["chatgpt_account_id"]?.stringValue?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .nilIfEmpty else {
             throw CodexAgentCredentialError.invalidJWT

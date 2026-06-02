@@ -752,64 +752,37 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
 
     private static func sendableJSONObject(from jsonString: String) -> [String: any Sendable]? {
         guard let data = jsonString.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+              let object = try? JSONDecoder().decode(MLXCoderCore.JSONValue.self, from: data).mlxObjectValue else {
             return nil
         }
         var sendableObject: [String: any Sendable] = [:]
         for (key, value) in object {
-            sendableObject[key] = sendableJSONValue(value)
+            sendableObject[key] = value.sendableValue
         }
         return sendableObject
     }
 
-    private static func sendableJSONValue(_ value: Any) -> any Sendable {
-        switch value {
-        case let value as [String: Any]:
-            var object: [String: any Sendable] = [:]
-            for (key, nestedValue) in value {
-                object[key] = sendableJSONValue(nestedValue)
-            }
-            return object
-        case let value as [Any]:
-            var array: [any Sendable] = []
-            array.reserveCapacity(value.count)
-            for nestedValue in value {
-                array.append(sendableJSONValue(nestedValue))
-            }
-            return array
-        case let value as String:
-            return value
-        case let value as Bool:
-            return value
-        case let value as Int:
-            return value
-        case let value as Double:
-            return value
-        case let value as NSNumber:
-            let objectiveCType = String(cString: value.objCType)
-            if objectiveCType == "c" || objectiveCType == "B" {
-                return value.boolValue
-            }
-            if value.doubleValue.rounded() == value.doubleValue {
-                return value.intValue
-            }
-            return value.doubleValue
-        case is NSNull:
-            return "null"
-        default:
-            return String(describing: value)
-        }
-    }
-
     private static func jsonString(from object: [String: Any]) -> String? {
-        guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(
-                  withJSONObject: object,
-                  options: [.sortedKeys]
-              ) else {
-            return nil
+        JSONValue(jsonObject: object).compactString(sortedKeys: true)
+    }
+}
+
+private extension MLXCoderCore.JSONValue {
+    var sendableValue: any Sendable {
+        switch self {
+        case let .string(value):
+            return value
+        case let .number(value):
+            return value
+        case let .object(value):
+            return value.mapValues(\.sendableValue)
+        case let .array(value):
+            return value.map(\.sendableValue)
+        case let .bool(value):
+            return value
+        case .null:
+            return self
         }
-        return String(data: data, encoding: .utf8)
     }
 }
 

@@ -68,7 +68,7 @@ struct SwiftFeatureRuntimeTests {
         #expect(bundles.count == 1)
         #expect(bundles.first?.id == "example")
         #expect(bundles.first?.tools.first?.name == "feature.example.echo")
-        #expect(bundles.first?.tools.first?.inputSchema.contains(#""required":["text"]"#) == true)
+        #expect(bundles.first?.tools.first?.requiredInputArgumentNames() == ["text"])
     }
 
     @Test
@@ -1554,9 +1554,8 @@ private actor ScriptedFeatureAuthoringModelBackend: AgentRuntimeBackend {
     }
 
     private static func jsonString(from object: [String: Any]) throws -> String {
-        let data = try JSONSerialization.data(
-            withJSONObject: object,
-            options: [.sortedKeys, .withoutEscapingSlashes]
+        let data = try JSONValue(jsonObject: object).jsonData(
+            outputFormatting: [.sortedKeys, .withoutEscapingSlashes]
         )
         return String(data: data, encoding: .utf8) ?? "{}"
     }

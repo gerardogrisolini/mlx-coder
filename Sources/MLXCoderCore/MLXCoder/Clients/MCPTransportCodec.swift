@@ -231,7 +231,7 @@ public nonisolated enum MCPTransportCodec {
             return nil
         }
 
-        guard (try? JSONSerialization.jsonObject(with: buffer, options: [])) != nil else {
+        guard (try? JSONDecoder().decode(JSONValue.self, from: buffer)) != nil else {
             return nil
         }
 

@@ -33,7 +33,8 @@ public actor MLXCoderACPBridge {
 
     public init(
         configuration: AgentConfiguration,
-        writer: ACPWriter
+        writer: ACPWriter,
+        backendFactory: AgentRuntimeBackendFactory? = nil
     ) {
         self.configuration = configuration
         self.writer = writer
@@ -42,7 +43,8 @@ public actor MLXCoderACPBridge {
         self.sessionRunner = AgentCoreSessionRunner(
             defaultToolAuthorizationHandler: { request in
                 await permissionBroker.authorize(request)
-            }
+            },
+            backendFactory: backendFactory
         )
     }
 
@@ -61,10 +63,12 @@ public actor MLXCoderACPBridge {
         }
 
         do {
-            guard let message = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            let value = try JSONDecoder().decode(JSONValue.self, from: data)
+            guard let object = value.mlxObjectValue else {
                 await writer.sendError(id: .null, code: -32600, message: "JSON-RPC message must be an object.")
                 return
             }
+            let message = object.mapValues(\.jsonObject)
             await handleMessage(message)
         } catch {
             await writer.sendError(id: .null, code: -32700, message: "Invalid JSON.")
@@ -73,7 +77,7 @@ public actor MLXCoderACPBridge {
 
     public func handleMessage(_ message: [String: Any]) async {
         let id = JSONValue.acpRequestID(
-            from: message.keys.contains("id") ? (message["id"] ?? NSNull()) : nil
+            from: message.keys.contains("id") ? message["id"] : nil
         )
         if message["jsonrpc"] as? String == "2.0",
            message["method"] == nil,

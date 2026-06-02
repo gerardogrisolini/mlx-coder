@@ -60,17 +60,81 @@ public nonisolated enum JSONValue: Codable, Hashable, Sendable {
         try JSONDecoder().decode(type, from: encoded())
     }
 
+    public init(jsonObject value: Any?) {
+        guard let value else {
+            self = .null
+            return
+        }
+        if let jsonValue = value as? JSONValue {
+            self = jsonValue
+        } else if let string = value as? String {
+            self = .string(string)
+        } else if let bool = value as? Bool {
+            self = .bool(bool)
+        } else if let int = value as? Int {
+            self = .number(Double(int))
+        } else if let int64 = value as? Int64 {
+            self = .number(Double(int64))
+        } else if let double = value as? Double {
+            self = .number(double)
+        } else if let float = value as? Float {
+            self = .number(Double(float))
+        } else if let object = value as? [String: Any] {
+            self = .object(object.mapValues { JSONValue(jsonObject: $0) })
+        } else if let array = value as? [Any] {
+            self = .array(array.map { JSONValue(jsonObject: $0) })
+        } else {
+            self = .string(String(describing: value))
+        }
+    }
+
     public func prettyPrinted() -> String {
-        guard let object = try? JSONSerialization.jsonObject(with: encoded()),
-              let data = try? JSONSerialization.data(
-                  withJSONObject: object,
-                  options: [.withoutEscapingSlashes, .sortedKeys]
-              ),
+        guard let data = try? jsonData(outputFormatting: [
+                  .withoutEscapingSlashes,
+                  .prettyPrinted,
+                  .sortedKeys
+              ]),
               let string = String(data: data, encoding: .utf8) else {
             return "{}"
         }
 
         return string
+    }
+
+    public func compactString(sortedKeys: Bool = false) -> String {
+        var formatting: JSONEncoder.OutputFormatting = [.withoutEscapingSlashes]
+        if sortedKeys {
+            formatting.insert(.sortedKeys)
+        }
+        guard let data = try? jsonData(outputFormatting: formatting) else {
+            return "{}"
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    public func jsonData(
+        outputFormatting: JSONEncoder.OutputFormatting = [.withoutEscapingSlashes]
+    ) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = outputFormatting
+        return try encoder.encode(self)
+    }
+
+    public var jsonObject: Any {
+        switch self {
+        case let .string(value):
+            return value
+        case let .number(value):
+            return value
+        case let .object(value):
+            return value.mapValues(\.jsonObject)
+        case let .array(value):
+            return value.map(\.jsonObject)
+        case let .bool(value):
+            return value
+        case .null:
+            return JSONValue.null
+        }
     }
 
     public var stringValue: String? {
@@ -97,7 +161,74 @@ public nonisolated enum JSONValue: Codable, Hashable, Sendable {
         return value
     }
 
-    private func encoded() -> Data {
+    public var intValue: Int? {
+        switch self {
+        case let .number(value):
+            guard value.isFinite, value.rounded(.towardZero) == value else {
+                return nil
+            }
+            return Int(value)
+        case let .string(value):
+            return Int(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            return nil
+        }
+    }
+
+    public var doubleValue: Double? {
+        switch self {
+        case let .number(value):
+            return value.isFinite ? value : nil
+        case let .string(value):
+            return Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        default:
+            return nil
+        }
+    }
+
+    public var flexibleStringValue: String? {
+        switch self {
+        case let .string(value):
+            return value
+        case let .number(value):
+            guard value.isFinite else {
+                return nil
+            }
+            if value.rounded(.towardZero) == value {
+                return String(Int(value))
+            }
+            return String(value)
+        case let .bool(value):
+            return value ? "true" : "false"
+        default:
+            return nil
+        }
+    }
+
+    public var flexibleBoolValue: Bool? {
+        switch self {
+        case let .bool(value):
+            return value
+        case let .number(value):
+            guard value.isFinite else {
+                return nil
+            }
+            return value != 0
+        case let .string(value):
+            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "true", "yes", "1":
+                return true
+            case "false", "no", "0":
+                return false
+            default:
+                return nil
+            }
+        default:
+            return nil
+        }
+    }
+
+    public func encoded() -> Data {
         (try? JSONEncoder().encode(self)) ?? Data("null".utf8)
     }
 }

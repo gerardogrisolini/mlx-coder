@@ -267,14 +267,7 @@ extension MLXCoderACPBridge {
     }
 
     public static func compactJSONString(from value: Any) -> String? {
-        guard JSONSerialization.isValidJSONObject(value),
-              let data = try? JSONSerialization.data(
-                withJSONObject: value,
-                options: [.withoutEscapingSlashes, .sortedKeys]
-              ) else {
-            return nil
-        }
-        return String(decoding: data, as: UTF8.self)
+        JSONValue(jsonObject: value).compactString(sortedKeys: true)
     }
 
     public static func isAppSuppressedDiagnostic(_ message: String) -> Bool {

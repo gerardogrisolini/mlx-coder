@@ -785,16 +785,15 @@ public enum SwiftFeatureRegistry {
         fileManager: FileManager = .default
     ) throws {
         let data = try Data(contentsOf: manifestURL)
-        let object = try JSONSerialization.jsonObject(with: data)
-        guard var dictionary = object as? [String: Any] else {
+        let value = try JSONDecoder().decode(JSONValue.self, from: data)
+        guard var dictionary = value.mlxObjectValue?.mapValues(\.jsonObject) else {
             throw DirectToolError.permissionDenied(
                 "Feature manifest is not a JSON object: \(manifestURL.path)"
             )
         }
         dictionary["enabled"] = enabled
-        let outputData = try JSONSerialization.data(
-            withJSONObject: dictionary,
-            options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let outputData = try JSONValue(jsonObject: dictionary).jsonData(
+            outputFormatting: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         )
         try fileManager.createDirectory(
             at: manifestURL.deletingLastPathComponent(),
@@ -2568,9 +2567,8 @@ public actor SwiftFeatureRuntime {
                 ]
             ]
         ]
-        let data = try JSONSerialization.data(
-            withJSONObject: object,
-            options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let data = try JSONValue(jsonObject: object).jsonData(
+            outputFormatting: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         )
         return String(data: data, encoding: .utf8) ?? "{}"
     }
@@ -2605,9 +2603,8 @@ public actor SwiftFeatureRuntime {
             ],
             "tools": []
         ]
-        let data = try JSONSerialization.data(
-            withJSONObject: object,
-            options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let data = try JSONValue(jsonObject: object).jsonData(
+            outputFormatting: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         )
         return String(data: data, encoding: .utf8) ?? "{}"
     }

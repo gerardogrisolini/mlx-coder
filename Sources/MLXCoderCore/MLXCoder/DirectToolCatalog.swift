@@ -369,7 +369,7 @@ extension DirectToolDescriptor {
         guard let data = inputSchema.data(using: .utf8) else {
             return nil
         }
-        return try? JSONSerialization.jsonObject(with: data)
+        return try? JSONDecoder().decode(JSONValue.self, from: data).jsonObject
     }
 }
 

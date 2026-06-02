@@ -157,7 +157,6 @@ public enum AgentCoreAppSessionFactory {
     ) throws -> AgentConfiguration {
         var arguments = [
             "mlx-coder",
-            "--app",
             "--cwd",
             request.workingDirectory.path,
             "--max-tool-rounds",
@@ -180,7 +179,7 @@ public enum AgentCoreAppSessionFactory {
             arguments.append("--verbose")
         }
 
-        return try AgentConfiguration(arguments: arguments)
+        return try AgentConfiguration(arguments: arguments, appModeOverride: true)
     }
 
     static func resolvedAllowedToolNames(

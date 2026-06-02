@@ -109,45 +109,7 @@ extension DirectSubAgentRuntime {
     }
 
     public static func jsonValue(from value: Any) -> JSONValue {
-        switch value {
-        case let value as JSONValue:
-            return value
-        case let value as String:
-            return .string(value)
-        case let value as Bool:
-            return .bool(value)
-        case let value as Int:
-            return .number(Double(value))
-        case let value as Double:
-            return .number(value)
-        case let value as Float:
-            return .number(Double(value))
-        case let value as NSNumber:
-            if CFGetTypeID(value) == CFBooleanGetTypeID() {
-                return .bool(value.boolValue)
-            }
-            return .number(value.doubleValue)
-        case let value as [JSONValue]:
-            return .array(value)
-        case let value as [String]:
-            return .array(value.map { .string($0) })
-        case let value as [Bool]:
-            return .array(value.map { .bool($0) })
-        case let value as [Int]:
-            return .array(value.map { .number(Double($0)) })
-        case let value as [Double]:
-            return .array(value.map { .number($0) })
-        case let value as [Float]:
-            return .array(value.map { .number(Double($0)) })
-        case let value as [String: Any]:
-            return .object(jsonArguments(from: value))
-        case let value as [Any]:
-            return .array(value.map(jsonValue(from:)))
-        case _ as NSNull:
-            return .null
-        default:
-            return .string(String(describing: value))
-        }
+        JSONValue(jsonObject: value)
     }
 
     public static func requestedAgentIdentifiers(

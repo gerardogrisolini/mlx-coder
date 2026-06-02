@@ -14,6 +14,8 @@ import Foundation
 public final class StdioLineReader: @unchecked Sendable {
     private var buffer: [UInt8] = []
 
+    public init() {}
+
     public func readLine() -> String? {
         while true {
             if let newlineIndex = buffer.firstIndex(of: 0x0a) {

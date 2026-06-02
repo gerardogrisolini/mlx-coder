@@ -132,17 +132,12 @@ public nonisolated struct OpenRouterToolCatalog: Sendable {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .isEmpty ? "{}" : toolCall.arguments
             guard let argumentsData = normalizedArguments.data(using: .utf8),
-                  let argumentsObject = try? JSONSerialization.jsonObject(with: argumentsData),
-                  JSONSerialization.isValidJSONObject([
+                  let arguments = try? JSONDecoder().decode(JSONValue.self, from: argumentsData),
+                  let renderedData = try? JSONValue(jsonObject: [
                       "tool": binding.descriptor.name,
-                      "arguments": argumentsObject
-                  ]),
-                  let renderedData = try? JSONSerialization.data(
-                      withJSONObject: [
-                          "tool": binding.descriptor.name,
-                          "arguments": argumentsObject
-                      ],
-                      options: [.prettyPrinted, .sortedKeys]
+                      "arguments": arguments.jsonObject
+                  ]).jsonData(
+                      outputFormatting: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
                   ),
                   let renderedString = String(data: renderedData, encoding: .utf8) else {
                 continue

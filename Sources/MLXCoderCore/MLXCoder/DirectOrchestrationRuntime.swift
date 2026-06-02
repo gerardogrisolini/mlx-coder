@@ -496,11 +496,7 @@ public actor DirectOrchestrationRuntime {
     }
 
     public static func jsonValueArguments(from object: [String: Any]) -> [String: JSONValue] {
-        let compatible = jsonCompatible(object)
-        guard JSONSerialization.isValidJSONObject(compatible),
-              let data = try? JSONSerialization.data(withJSONObject: compatible),
-              let value = try? JSONDecoder().decode(JSONValue.self, from: data),
-              case let .object(arguments) = value else {
+        guard case let .object(arguments) = JSONValue(jsonObject: object) else {
             return [:]
         }
         return arguments

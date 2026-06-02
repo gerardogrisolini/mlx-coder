@@ -197,7 +197,8 @@ public enum AgentToolTurnTranscriptSupport {
         _ text: String
     ) -> AgentToolTurnTranscriptToolCall? {
         guard let data = text.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+              let value = try? JSONDecoder().decode(JSONValue.self, from: data),
+              let object = value.mlxObjectValue?.mapValues(\.jsonObject) else {
             return nil
         }
 
@@ -415,48 +416,22 @@ public enum AgentToolTurnTranscriptSupport {
 
 public enum AgentJSONSupport {
     public static func jsonString(from value: Any) -> String {
-        let compatible = jsonCompatible(value)
-        guard JSONSerialization.isValidJSONObject(compatible),
-              let data = try? JSONSerialization.data(
-                withJSONObject: compatible,
-                options: [.sortedKeys, .withoutEscapingSlashes]
-              ),
-              let string = String(data: data, encoding: .utf8) else {
-            return "{}"
-        }
-        return string
+        JSONValue(jsonObject: value).compactString(sortedKeys: true)
     }
 
     public static func object(from json: String) -> [String: Any]? {
         let trimmedJSON = json.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedJSON.isEmpty,
               let data = trimmedJSON.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+              let value = try? JSONDecoder().decode(JSONValue.self, from: data),
+              let object = value.mlxObjectValue else {
             return nil
         }
 
-        return jsonCompatible(object) as? [String: Any]
+        return object.mapValues(\.jsonObject)
     }
 
     public static func jsonCompatible(_ value: Any) -> Any {
-        if let object = value as? [String: Any] {
-            return object.mapValues(jsonCompatible)
-        }
-        if let array = value as? [Any] {
-            return array.map(jsonCompatible)
-        }
-        if let string = value as? String {
-            return string
-        }
-        if let number = value as? NSNumber {
-            if CFGetTypeID(number) == CFBooleanGetTypeID() {
-                return number.boolValue
-            }
-            return number
-        }
-        if value is NSNull {
-            return NSNull()
-        }
-        return String(describing: value)
+        JSONValue(jsonObject: value).jsonObject
     }
 }

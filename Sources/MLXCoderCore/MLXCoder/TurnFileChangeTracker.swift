@@ -244,15 +244,10 @@ public actor TurnFileChangeTracker {
             return .number(Double(value))
         case let value as Double:
             return value.isFinite ? .number(value) : nil
-        case let value as NSNumber:
-            let doubleValue = value.doubleValue
-            return doubleValue.isFinite ? .number(doubleValue) : nil
         case let value as [String: Any]:
             return .object(jsonValueArguments(from: value))
         case let value as [Any]:
             return .array(value.compactMap(jsonValue(from:)))
-        case _ as NSNull:
-            return .null
         default:
             return nil
         }

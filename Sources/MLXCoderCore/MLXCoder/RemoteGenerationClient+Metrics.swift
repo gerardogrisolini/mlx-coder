@@ -7,39 +7,15 @@ import Foundation
 
 extension RemoteGenerationClient {
     public static func integerValue(_ value: Any?) -> Int? {
-        if let int = value as? Int {
-            return int
-        }
-        if let number = value as? NSNumber {
-            return number.intValue
-        }
-        if let string = value as? String {
-            return Int(string)
-        }
-        return nil
+        JSONValue(jsonObject: value).intValue
     }
 
     public static func doubleValue(_ value: Any?) -> Double? {
-        if let double = value as? Double {
-            return double
-        }
-        if let number = value as? NSNumber {
-            return number.doubleValue
-        }
-        if let string = value as? String {
-            return Double(string)
-        }
-        return nil
+        JSONValue(jsonObject: value).doubleValue
     }
 
     public static func stringValue(_ value: Any?) -> String? {
-        if let string = value as? String {
-            return string
-        }
-        if let number = value as? NSNumber {
-            return number.stringValue
-        }
-        return nil
+        JSONValue(jsonObject: value).flexibleStringValue
     }
 
     public static func firstIntegerValue(

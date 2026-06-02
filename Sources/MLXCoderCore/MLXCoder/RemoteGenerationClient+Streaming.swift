@@ -138,7 +138,9 @@ extension RemoteGenerationClient {
         if let apiKey {
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        request.httpBody = try JSONValue(jsonObject: body).jsonData(
+            outputFormatting: [.withoutEscapingSlashes]
+        )
 
         if !configuration.appMode {
             await onEvent(.diagnostic("Remote request: \(provider.displayTitle) \(provider.modelID)."))
@@ -269,10 +271,11 @@ extension RemoteGenerationClient {
 
     public static func jsonObject(from payload: String) -> [String: Any]? {
         guard let data = payload.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+              let value = try? JSONDecoder().decode(JSONValue.self, from: data),
+              let object = value.mlxObjectValue else {
             return nil
         }
-        return object
+        return object.mapValues(\.jsonObject)
     }
 
     private static func chatCompletionToolPayloads(

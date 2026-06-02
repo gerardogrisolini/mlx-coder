@@ -29,13 +29,12 @@ public struct AgentConfiguration: Sendable {
     Autonomous mlx-coder CLI and ACP agent.
 
     Usage:
-      mlx-coder [--acp] [--telegram] [--app] [--agent NAME] [--model MODEL_ID] [--cwd PATH] [--skills LIST]
+      mlx-coder [--acp] [--telegram] [--agent NAME] [--model MODEL_ID] [--cwd PATH] [--skills LIST]
 
     Modes:
       default                Human terminal chat.
       --acp                  ACP JSON-RPC over stdio for clients such as AionUi.
       --telegram             Telegram remote-control process. Uses the token configured by mlx-coder --setup.
-      --app                  App-hosted mode. Suppresses runtime chatter and requires explicit tool enablement.
 
     Agent runtime:
       --agent NAME           Agent profile from ~/.mlx-coder/agents.json. Default is used when omitted.
@@ -54,7 +53,7 @@ public struct AgentConfiguration: Sendable {
       In chat mode, use /attach to add image or video files to the next prompt.
       In chat mode, use /changes to review tracked file changes and /undo to revert the latest tracked changes.
       In chat mode, use /subagents to show delegated sub-agent status.
-      In ACP/app mode, clients pass the enabled tools to the agent runtime.
+      In ACP mode, clients pass the enabled tools to the agent runtime.
       Xcode MCP tools are added when Xcode is running and mcpbridge can expose tools.
       Figma MCP tools are added when the local Figma desktop MCP server exposes tools.
 
@@ -65,7 +64,6 @@ public struct AgentConfiguration: Sendable {
       MLX_CODER_AGENT_CWD            Working directory for local tools.
       MLX_CODER_AGENT_SKILLS         Initial chat skill selection by name/number, all, or none.
       MLX_CODER_AGENT_VERBOSE        1/true to show status/tool progress on stderr.
-      MLX_CODER_AGENT_APP            1/true for app-hosted ACP/runtime behavior.
       MLX_CODER_AGENT_BEARER_TOKEN   Fallback bearer token for configured remote providers.
       Legacy SWIFTMLX_AGENT_* names are still accepted.
 
@@ -89,7 +87,10 @@ public struct AgentConfiguration: Sendable {
     public let hostedAgentProfiles: [AgentProfile]?
     public let hostedModels: [AgentSettingsModelManifest]?
 
-    public init(arguments rawArguments: [String]) throws {
+    public init(
+        arguments rawArguments: [String],
+        appModeOverride: Bool? = nil
+    ) throws {
         let arguments = MLXCoderCommandLineArgumentSanitizer.sanitized(rawArguments)
         let environment = ProcessInfo.processInfo.environment
         func agentEnvironmentValue(_ key: String) -> String? {
@@ -110,7 +111,6 @@ public struct AgentConfiguration: Sendable {
         var rawMaxToolRounds = agentEnvironmentValue("MAX_TOOL_ROUNDS")
         var rawMaxOutputTokens = agentEnvironmentValue("MAX_OUTPUT_TOKENS")
         var rawVerboseLogging = agentEnvironmentValue("VERBOSE")
-        var rawAppMode = agentEnvironmentValue("APP")
         var shouldPrintHelp = false
         var shouldPrintVersion = false
 
@@ -142,8 +142,6 @@ public struct AgentConfiguration: Sendable {
                 rawBearerToken = arguments[index]
             case "--acp":
                 rawRunMode = AgentRunMode.acp.rawValue
-            case "--app":
-                rawAppMode = "true"
             case "--cwd":
                 index += 1
                 guard index < arguments.count else {
@@ -186,7 +184,7 @@ public struct AgentConfiguration: Sendable {
         let maxToolRounds = try Self.positiveInt(rawMaxToolRounds, argument: "--max-tool-rounds") ?? 100
         let maxOutputTokens = try Self.positiveInt(rawMaxOutputTokens, argument: "--max-output-tokens")
         let verboseLogging = Self.bool(rawVerboseLogging)
-        let appMode = Self.bool(rawAppMode)
+        let appMode = appModeOverride ?? false
         let requestedAgentName = rawAgentName?.nilIfBlank
         let settingsManifest: AgentSettingsManifest?
         let selectedAgent: AgentProfile?

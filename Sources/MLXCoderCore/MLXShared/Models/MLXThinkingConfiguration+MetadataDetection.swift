@@ -74,7 +74,7 @@ extension MLXModelThinkingSupport {
             _ value: Any,
             keyPath: [String] = []
         ) {
-            guard !(value is NSNull) else {
+            if case .null = JSONValue(jsonObject: value) {
                 return
             }
 
@@ -98,8 +98,7 @@ extension MLXModelThinkingSupport {
                 return
             }
 
-            if let number = value as? NSNumber,
-               number.boolValue,
+            if JSONValue(jsonObject: value).flexibleBoolValue == true,
                keyPath.contains(where: isThinkingKey) {
                 supportsThinking = true
             }
@@ -535,15 +534,13 @@ extension MLXModelThinkingSupport {
         private func truthy(
             _ value: Any
         ) -> Bool {
-            if let bool = value as? Bool {
+            let jsonValue = JSONValue(jsonObject: value)
+
+            if let bool = jsonValue.flexibleBoolValue {
                 return bool
             }
 
-            if let number = value as? NSNumber {
-                return number.boolValue
-            }
-
-            if let string = value as? String {
+            if let string = jsonValue.stringValue {
                 let normalizedString = normalizedToken(string)
                 return normalizedString == "true"
                     || normalizedString == "enabled"

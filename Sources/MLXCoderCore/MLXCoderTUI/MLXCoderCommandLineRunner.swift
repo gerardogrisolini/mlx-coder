@@ -145,7 +145,6 @@ public enum MLXCoderCommandLineRunner {
             || argument == "--telegram"
             || argument == "--bearer-token"
             || argument == "--acp"
-            || argument == "--app"
             || argument == "--cwd"
             || argument == "--skills"
             || argument == "--max-tool-rounds"

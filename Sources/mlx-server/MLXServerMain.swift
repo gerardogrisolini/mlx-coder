@@ -150,22 +150,23 @@ struct MLXServerMain {
             modelLoadLogger: nil,
             modelUnloadLogger: { logModelUnloadEvent($0, linePrefix: " ") }
         )
+        let backendFactory: AgentRuntimeBackendFactory = { configuration, mcpRuntime in
+            let model = try modelCatalog.resolve(
+                id: configuration.modelID ?? initialModel.id
+            )
+            return MLXServerCoderBackend(
+                configuration: configuration,
+                runtime: runtime,
+                model: model,
+                mcpRuntime: mcpRuntime
+            )
+        }
         let permissionAuthorizer = LocalExecPermissionAuthorizer()
         let sessionRunner = AgentCoreSessionRunner(
             defaultToolAuthorizationHandler: { request in
                 await permissionAuthorizer.authorize(request)
             },
-            backendFactory: { configuration, mcpRuntime in
-                let model = try modelCatalog.resolve(
-                    id: configuration.modelID ?? initialModel.id
-                )
-                return MLXServerCoderBackend(
-                    configuration: configuration,
-                    runtime: runtime,
-                    model: model,
-                    mcpRuntime: mcpRuntime
-                )
-            }
+            backendFactory: backendFactory
         )
         let configuration = try AgentConfiguration(
             hostedModelID: initialModel.id,
@@ -178,7 +179,7 @@ struct MLXServerMain {
             ),
             cacheAgentProfiles: false,
             bearerToken: nil,
-            runMode: .chat,
+            runMode: options.acp ? .acp : .chat,
             workingDirectory: options.workingDirectory,
             initialSkillSelection: options.initialSkillSelection,
             maxToolRounds: options.maxToolRounds,
@@ -186,7 +187,16 @@ struct MLXServerMain {
             verboseLogging: options.verboseLogging,
             appMode: false
         )
-        if options.telegram {
+        if options.acp {
+            if !options.verboseLogging {
+                AgentOutput.silenceInheritedProcessError()
+            }
+            await runACP(configuration: configuration, backendFactory: backendFactory)
+            return
+        }
+
+        let stdinIsTerminal = TerminalRawInput.supportsInteractiveInput()
+        if options.telegram, !stdinIsTerminal {
             let telegram = try AgentTelegramControlRuntime(
                 configuration: configuration,
                 sessionRunner: sessionRunner
@@ -201,7 +211,6 @@ struct MLXServerMain {
             return
         }
 
-        let stdinIsTerminal = TerminalRawInput.supportsInteractiveInput()
         if stdinIsTerminal {
             AgentOutput.clearTerminalScreenIfNeeded()
         }
@@ -210,13 +219,82 @@ struct MLXServerMain {
             stdinIsTerminal: stdinIsTerminal,
             sessionRunner: sessionRunner
         )
+        let telegramTask: Task<Void, Never>?
+        if options.telegram {
+            telegramTask = try startTelegramControlTask(
+                configuration: configuration,
+                sessionRunner: sessionRunner
+            )
+        } else {
+            telegramTask = nil
+        }
 
         do {
             try await terminal.run()
+            telegramTask?.cancel()
             await sessionRunner.shutdown()
         } catch {
+            telegramTask?.cancel()
             await sessionRunner.shutdown()
             throw error
+        }
+    }
+
+    private static func runACP(
+        configuration: AgentConfiguration,
+        backendFactory: AgentRuntimeBackendFactory? = nil
+    ) async {
+        let writer = ACPWriter()
+        let bridge = MLXCoderACPBridge(
+            configuration: configuration,
+            writer: writer,
+            backendFactory: backendFactory
+        )
+        let reader = StdioLineReader()
+        let lines = AsyncStream<String> { continuation in
+            let task = Task.detached {
+                while let line = reader.readLine() {
+                    continuation.yield(line)
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+
+        await withTaskGroup(of: Void.self) { group in
+            for await line in lines {
+                let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmedLine.isEmpty else {
+                    continue
+                }
+                group.addTask {
+                    await bridge.handleLine(trimmedLine)
+                }
+            }
+        }
+
+        await bridge.shutdown()
+    }
+
+    private static func startTelegramControlTask(
+        configuration: AgentConfiguration,
+        sessionRunner: AgentCoreSessionRunner
+    ) throws -> Task<Void, Never> {
+        let telegram = try AgentTelegramControlRuntime(
+            configuration: configuration,
+            sessionRunner: sessionRunner
+        )
+        return Task {
+            do {
+                try await telegram.run()
+            } catch is CancellationError {
+            } catch {
+                AgentOutput.standardError.writeString(
+                    "mlx-coder telegram: \(error.localizedDescription)\n"
+                )
+            }
         }
     }
 
@@ -580,6 +658,7 @@ private struct MLXServerCoderOptions {
     var maxOutputTokens: Int?
     var verboseLogging: Bool
     var telegram: Bool
+    var acp: Bool
 
     init(arguments: [String]) throws {
         var modelID: String?
@@ -591,6 +670,7 @@ private struct MLXServerCoderOptions {
         var maxOutputTokens: Int?
         var verboseLogging = false
         var telegram = false
+        var acp = false
         var didSeeCoder = false
         var index = arguments.startIndex
 
@@ -626,6 +706,8 @@ private struct MLXServerCoderOptions {
                 verboseLogging = true
             case "--telegram":
                 telegram = true
+            case "--acp":
+                acp = true
             default:
                 throw MLXServerMainError.unsupportedArguments([argument])
             }
@@ -634,6 +716,9 @@ private struct MLXServerCoderOptions {
 
         guard didSeeCoder else {
             throw MLXServerMainError.missingRequiredArgument("--coder")
+        }
+        guard !(acp && telegram) else {
+            throw MLXServerMainError.incompatibleArguments("--acp", "--telegram")
         }
 
         self.modelID = modelID
@@ -646,6 +731,7 @@ private struct MLXServerCoderOptions {
         self.maxOutputTokens = maxOutputTokens
         self.verboseLogging = verboseLogging
         self.telegram = telegram
+        self.acp = acp
     }
 
     private static func requiredValue(
@@ -741,6 +827,7 @@ private enum MLXServerMainError: LocalizedError {
     case unsupportedArguments([String])
     case missingRequiredArgument(String)
     case invalidArgument(String, String)
+    case incompatibleArguments(String, String)
     case generationMissingMetrics
     case unableToCreateProjectAgents(URL, Error)
 
@@ -752,6 +839,8 @@ private enum MLXServerMainError: LocalizedError {
             return "Missing required value for \(argument)."
         case .invalidArgument(let argument, let value):
             return "Invalid value for \(argument): \(value)."
+        case .incompatibleArguments(let first, let second):
+            return "\(first) cannot be used together with \(second)."
         case .generationMissingMetrics:
             return "Generation did not receive MLX completion metrics."
         case let .unableToCreateProjectAgents(url, error):
@@ -772,7 +861,7 @@ private enum MLXServerHelp {
       mlx-server --reset
       mlx-server --reset-disk-cache
       mlx-server
-      mlx-server --coder [--telegram] [--cwd <path>] [--model <id>] [--agent <name>] [--skills <list>]
+      mlx-server --coder [--acp | --telegram] [--cwd <path>] [--model <id>] [--agent <name>] [--skills <list>]
                  [--max-output-tokens <count>] [--max-tool-rounds <count>] [--verbose]
       mlx-server --chat [initial text] [--model <id>] [--max-tokens <count>] [--quiet]
 
@@ -783,7 +872,8 @@ private enum MLXServerHelp {
     Run mlx-server --reset to delete managed files in ~/.mlx-server and ~/.mlx-coder.
     Run mlx-server --reset-disk-cache to empty the configured disk KV cache directory. Default: ~/.mlx-server/KVCaches.
     Run mlx-server --coder to start the mlx-coder TUI with the local MLXServerRuntime directly, without HTTP or ACP.
-    Add --telegram to --coder to run Telegram control on the direct local MLXServerRuntime.
+    Add --acp to --coder to expose the direct local MLXServerRuntime to ACP clients such as Aion UI.
+    Add --telegram to --coder to run Telegram control alongside the TUI on the direct local MLXServerRuntime.
     Run mlx-server --chat to start an interactive terminal chat. Press Ctrl+D to exit.
     The server reads runtime settings from ~/.mlx-server/settings.json and models only from ~/.mlx-server/models.json.
     """

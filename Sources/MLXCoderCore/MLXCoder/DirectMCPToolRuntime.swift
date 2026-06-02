@@ -404,10 +404,7 @@ public actor DirectMCPToolRuntime {
     }
 
     private static func jsonValueArguments(from object: [String: Any]) -> [String: JSONValue] {
-        guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(withJSONObject: object),
-              let value = try? JSONDecoder().decode(JSONValue.self, from: data),
-              case let .object(arguments) = value else {
+        guard case let .object(arguments) = JSONValue(jsonObject: object) else {
             return [:]
         }
         return arguments

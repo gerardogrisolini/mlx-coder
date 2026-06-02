@@ -455,20 +455,22 @@ func metricsLoggerRecordsChatCacheDiagnostics() async throws {
         try await Task.sleep(for: .milliseconds(25))
     }
     let data = try #require(line?.data(using: .utf8))
-    let object = try #require(
-        try JSONSerialization.jsonObject(with: data) as? [String: Any]
-    )
+    let value = try JSONDecoder().decode(JSONValue.self, from: data)
+    guard case let .object(object) = value else {
+        Issue.record("Expected metrics line to be a JSON object.")
+        return
+    }
 
-    #expect(object["chat_cache_status"] as? String == "memory_hit")
-    #expect(object["prompt_tokens"] as? Int == 60)
-    #expect(object["prompt_tokens_processed"] as? Int == 24)
-    #expect(object["prompt_tokens_cached"] as? Int == 36)
-    #expect(object["total_tokens"] as? Int == 63)
-    #expect(object["ttft_ms"] as? Double == 100)
-    #expect(object["tpot_ms"] as? Double == 15)
-    #expect((object["e2e_latency_s"] as? Double ?? 0) > 0)
-    #expect((object["total_throughput_tokens_per_second"] as? Double ?? 0) > 0)
-    #expect((object["processed_throughput_tokens_per_second"] as? Double ?? 0) > 0)
+    #expect(stringValue(object["chat_cache_status"]) == "memory_hit")
+    #expect(intValue(object["prompt_tokens"]) == 60)
+    #expect(intValue(object["prompt_tokens_processed"]) == 24)
+    #expect(intValue(object["prompt_tokens_cached"]) == 36)
+    #expect(intValue(object["total_tokens"]) == 63)
+    #expect(doubleValue(object["ttft_ms"]) == 100)
+    #expect(doubleValue(object["tpot_ms"]) == 15)
+    #expect((doubleValue(object["e2e_latency_s"]) ?? 0) > 0)
+    #expect((doubleValue(object["total_throughput_tokens_per_second"]) ?? 0) > 0)
+    #expect((doubleValue(object["processed_throughput_tokens_per_second"]) ?? 0) > 0)
 }
 
 private actor RecordingRuntime: MLXServerRuntimeGenerating, MLXServerRuntimeCacheDiagnosing {
@@ -678,6 +680,35 @@ private func testToolCall() -> ToolCall {
             arguments: ["city": "Roma"]
         )
     )
+}
+
+private func stringValue(_ value: JSONValue?) -> String? {
+    guard case let .string(string) = value else {
+        return nil
+    }
+    return string
+}
+
+private func intValue(_ value: JSONValue?) -> Int? {
+    switch value {
+    case let .int(int):
+        return int
+    case let .double(double):
+        return Int(double)
+    default:
+        return nil
+    }
+}
+
+private func doubleValue(_ value: JSONValue?) -> Double? {
+    switch value {
+    case let .int(int):
+        return Double(int)
+    case let .double(double):
+        return double
+    default:
+        return nil
+    }
 }
 
 private struct ChatCompletionTestResponse: Decodable {
