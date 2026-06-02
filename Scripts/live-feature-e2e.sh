@@ -59,20 +59,20 @@ Obiettivo:
 - feature id: ${feature_id}
 - tool name: ${tool_name}
 - generated feature directory: ${support_dir}/features/${feature_id}
-- il tool deve restituire esattamente il nome del branch Git corrente del path ricevuto in input.
+- the tool must return exactly the current Git branch name for the path received as input.
 
-Vincoli:
-- Non usare local.exec.
-- Non usare tool git.*.
-- Usa feature.scaffold per creare una feature Swift 6.3.
-- Quando chiami feature.scaffold, passa "directory": "${support_dir}/features/${feature_id}" e non scegliere altri path.
-- Modifica la feature generata con i tool local.* / text.* disponibili.
-- Il tool puo usare Foundation.Process internamente per eseguire git rev-parse --abbrev-ref HEAD.
-- Mantieni lo schema semplice: accetta {"text":"."}, dove text e il path da risolvere rispetto alla working directory.
-- Dopo la modifica esegui feature.validate, feature.build, feature.enable.
-- Alla fine invoca ${tool_name} con {"text":"."}.
-- Il repo di test e gia sul branch ${branch_name}.
-- La risposta finale deve contenere esattamente:
+Constraints:
+- Do not use local.exec.
+- Do not use git.* tools.
+- Use feature.scaffold to create a Swift 6.3 feature.
+- When calling feature.scaffold, pass "directory": "${support_dir}/features/${feature_id}" and do not choose any other path.
+- Modify the generated feature with the available local.* / text.* tools.
+- The tool may use Foundation.Process internally to run git rev-parse --abbrev-ref HEAD.
+- Keep the schema simple: accept {"text":"."}, where text is the path to resolve relative to the working directory.
+- After the change, run feature.validate, feature.build, feature.enable.
+- At the end, invoke ${tool_name} with {"text":"."}.
+- The test repo is already on branch ${branch_name}.
+- The final response must contain exactly:
 LIVE_FEATURE_E2E_OK ${tool_name}=${branch_name}
 PROMPT
 )

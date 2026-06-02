@@ -4,6 +4,11 @@
 //
 
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import MLXLMCommon
 import MLXServerCore
 import NIOCore
@@ -72,14 +77,10 @@ public typealias MLXServerHTTPCustomRouteHandler = @Sendable (
     MLXServerHTTPCustomRequest
 ) async throws -> MLXServerHTTPCustomResponse?
 
-public final class MLXServerHTTPServer: @unchecked Sendable {
+public final class MLXServerHTTPServer {
     private let configuration: MLXServerConfiguration
-    private let runtime: any MLXServerRuntimeGenerating
-    private let modelCatalog: MLXServerModelCatalog
-    private let kvCacheSettings: MLXServerKVCacheSettings
     private let transport: MLXServerHTTPTransportConfiguration
-    private let metricsLogger: MLXServerMetricsLogger?
-    private let customRouteHandler: MLXServerHTTPCustomRouteHandler?
+    private let application: MLXServerHTTPApplication
     private let group: MultiThreadedEventLoopGroup
     private var channel: Channel?
 
@@ -89,17 +90,21 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
         modelCatalog: MLXServerModelCatalog,
         kvCacheSettings: MLXServerKVCacheSettings = .init(),
         transport: MLXServerHTTPTransportConfiguration = .init(),
+        apiKey: String? = nil,
         metricsLogger: MLXServerMetricsLogger? = nil,
         customRouteHandler: MLXServerHTTPCustomRouteHandler? = nil,
         eventLoopThreadCount: Int = MLXServerSettings.defaultWebServerThreadCount
     ) {
         self.configuration = configuration
-        self.runtime = runtime
-        self.modelCatalog = modelCatalog
-        self.kvCacheSettings = kvCacheSettings.validated()
         self.transport = transport
-        self.metricsLogger = metricsLogger
-        self.customRouteHandler = customRouteHandler
+        self.application = MLXServerHTTPApplication(
+            runtime: runtime,
+            modelCatalog: modelCatalog,
+            kvCacheSettings: kvCacheSettings.validated(),
+            apiKey: apiKey?.trimmedNonEmpty,
+            metricsLogger: metricsLogger,
+            customRouteHandler: customRouteHandler
+        )
         self.group = MultiThreadedEventLoopGroup(
             numberOfThreads: max(1, eventLoopThreadCount)
         )
@@ -107,11 +112,18 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
 
     public func start() throws {
         let sslContext = try makeSSLContext()
+        let transport = transport
+        let application = application
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(.backlog, value: 256)
             .serverChannelOption(.socketOption(.so_reuseaddr), value: 1)
-            .childChannelInitializer { [self] channel in
-                configure(channel: channel, sslContext: sslContext)
+            .childChannelInitializer { channel in
+                Self.configure(
+                    channel: channel,
+                    sslContext: sslContext,
+                    transport: transport,
+                    application: application
+                )
             }
             .childChannelOption(.socketOption(.so_reuseaddr), value: 1)
             .childChannelOption(.maxMessagesPerRead, value: 1)
@@ -153,13 +165,18 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
         }
     }
 
-    private func configure(channel: Channel, sslContext: NIOSSLContext?) -> EventLoopFuture<Void> {
+    private static func configure(
+        channel: Channel,
+        sslContext: NIOSSLContext?,
+        transport: MLXServerHTTPTransportConfiguration,
+        application: MLXServerHTTPApplication
+    ) -> EventLoopFuture<Void> {
         if let sslContext {
             return channel.eventLoop.makeCompletedFuture {
                 try channel.pipeline.syncOperations.addHandler(NIOSSLServerHandler(context: sslContext))
             }.flatMap {
                 channel.configureCommonHTTPServerPipeline { streamChannel in
-                    self.addApplicationHandlers(to: streamChannel)
+                    Self.addApplicationHandlers(to: streamChannel, application: application)
                 }
             }
         }
@@ -169,7 +186,7 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
                 streamChannel.eventLoop.makeCompletedFuture {
                     let sync = streamChannel.pipeline.syncOperations
                     try sync.addHandler(HTTP2FramePayloadToHTTP1ServerCodec())
-                    try sync.addHandler(MLXServerNIOHTTPHandler(server: self))
+                    try sync.addHandler(MLXServerNIOHTTPHandler(application: application))
                     try sync.addHandler(MLXServerNIOErrorHandler())
                 }
             }.flatMap { _ in
@@ -178,19 +195,41 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
         }
 
         return channel.pipeline.configureHTTPServerPipeline(withErrorHandling: true).flatMap {
-            self.addApplicationHandlers(to: channel)
+            Self.addApplicationHandlers(to: channel, application: application)
         }
     }
 
-    private func addApplicationHandlers(to channel: Channel) -> EventLoopFuture<Void> {
+    private static func addApplicationHandlers(
+        to channel: Channel,
+        application: MLXServerHTTPApplication
+    ) -> EventLoopFuture<Void> {
         channel.pipeline.addHandlers([
-            MLXServerNIOHTTPHandler(server: self),
+            MLXServerNIOHTTPHandler(application: application),
             MLXServerNIOErrorHandler()
         ])
     }
+}
 
+private struct MLXServerHTTPApplication: Sendable {
+    let runtime: any MLXServerRuntimeGenerating
+    let modelCatalog: MLXServerModelCatalog
+    let kvCacheSettings: MLXServerKVCacheSettings
+    let apiKey: String?
+    let metricsLogger: MLXServerMetricsLogger?
+    let customRouteHandler: MLXServerHTTPCustomRouteHandler?
+}
+
+private extension MLXServerHTTPApplication {
     fileprivate func respond(to request: HTTPRequest, writer: MLXServerNIOResponseWriter) async {
         do {
+            guard isAuthorized(request) else {
+                try await writer.sendJSON(
+                    ErrorResponse(error: .init(message: "Missing or invalid API key.", type: "authentication_error")),
+                    status: .unauthorized
+                )
+                return
+            }
+
             if let customResponse = try await customRouteHandler?(MLXServerHTTPCustomRequest(request)) {
                 try await writer.sendJSON(customResponse.body, status: customResponse.status.httpStatus)
                 return
@@ -226,6 +265,28 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
             logRequestError(error, request: request, status: .internalServerError)
             await sendError(error, status: .internalServerError, writer: writer)
         }
+    }
+
+    private func isAuthorized(_ request: HTTPRequest) -> Bool {
+        guard let apiKey else {
+            return true
+        }
+        guard request.path != "/health" else {
+            return true
+        }
+        if let bearerToken = request.bearerToken,
+           secureCompare(bearerToken, apiKey) {
+            return true
+        }
+        if let rawAuthorization = request.headers["authorization"]?.trimmedNonEmpty,
+           secureCompare(rawAuthorization, apiKey) {
+            return true
+        }
+        if let xAPIKey = request.headers["x-api-key"]?.trimmedNonEmpty,
+           secureCompare(xAPIKey, apiKey) {
+            return true
+        }
+        return false
     }
 
     private func respondToChatCompletion(_ request: HTTPRequest, writer: MLXServerNIOResponseWriter) async throws {
@@ -567,19 +628,19 @@ public final class MLXServerHTTPServer: @unchecked Sendable {
     }
 }
 
-private final class MLXServerNIOHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
+private final class MLXServerNIOHTTPHandler: ChannelInboundHandler {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
 
-    private let server: MLXServerHTTPServer
+    private let application: MLXServerHTTPApplication
     private var requestHead: HTTPRequestHead?
     private var requestBody: ByteBuffer?
     private var pendingResponses: [PendingHTTPResponse] = []
     private var isResponding = false
     private var closeWhenDrained = false
 
-    init(server: MLXServerHTTPServer) {
-        self.server = server
+    init(application: MLXServerHTTPApplication) {
+        self.application = application
     }
 
     func handlerAdded(context: ChannelHandlerContext) {
@@ -621,16 +682,18 @@ private final class MLXServerNIOHTTPHandler: ChannelInboundHandler, @unchecked S
         let pending = pendingResponses.removeFirst()
         let eventLoop = context.eventLoop
         let loopBoundContext = NIOLoopBound(context, eventLoop: eventLoop)
-        let server = server
+        let loopBoundHandler = NIOLoopBound(self, eventLoop: eventLoop)
+        let application = application
         Task {
-            await server.respond(to: pending.request, writer: pending.writer)
+            await application.respond(to: pending.request, writer: pending.writer)
             eventLoop.execute {
-                self.isResponding = false
-                if self.pendingResponses.isEmpty, self.closeWhenDrained {
+                let handler = loopBoundHandler.value
+                handler.isResponding = false
+                if handler.pendingResponses.isEmpty, handler.closeWhenDrained {
                     loopBoundContext.value.close(promise: nil)
                     return
                 }
-                self.drainResponses(context: loopBoundContext.value)
+                handler.drainResponses(context: loopBoundContext.value)
             }
         }
     }
@@ -662,8 +725,35 @@ private final class MLXServerNIOErrorHandler: ChannelInboundHandler, Sendable {
     typealias InboundIn = Never
 
     func errorCaught(context: ChannelHandlerContext, error: any Error) {
+        guard !Self.isBenignDisconnect(error) else {
+            context.close(promise: nil)
+            return
+        }
         fputs("mlx-server connection error: \(error)\n", stderr)
         context.close(promise: nil)
+    }
+
+    private static func isBenignDisconnect(_ error: any Error) -> Bool {
+        if let channelError = error as? ChannelError {
+            switch channelError {
+            case .ioOnClosedChannel, .inputClosed, .outputClosed:
+                return true
+            default:
+                break
+            }
+        }
+        if let ioError = error as? IOError {
+            switch ioError.errnoCode {
+            case ECONNRESET, EPIPE:
+                return true
+            default:
+                break
+            }
+        }
+
+        let description = String(describing: error).lowercased()
+        return description.contains("connection reset by peer")
+            || description.contains("broken pipe")
     }
 }
 
@@ -796,6 +886,18 @@ private struct HTTPRequest: Sendable {
         try JSONDecoder().decode(type, from: body)
     }
 
+    var bearerToken: String? {
+        guard let authorization = headers["authorization"]?.trimmedNonEmpty else {
+            return nil
+        }
+        let prefix = "Bearer "
+        guard authorization.count > prefix.count,
+              String(authorization.prefix(prefix.count)).caseInsensitiveCompare(prefix) == .orderedSame else {
+            return nil
+        }
+        return String(authorization.dropFirst(prefix.count)).trimmedNonEmpty
+    }
+
     private static func parseRoute(from uri: String) -> (path: String, queryItems: [String: String]) {
         let parts = uri.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
         let path = parts.first.map(String.init) ?? uri
@@ -815,6 +917,7 @@ private struct HTTPRequest: Sendable {
 private enum HTTPStatus {
     case ok
     case badRequest
+    case unauthorized
     case notFound
     case internalServerError
 
@@ -824,6 +927,8 @@ private enum HTTPStatus {
             .ok
         case .badRequest:
             .badRequest
+        case .unauthorized:
+            .unauthorized
         case .notFound:
             .notFound
         case .internalServerError:
@@ -835,6 +940,8 @@ private enum HTTPStatus {
         switch self {
         case .badRequest:
             "invalid_request_error"
+        case .unauthorized:
+            "authentication_error"
         case .notFound:
             "not_found"
         case .internalServerError:
@@ -842,6 +949,25 @@ private enum HTTPStatus {
         case .ok:
             "ok"
         }
+    }
+}
+
+private func secureCompare(_ lhs: String, _ rhs: String) -> Bool {
+    let lhsBytes = Array(lhs.utf8)
+    let rhsBytes = Array(rhs.utf8)
+    var difference = lhsBytes.count ^ rhsBytes.count
+    for index in 0..<max(lhsBytes.count, rhsBytes.count) {
+        let lhsByte = index < lhsBytes.count ? lhsBytes[index] : 0
+        let rhsByte = index < rhsBytes.count ? rhsBytes[index] : 0
+        difference |= Int(lhsByte ^ rhsByte)
+    }
+    return difference == 0
+}
+
+private extension String {
+    var trimmedNonEmpty: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 

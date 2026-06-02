@@ -15,7 +15,17 @@ final class MLXServerSetupInteractiveLineReader: @unchecked Sendable {
         FileHandle.standardError.writeString(prompt)
 
         #if os(macOS) || os(Linux)
-        return readRawLine()
+        return readRawLine(echoInput: true)
+        #else
+        return Swift.readLine()
+        #endif
+    }
+
+    func readSecureLine(prompt: String) -> String? {
+        FileHandle.standardError.writeString(prompt)
+
+        #if os(macOS) || os(Linux)
+        return readRawLine(echoInput: false)
         #else
         return Swift.readLine()
         #endif
@@ -30,7 +40,7 @@ final class MLXServerSetupInteractiveLineReader: @unchecked Sendable {
     }
 
     #if os(macOS) || os(Linux)
-    private func readRawLine() -> String? {
+    private func readRawLine(echoInput: Bool) -> String? {
         var originalAttributes = termios()
         guard tcgetattr(STDIN_FILENO, &originalAttributes) == 0 else {
             return Swift.readLine()
@@ -70,12 +80,16 @@ final class MLXServerSetupInteractiveLineReader: @unchecked Sendable {
                     continue
                 }
                 bytes.removeLast()
-                FileHandle.standardError.writeString("\u{8} \u{8}")
+                if echoInput {
+                    FileHandle.standardError.writeString("\u{8} \u{8}")
+                }
             case 27:
                 discardEscapeSequence()
             default:
                 bytes.append(byte)
-                writeByte(byte)
+                if echoInput {
+                    writeByte(byte)
+                }
             }
         }
     }

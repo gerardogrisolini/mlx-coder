@@ -61,6 +61,16 @@ public enum MLXServerSetupRunner {
         let settings = try buildSettings(defaultSettings: defaultSettings)
         try MLXServerSettingsStore.save(settings, to: settingsURL)
         FileHandle.standardError.writeString("Updated: settings.json\n")
+        do {
+            try syncActiveHTTPAgentIntegrations(settings: settings)
+        } catch {
+            FileHandle.standardError.writeString(
+                """
+                Could not update active HTTP agent integrations: \(error.localizedDescription)
+                Run `mlx-server --setup-agents` to refresh them after setup.
+                """
+            )
+        }
         printRuntimeSetupCompleted()
     }
 
@@ -98,6 +108,7 @@ public enum MLXServerSetupRunner {
             "Enable HTTP/2 prior knowledge?",
             defaultValue: defaultSettings.http2PriorKnowledge
         )
+        let apiKey = try promptAPIKey(defaultValue: defaultSettings.apiKey)
 
         let hasTLSSettings = defaultSettings.tlsCertificatePath != nil
             && defaultSettings.tlsPrivateKeyPath != nil
@@ -183,6 +194,7 @@ public enum MLXServerSetupRunner {
             webServerThreadCount: webServerThreadCount,
             loadOneModelAtATime: loadOneModelAtATime,
             http2PriorKnowledge: http2PriorKnowledge,
+            apiKey: apiKey,
             tlsCertificatePath: tlsCertificatePath,
             tlsPrivateKeyPath: tlsPrivateKeyPath,
             metricsLogPath: metricsLogPath,
@@ -260,15 +272,98 @@ public enum MLXServerSetupRunner {
         }
     }
 
+    private static func promptAPIKey(defaultValue: String?) throws -> String? {
+        let existingAPIKey = defaultValue?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .nilIfEmpty
+        if existingAPIKey != nil {
+            let keepExisting = try promptYesNo(
+                "Keep existing API key?",
+                defaultValue: true
+            )
+            if keepExisting {
+                return existingAPIKey
+            }
+        }
+
+        let requireAPIKey = try promptYesNo(
+            "Require an API key for HTTP clients?",
+            defaultValue: existingAPIKey != nil
+        )
+        guard requireAPIKey else {
+            return nil
+        }
+        return try promptString(
+            "API key",
+            defaultValue: nil,
+            allowEmpty: false,
+            isSecure: true
+        )
+    }
+
+    private static func syncActiveHTTPAgentIntegrations(settings: MLXServerSettings) throws {
+        guard let manifest = try? MLXServerModelsManifestStore.loadRequired().validated() else {
+            return
+        }
+        let enabledModels = manifest.models.filter(\.enabled)
+        guard let defaultModel = enabledModels.first(where: { $0.id == manifest.defaultModelID }) else {
+            return
+        }
+
+        let status = MLXServerAgentIntegrationService.status()
+        guard status.codexCLIEnabled
+            || status.codexAppEnabled
+            || status.codexXcodeAppEnabled
+            || status.xcodeClaudeCodeEnabled else {
+            return
+        }
+
+        let configuration = MLXServerAgentIntegrationConfiguration(
+            baseURL: MLXServerAgentIntegrationService.defaultServerBaseURL(),
+            modelID: defaultModel.id,
+            contextWindow: defaultModel.generationDefaults.contextWindow,
+            apiKey: settings.apiKey
+        )
+
+        if status.codexCLIEnabled {
+            try MLXServerAgentIntegrationService.configureCodexCLIProfile(
+                configuration: configuration
+            )
+        }
+        if status.codexAppEnabled {
+            try MLXServerAgentIntegrationService.configureCodexAppProfile(
+                target: .desktop,
+                configuration: configuration
+            )
+        }
+        if status.codexXcodeAppEnabled {
+            try MLXServerAgentIntegrationService.configureCodexAppProfile(
+                target: .xcode,
+                configuration: configuration
+            )
+        }
+        if status.xcodeClaudeCodeEnabled {
+            try MLXServerAgentIntegrationService.configureXcodeClaudeCode(
+                configuration: configuration
+            )
+        }
+
+        FileHandle.standardError.writeString("Updated active HTTP agent integrations.\n")
+    }
+
     private static func promptString(
         _ prompt: String,
         defaultValue: String?,
         allowEmpty: Bool,
-        maximumLength: Int? = nil
+        maximumLength: Int? = nil,
+        isSecure: Bool = false
     ) throws -> String {
         while true {
             let suffix = defaultValue.map { " [\($0)]" } ?? ""
-            guard let line = interactiveLineReader.readLine(prompt: "\(prompt)\(suffix): ") else {
+            let linePrompt = "\(prompt)\(suffix): "
+            let line = isSecure
+                ? interactiveLineReader.readSecureLine(prompt: linePrompt)
+                : interactiveLineReader.readLine(prompt: linePrompt)
+            guard let line else {
                 throw MLXServerSetupError.inputClosed
             }
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -353,6 +448,12 @@ public enum MLXServerSetupRunner {
 
     private static func supportsInteractiveInput() -> Bool {
         MLXServerSetupInteractiveLineReader.supportsInteractiveInput()
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }
 

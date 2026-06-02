@@ -86,19 +86,21 @@ struct ACPCompatibilityTests {
 
     @Test
     func sessionUpdatesWrapPayloadInStandardNotificationShape() {
+        let usageUpdate = MLXCoderACPBridge.usageUpdate(
+            for: DirectAgentContextWindowStatus(
+                usedTokens: 42,
+                maxTokens: 4096,
+                modelID: "local-model",
+                isApproximate: true
+            )
+        )
+
         let notification = JSONValue.acpValue(from: [
             "jsonrpc": "2.0",
             "method": "session/update",
             "params": [
                 "sessionId": "session-1",
-                "update": MLXCoderACPBridge.contextWindowUpdate(
-                    for: DirectAgentContextWindowStatus(
-                        usedTokens: 42,
-                        maxTokens: 4096,
-                        modelID: "local-model",
-                        isApproximate: true
-                    )
-                )
+                "update": usageUpdate ?? [:]
             ]
         ])
 
@@ -107,7 +109,70 @@ struct ACPCompatibilityTests {
         let params = object?["params"]?.mlxObjectValue
         #expect(params?["sessionId"]?.acpStringValue == "session-1")
         let update = params?["update"]?.mlxObjectValue
-        #expect(update?["sessionUpdate"]?.acpStringValue == "context_window_update")
-        #expect(update?["modelID"]?.acpStringValue == "local-model")
+        #expect(update?["sessionUpdate"]?.acpStringValue == "usage_update")
+        #expect(update?["used"]?.intValue == 42)
+        #expect(update?["size"]?.intValue == 4096)
+        let meta = update?["_meta"]?.mlxObjectValue
+        #expect(meta?["modelID"]?.acpStringValue == "local-model")
+    }
+
+    @Test
+    func aionFileMarkersAreConvertedToAttachments() throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-acp-aion-attachments-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: rootURL)
+        }
+        try FileManager.default.createDirectory(
+            at: rootURL,
+            withIntermediateDirectories: true
+        )
+        let imageURL = rootURL.appendingPathComponent("attached.png")
+        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: imageURL)
+
+        let promptText = """
+        Can you read the attachment?
+
+        [[AION_FILES]]
+        \(imageURL.path)
+        """
+
+        let promptBlocks: [Any] = [
+            [
+                "type": "text",
+                "text": promptText
+            ] as [String: Any]
+        ]
+        let attachments = MLXCoderACPBridge.promptAttachments(
+            from: promptBlocks,
+            renderedPromptText: promptText,
+            cwd: rootURL.path
+        )
+
+        #expect(attachments.count == 1)
+        #expect(attachments.first?.kind == .image)
+        #expect(attachments.first?.fileURL?.standardizedFileURL.path == imageURL.standardizedFileURL.path)
+        #expect(MLXCoderACPBridge.promptTextRemovingAionFilesMarker(promptText) == "Can you read the attachment?")
+    }
+
+    @Test
+    func imagePromptBlocksAreConvertedToAttachments() {
+        let promptBlocks: [Any] = [
+            [
+                "type": "image",
+                "mimeType": "image/png",
+                "data": "AQID"
+            ] as [String: Any]
+        ]
+        let attachments = MLXCoderACPBridge.promptAttachments(
+            from: promptBlocks,
+            renderedPromptText: "",
+            cwd: "/tmp"
+        )
+
+        #expect(attachments.count == 1)
+        #expect(attachments.first?.kind == .image)
+        #expect(attachments.first?.contentType == "image/png")
+        #expect(attachments.first?.data == Data([1, 2, 3]))
     }
 }

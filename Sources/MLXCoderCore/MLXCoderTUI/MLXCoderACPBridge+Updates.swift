@@ -63,50 +63,24 @@ extension MLXCoderACPBridge {
         ]
     }
 
-    public static func metricsUpdate(
-        for metrics: DirectAgentGenerationMetrics
-    ) -> [String: Any] {
-        var update: [String: Any] = [
-            "sessionUpdate": "metrics_update",
-        ]
-        if let promptTokenCount = metrics.promptTokenCount {
-            update["promptTokenCount"] = promptTokenCount
-        }
-        if let cachedPromptTokenCount = metrics.cachedPromptTokenCount {
-            update["cachedPromptTokenCount"] = cachedPromptTokenCount
-        }
-        if let totalTokenCount = metrics.totalTokenCount {
-            update["totalTokenCount"] = totalTokenCount
-        }
-        if let promptTokensPerSecond = metrics.promptTokensPerSecond {
-            update["promptTokensPerSecond"] = promptTokensPerSecond
-        }
-        if let completionTokenCount = metrics.completionTokenCount {
-            update["completionTokenCount"] = completionTokenCount
-        }
-        if let completionTokensPerSecond = metrics.completionTokensPerSecond {
-            update["completionTokensPerSecond"] = completionTokensPerSecond
-        }
-        if let responseDurationSeconds = metrics.responseDurationSeconds {
-            update["responseDurationSeconds"] = responseDurationSeconds
-        }
-        return update
-    }
-
-    public static func contextWindowUpdate(
+    public static func usageUpdate(
         for status: DirectAgentContextWindowStatus
-    ) -> [String: Any] {
-        var update: [String: Any] = [
-            "sessionUpdate": "context_window_update",
-            "modelID": status.modelID,
-            "isApproximate": status.isApproximate
+    ) -> [String: Any]? {
+        guard let usedTokens = status.usedTokens,
+              let maxTokens = status.maxTokens else {
+            return nil
+        }
+        let used = max(0, usedTokens)
+        let size = max(used, maxTokens)
+        let update: [String: Any] = [
+            "sessionUpdate": "usage_update",
+            "used": used,
+            "size": size,
+            "_meta": [
+                "modelID": status.modelID,
+                "isApproximate": status.isApproximate
+            ]
         ]
-        if let usedTokens = status.usedTokens {
-            update["usedTokens"] = usedTokens
-        }
-        if let maxTokens = status.maxTokens {
-            update["maxTokens"] = maxTokens
-        }
         return update
     }
 

@@ -13,8 +13,7 @@ import Foundation
 
 public final class ACPPromptUpdateBuffer: @unchecked Sendable {
     private var pendingContent = ""
-    private var latestMetricsUpdate: JSONValue?
-    private var latestContextWindowUpdate: JSONValue?
+    private var latestUsageUpdate: JSONValue?
     private var lastContentFlushAt = Date()
     private var lastMetadataFlushAt = Date()
 
@@ -32,12 +31,8 @@ public final class ACPPromptUpdateBuffer: @unchecked Sendable {
             pendingContent += text
             return flushContentIfNeeded(force: false)
 
-        case "metrics_update":
-            latestMetricsUpdate = update
-            return flushMetadataIfNeeded(force: false)
-
-        case "context_window_update":
-            latestContextWindowUpdate = update
+        case "usage_update":
+            latestUsageUpdate = update
             return flushMetadataIfNeeded(force: false)
 
         default:
@@ -78,7 +73,7 @@ public final class ACPPromptUpdateBuffer: @unchecked Sendable {
     }
 
     private func flushMetadataIfNeeded(force: Bool) -> [JSONValue] {
-        guard latestMetricsUpdate != nil || latestContextWindowUpdate != nil else {
+        guard latestUsageUpdate != nil else {
             return []
         }
 
@@ -90,18 +85,13 @@ public final class ACPPromptUpdateBuffer: @unchecked Sendable {
             return []
         }
 
-        let metricsUpdate = latestMetricsUpdate
-        let contextWindowUpdate = latestContextWindowUpdate
-        latestMetricsUpdate = nil
-        latestContextWindowUpdate = nil
+        let usageUpdate = latestUsageUpdate
+        latestUsageUpdate = nil
         lastMetadataFlushAt = now
 
         var updates: [JSONValue] = []
-        if let metricsUpdate {
-            updates.append(metricsUpdate)
-        }
-        if let contextWindowUpdate {
-            updates.append(contextWindowUpdate)
+        if let usageUpdate {
+            updates.append(usageUpdate)
         }
         return updates
     }

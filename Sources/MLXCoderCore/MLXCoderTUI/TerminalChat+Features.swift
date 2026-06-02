@@ -464,7 +464,7 @@ extension TerminalChat {
             switch line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
             case "":
                 return defaultValue
-            case "y", "yes", "true", "1", "s", "si", "sì":
+            case "y", "yes", "true", "1":
                 return true
             case "n", "no", "false", "0":
                 return false
@@ -525,19 +525,19 @@ extension TerminalChat {
     ) -> String {
         var sections = [
             """
-            Implementa la feature Swift "\(displayName)" (`\(id)`).
+            Implement the Swift feature "\(displayName)" (`\(id)`).
 
             Feature directory:
             \(directoryPath)
 
-            File principali:
+            Main files:
             - Manifest: \(manifestPath)
-            - Sorgente: \(sourcePath)
+            - Source: \(sourcePath)
             - Tool: \(toolName)
 
-            Lavora sul pacchetto Swift esistente usando i tool file/text disponibili.
-            Mantieni Swift tools 6.3, aggiorna descrizione e JSON schema del tool se necessario, poi esegui `feature.validate` e `feature.build` per `\(id)`.
-            Se tutto passa, abilita la feature con `feature.enable` e dimmi se devo selezionarla da `/tools` per provarla nella sessione corrente.
+            Work on the existing Swift package using the available file/text tools.
+            Keep Swift tools 6.3, update the tool description and JSON schema if needed, then run `feature.validate` and `feature.build` for `\(id)`.
+            If everything passes, enable the feature with `feature.enable` and tell me whether I should select it from `/tools` to try it in the current session.
             """
         ]
 

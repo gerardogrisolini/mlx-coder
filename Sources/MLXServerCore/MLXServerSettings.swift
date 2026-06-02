@@ -14,6 +14,7 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
     public var webServerThreadCount: Int
     public var loadOneModelAtATime: Bool
     public var http2PriorKnowledge: Bool
+    public var apiKey: String?
     public var tlsCertificatePath: String?
     public var tlsPrivateKeyPath: String?
     public var metricsLogPath: String?
@@ -27,6 +28,7 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
         case webServerThreadCount = "web_server_threads"
         case loadOneModelAtATime = "load_one_model_at_a_time"
         case http2PriorKnowledge = "http2_prior_knowledge"
+        case apiKey = "api_key"
         case tlsCertificatePath = "tls_certificate_path"
         case tlsPrivateKeyPath = "tls_private_key_path"
         case metricsLogPath = "metrics_log_path"
@@ -41,6 +43,7 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
         webServerThreadCount: Int = Self.defaultWebServerThreadCount,
         loadOneModelAtATime: Bool = true,
         http2PriorKnowledge: Bool = false,
+        apiKey: String? = nil,
         tlsCertificatePath: String? = nil,
         tlsPrivateKeyPath: String? = nil,
         metricsLogPath: String? = nil,
@@ -53,6 +56,7 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
         self.webServerThreadCount = webServerThreadCount
         self.loadOneModelAtATime = loadOneModelAtATime
         self.http2PriorKnowledge = http2PriorKnowledge
+        self.apiKey = apiKey
         self.tlsCertificatePath = tlsCertificatePath
         self.tlsPrivateKeyPath = tlsPrivateKeyPath
         self.metricsLogPath = metricsLogPath
@@ -77,6 +81,7 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
             Bool.self,
             forKey: .http2PriorKnowledge
         ) ?? false
+        apiKey = try container.decodeIfPresent(String.self, forKey: .apiKey)
         tlsCertificatePath = try container.decodeIfPresent(String.self, forKey: .tlsCertificatePath)
         tlsPrivateKeyPath = try container.decodeIfPresent(String.self, forKey: .tlsPrivateKeyPath)
         metricsLogPath = try container.decodeIfPresent(String.self, forKey: .metricsLogPath)
@@ -111,6 +116,7 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
             webServerThreadCount: webServerThreadCount,
             loadOneModelAtATime: loadOneModelAtATime,
             http2PriorKnowledge: http2PriorKnowledge,
+            apiKey: apiKey?.trimmedNonEmpty,
             tlsCertificatePath: normalizedTLSCertificatePath,
             tlsPrivateKeyPath: normalizedTLSPrivateKeyPath,
             metricsLogPath: metricsLogPath?.trimmedNonEmpty,

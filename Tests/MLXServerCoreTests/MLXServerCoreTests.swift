@@ -116,6 +116,7 @@ func savesAndLoadsServerSettingsJSON() throws {
         webServerThreadCount: 4,
         loadOneModelAtATime: true,
         http2PriorKnowledge: true,
+        apiKey: " test-key ",
         metricsLogPath: " /tmp/mlx-server.metrics.jsonl ",
         kvCache: MLXServerKVCacheSettings(
             mode: .quantized,
@@ -142,6 +143,7 @@ func savesAndLoadsServerSettingsJSON() throws {
     #expect(loaded.webServerThreadCount == 4)
     #expect(loaded.loadOneModelAtATime)
     #expect(loaded.http2PriorKnowledge)
+    #expect(loaded.apiKey == "test-key")
     #expect(loaded.metricsLogPath == "/tmp/mlx-server.metrics.jsonl")
     #expect(loaded.kvCache.mode == .quantized)
     #expect(loaded.kvCache.quantizedBits == 4)

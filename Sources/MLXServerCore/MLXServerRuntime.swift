@@ -346,7 +346,7 @@ public enum MLXServerReasoningTranscript {
 
 public actor MLXServerRuntime {
     private var containers: [LoadedModelKey: ModelContainer] = [:]
-    private var loadingTasks: [LoadedModelKey: Task<ModelContainer, any Error>] = [:]
+    private var loadingTasks: [LoadedModelKey: ModelLoadingTask] = [:]
     private var promptPrefixCaches: [PromptPrefixCacheKey: [PromptPrefixCacheState]] = [:]
     private var promptPrefixCacheGeneration: UInt64 = 0
     private let generationGate = MLXServerGenerationGate()
@@ -380,35 +380,49 @@ public actor MLXServerRuntime {
         parameters: GenerateParameters,
         progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
     ) async throws {
-        _ = try await container(
-            for: model,
-            runtimeKind: runtimeKind ?? model.runtimeKind,
-            parameters: parameters,
-            progressHandler: progressHandler
-        )
+        let generationLease = try await generationGate.acquire()
+        do {
+            _ = try await container(
+                for: model,
+                runtimeKind: runtimeKind ?? model.runtimeKind,
+                parameters: parameters,
+                progressHandler: progressHandler
+            )
+            await generationLease.release()
+        } catch {
+            await generationLease.release()
+            throw error
+        }
     }
 
-    public func unloadAll() {
+    public func unloadAll() async {
+        guard let generationLease = try? await generationGate.acquire() else {
+            return
+        }
         let unloadedModelIDs = Set(containers.keys.map(\.modelID)).sorted()
+        for loadingTask in loadingTasks.values {
+            loadingTask.task.cancel()
+        }
         containers.removeAll(keepingCapacity: true)
         loadingTasks.removeAll(keepingCapacity: true)
         promptPrefixCaches.removeAll(keepingCapacity: true)
         logUnloadedModels(unloadedModelIDs)
+        await generationLease.release()
     }
 
     public func generate(
         request: MLXServerGenerationRequest,
         progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
     ) async throws -> AsyncStream<Generation> {
-        await generationGate.acquire()
+        let generationLease = try await generationGate.acquire()
 
-        let container = try await container(
-            for: request.model,
-            runtimeKind: request.runtimeKind,
-            parameters: request.parameters,
-            progressHandler: progressHandler
-        )
         do {
+            let container = try await container(
+                for: request.model,
+                runtimeKind: request.runtimeKind,
+                parameters: request.parameters,
+                progressHandler: progressHandler
+            )
             let input = UserInput(
                 chat: request.messages.map(\.mlxChatMessage),
                 processing: .init(resize: request.mediaResize),
@@ -435,7 +449,7 @@ public actor MLXServerRuntime {
                         }
                         continuation.yield(event)
                     }
-                    await generationGate.release()
+                    await generationLease.release()
                     continuation.finish()
                 }
                 continuation.onTermination = { _ in
@@ -443,7 +457,7 @@ public actor MLXServerRuntime {
                 }
             }
         } catch {
-            await generationGate.release()
+            await generationLease.release()
             throw error
         }
     }
@@ -456,7 +470,7 @@ public actor MLXServerRuntime {
             return try await generate(request: request, progressHandler: progressHandler)
         }
 
-        await generationGate.acquire()
+        let generationLease = try await generationGate.acquire()
 
         let container: ModelContainer
         let rendering: PromptPrefixRendering
@@ -564,7 +578,7 @@ public actor MLXServerRuntime {
             tokenStream = generation.stream
             generationTask = generation.task
         } catch {
-            await generationGate.release()
+            await generationLease.release()
             throw error
         }
 
@@ -623,7 +637,7 @@ public actor MLXServerRuntime {
                     continuation.yield(.info(completionInfo))
                 }
 
-                await self.generationGate.release()
+                await generationLease.release()
                 continuation.finish()
             }
             continuation.onTermination = { _ in
@@ -690,8 +704,12 @@ public actor MLXServerRuntime {
             return container
         }
 
-        if let task = loadingTasks[key] {
-            return try await task.value
+        if let loadingTask = loadingTasks[key] {
+            let container = try await loadingTask.task.value
+            guard containers[key] != nil || loadingTasks[key]?.id == loadingTask.id else {
+                throw CancellationError()
+            }
+            return container
         }
 
         if retentionPolicy == .unloadPreviousModel {
@@ -705,10 +723,14 @@ public actor MLXServerRuntime {
                 progressHandler: progressHandler
             )
         }
-        loadingTasks[key] = task
+        let loadingTask = ModelLoadingTask(id: UUID(), task: task)
+        loadingTasks[key] = loadingTask
 
         do {
             let container = try await task.value
+            guard loadingTasks[key]?.id == loadingTask.id else {
+                throw CancellationError()
+            }
             loadingTasks[key] = nil
             containers[key] = container
             modelLoadLogger?(
@@ -720,7 +742,9 @@ public actor MLXServerRuntime {
             )
             return container
         } catch {
-            loadingTasks[key] = nil
+            if loadingTasks[key]?.id == loadingTask.id {
+                loadingTasks[key] = nil
+            }
             throw error
         }
     }
@@ -729,8 +753,8 @@ public actor MLXServerRuntime {
         let unloadedModelIDs = Set(containers.keys.filter { $0 != key }.map(\.modelID)).sorted()
         containers = containers.filter { $0.key == key }
         promptPrefixCaches.removeAll(keepingCapacity: true)
-        for (loadingKey, task) in loadingTasks where loadingKey != key {
-            task.cancel()
+        for (loadingKey, loadingTask) in loadingTasks where loadingKey != key {
+            loadingTask.task.cancel()
         }
         loadingTasks = loadingTasks.filter { $0.key == key }
         logUnloadedModels(unloadedModelIDs)
@@ -773,13 +797,16 @@ public actor MLXServerRuntime {
                 }
                 return rendered
             }
+            let templateMessages = messages.map(\.jinjaTemplatePayload)
+            let templateTools = payload.tools?.map(\.jinjaTemplatePayload)
+            let templateAdditionalContext = payload.additionalContext?.jinjaTemplatePayload
 
             let tokenIDs: [Int]
             do {
                 tokenIDs = try context.tokenizer.applyChatTemplate(
-                    messages: messages,
-                    tools: payload.tools,
-                    additionalContext: payload.additionalContext
+                    messages: templateMessages,
+                    tools: templateTools,
+                    additionalContext: templateAdditionalContext
                 )
             } catch {
                 guard let tokenizerError = error as? MLXLMCommon.TokenizerError,
@@ -1052,6 +1079,11 @@ private struct LoadedModelKey: Hashable, Sendable {
     }
 }
 
+private struct ModelLoadingTask {
+    var id: UUID
+    var task: Task<ModelContainer, any Error>
+}
+
 private struct PromptPrefixCacheKey: Hashable, Sendable {
     var modelID: String
     var runtimeKind: MLXServerModelRuntimeKind
@@ -1127,7 +1159,7 @@ private extension JSONValue {
     var chatTemplateValue: any Sendable {
         switch self {
         case .null:
-            self
+            JinjaTemplateNullValue()
         case .bool(let value):
             value
         case .int(let value):
@@ -1141,6 +1173,61 @@ private extension JSONValue {
         case .object(let values):
             values.mapValues(\.chatTemplateValue)
         }
+    }
+}
+
+private struct JinjaTemplateNullValue: Sendable {}
+
+private extension Dictionary where Key == String, Value == any Sendable {
+    var jinjaTemplatePayload: [String: any Sendable] {
+        compactMapValues { value in
+            Self.jinjaTemplateValue(from: value)
+        }
+    }
+
+    static func jinjaTemplateValue(from value: Any) -> (any Sendable)? {
+        let mirror = Mirror(reflecting: value)
+        if mirror.displayStyle == .optional {
+            guard let child = mirror.children.first else {
+                return nil
+            }
+            return jinjaTemplateValue(from: child.value)
+        }
+        if value is JinjaTemplateNullValue {
+            return nil
+        }
+        if let string = value as? String {
+            return string
+        }
+        if let bool = value as? Bool {
+            return bool
+        }
+        if let int = value as? Int {
+            return int
+        }
+        if let double = value as? Double {
+            return double
+        }
+        if let float = value as? Float {
+            return Double(float)
+        }
+        if mirror.displayStyle == .collection {
+            return mirror.children.compactMap { Self.jinjaTemplateValue(from: $0.value) }
+        }
+        if mirror.displayStyle == .dictionary {
+            var payload: [String: any Sendable] = [:]
+            for child in mirror.children {
+                let pair = Array(Mirror(reflecting: child.value).children)
+                guard pair.count == 2,
+                      let key = pair[0].value as? String,
+                      let value = Self.jinjaTemplateValue(from: pair[1].value) else {
+                    continue
+                }
+                payload[key] = value
+            }
+            return payload
+        }
+        return String(describing: value)
     }
 }
 

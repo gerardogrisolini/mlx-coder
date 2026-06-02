@@ -31,6 +31,36 @@ func modelsEndpointIncludesThinkingParameters() async throws {
 }
 
 @Test
+func apiKeyProtectsHTTPRoutesWhenConfigured() async throws {
+    let runtime = RecordingRuntime(outputText: "ok")
+    let server = try TestHTTPServer(runtime: runtime, apiKey: "secret-key")
+    defer {
+        server.stop()
+    }
+
+    _ = try await server.get(path: "/health")
+
+    let unauthenticatedStatus = try await server.getStatus(path: "/v1/models")
+    let wrongBearerStatus = try await server.getStatus(
+        path: "/v1/models",
+        authorization: "Bearer wrong-key"
+    )
+    let validBearerData = try await server.get(
+        path: "/v1/models",
+        authorization: "Bearer secret-key"
+    )
+    let validXAPIKeyData = try await server.get(
+        path: "/v1/models",
+        xAPIKey: "secret-key"
+    )
+
+    #expect(unauthenticatedStatus == 401)
+    #expect(wrongBearerStatus == 401)
+    #expect(!validBearerData.isEmpty)
+    #expect(!validXAPIKeyData.isEmpty)
+}
+
+@Test
 func chatCompletionsEndpointMapsThinkingProtocol() async throws {
     let runtime = RecordingRuntime(outputText: "<think>Sto ragionando.</think>Ciao!")
     let server = try TestHTTPServer(runtime: runtime)
@@ -560,7 +590,11 @@ private final class TestHTTPServer {
     private let server: MLXServerHTTPServer
     private let baseURL: URL
 
-    init(runtime: RecordingRuntime, metricsLogger: MLXServerMetricsLogger? = nil) throws {
+    init(
+        runtime: RecordingRuntime,
+        apiKey: String? = nil,
+        metricsLogger: MLXServerMetricsLogger? = nil
+    ) throws {
         let catalog = try MLXServerModelCatalog(
             manifest: MLXServerModelsManifest(
                 defaultModelID: "mlx-community/test-model",
@@ -581,6 +615,7 @@ private final class TestHTTPServer {
             configuration: MLXServerConfiguration(host: "127.0.0.1", port: 0),
             runtime: runtime,
             modelCatalog: catalog,
+            apiKey: apiKey,
             metricsLogger: metricsLogger
         )
         try server.start()
@@ -592,33 +627,70 @@ private final class TestHTTPServer {
         try? server.stop()
     }
 
-    func get(path: String) async throws -> Data {
-        let normalizedPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
-        var request = URLRequest(url: baseURL.appendingPathComponent(normalizedPath))
-        request.httpMethod = "GET"
+    func get(
+        path: String,
+        authorization: String? = nil,
+        xAPIKey: String? = nil
+    ) async throws -> Data {
+        let response = try await send(
+            method: "GET",
+            path: path,
+            authorization: authorization,
+            xAPIKey: xAPIKey
+        )
+        #expect(response.statusCode == 200)
+        return response.data
+    }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let httpResponse = try #require(response as? HTTPURLResponse)
-        #expect(httpResponse.statusCode == 200)
-        return data
+    func getStatus(
+        path: String,
+        authorization: String? = nil,
+        xAPIKey: String? = nil
+    ) async throws -> Int {
+        let response = try await send(
+            method: "GET",
+            path: path,
+            authorization: authorization,
+            xAPIKey: xAPIKey
+        )
+        return response.statusCode
     }
 
     func post(path: String, body: String) async throws -> Data {
-        let normalizedPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
-        var request = URLRequest(url: baseURL.appendingPathComponent(normalizedPath))
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Data(body.utf8)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let httpResponse = try #require(response as? HTTPURLResponse)
-        #expect(httpResponse.statusCode == 200)
-        return data
+        let response = try await send(method: "POST", path: path, body: body)
+        #expect(response.statusCode == 200)
+        return response.data
     }
 
     func postSSE(path: String, body: String) async throws -> [SSEFrame] {
         let data = try await post(path: path, body: body)
         return SSEFrame.parse(String(decoding: data, as: UTF8.self))
+    }
+
+    private func send(
+        method: String,
+        path: String,
+        body: String? = nil,
+        authorization: String? = nil,
+        xAPIKey: String? = nil
+    ) async throws -> (data: Data, statusCode: Int) {
+        let normalizedPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
+        var request = URLRequest(url: baseURL.appendingPathComponent(normalizedPath))
+        request.httpMethod = method
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = Data(body.utf8)
+        }
+        if let authorization {
+            request.setValue(authorization, forHTTPHeaderField: "Authorization")
+        }
+        if let xAPIKey {
+            request.setValue(xAPIKey, forHTTPHeaderField: "X-API-Key")
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let httpResponse = try #require(response as? HTTPURLResponse)
+        return (data, httpResponse.statusCode)
     }
 }
 

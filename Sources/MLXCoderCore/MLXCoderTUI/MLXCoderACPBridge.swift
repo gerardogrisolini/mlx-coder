@@ -105,6 +105,8 @@ public actor MLXCoderACPBridge {
                 try await preloadModel(id: id, params: objectParams(from: message))
             case "session/new":
                 try await newSession(id: id, params: objectParams(from: message))
+            case "session/set_mode":
+                try await setMode(id: id, params: objectParams(from: message))
             case "session/prompt":
                 try await prompt(id: id, params: objectParams(from: message))
             case "session/cancel":

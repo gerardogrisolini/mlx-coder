@@ -4,6 +4,9 @@
 //
 
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 public enum MLXServerCodexConfigurationTarget: Sendable, Equatable {
     case desktop
@@ -14,15 +17,18 @@ public struct MLXServerAgentIntegrationConfiguration: Sendable, Equatable {
     public var baseURL: String
     public var modelID: String
     public var contextWindow: Int?
+    public var apiKey: String?
 
     public init(
         baseURL: String,
         modelID: String,
-        contextWindow: Int? = nil
+        contextWindow: Int? = nil,
+        apiKey: String? = nil
     ) {
         self.baseURL = baseURL
         self.modelID = modelID
         self.contextWindow = contextWindow
+        self.apiKey = apiKey
     }
 }
 
@@ -31,17 +37,51 @@ public struct MLXServerAgentIntegrationStatus: Sendable, Equatable {
     public var codexAppEnabled: Bool
     public var codexXcodeAppEnabled: Bool
     public var xcodeClaudeCodeEnabled: Bool
+    public var aionUIACPAgentsEnabled: Bool
 
     public init(
         codexCLIEnabled: Bool,
         codexAppEnabled: Bool,
         codexXcodeAppEnabled: Bool,
-        xcodeClaudeCodeEnabled: Bool
+        xcodeClaudeCodeEnabled: Bool,
+        aionUIACPAgentsEnabled: Bool = false
     ) {
         self.codexCLIEnabled = codexCLIEnabled
         self.codexAppEnabled = codexAppEnabled
         self.codexXcodeAppEnabled = codexXcodeAppEnabled
         self.xcodeClaudeCodeEnabled = xcodeClaudeCodeEnabled
+        self.aionUIACPAgentsEnabled = aionUIACPAgentsEnabled
+    }
+}
+
+public struct MLXServerAionUIAgentIntegrationResult: Sendable, Equatable {
+    public var registeredCustomAgents: [String]
+    public var updatedCustomAgents: [String]
+    public var removedDuplicateCustomAgents: [String]
+    public var skippedCustomAgents: [String]
+    public var updatedChannelAgents: [String]
+    public var preparedChannelSessions: [String]
+    public var installedExtension: Bool
+    public var requiresAionUIRestart: Bool
+
+    public init(
+        registeredCustomAgents: [String] = [],
+        updatedCustomAgents: [String] = [],
+        removedDuplicateCustomAgents: [String] = [],
+        skippedCustomAgents: [String] = [],
+        updatedChannelAgents: [String] = [],
+        preparedChannelSessions: [String] = [],
+        installedExtension: Bool = false,
+        requiresAionUIRestart: Bool = false
+    ) {
+        self.registeredCustomAgents = registeredCustomAgents
+        self.updatedCustomAgents = updatedCustomAgents
+        self.removedDuplicateCustomAgents = removedDuplicateCustomAgents
+        self.skippedCustomAgents = skippedCustomAgents
+        self.updatedChannelAgents = updatedChannelAgents
+        self.preparedChannelSessions = preparedChannelSessions
+        self.installedExtension = installedExtension
+        self.requiresAionUIRestart = requiresAionUIRestart
     }
 }
 
@@ -69,6 +109,10 @@ public enum MLXServerAgentIntegrationService {
             ),
             xcodeClaudeCodeEnabled: fileManager.fileExists(
                 atPath: xcodeClaudeCodeSettingsURL(homeDirectory: homeDirectory).path
+            ),
+            aionUIACPAgentsEnabled: aionUIACPAgentsEnabled(
+                homeDirectory: homeDirectory,
+                fileManager: fileManager
             )
         )
     }
@@ -146,7 +190,7 @@ public enum MLXServerAgentIntegrationService {
         let settings = XcodeClaudeCodeSettings(
             env: [
                 "ANTHROPIC_BASE_URL": normalizedBaseURL,
-                "ANTHROPIC_AUTH_TOKEN": "",
+                "ANTHROPIC_AUTH_TOKEN": configuration.apiKey?.trimmedNonEmpty ?? "",
                 "API_TIMEOUT_MS": "3000000",
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
                 "ANTHROPIC_MODEL": normalizedModelID,
@@ -171,6 +215,133 @@ public enum MLXServerAgentIntegrationService {
                 throw error
             }
         }
+    }
+
+    @discardableResult
+    public static func configureAionUIACPAgents(
+        homeDirectory: URL = defaultHomeDirectory(),
+        serverExecutableURL: URL? = Bundle.main.executableURL,
+        coderExecutableURL: URL? = nil,
+        fileManager: FileManager = .default
+    ) throws -> MLXServerAionUIAgentIntegrationResult {
+        guard aionUIApplicationInstalled(
+            homeDirectory: homeDirectory,
+            fileManager: fileManager
+        ) else {
+            throw MLXServerAgentIntegrationError.aionUINotInstalled
+        }
+
+        let resolvedServerURL = executableURL(
+            named: "mlx-server",
+            preferredURL: serverExecutableURL,
+            relativeTo: serverExecutableURL?.deletingLastPathComponent(),
+            fileManager: fileManager
+        )
+        let resolvedCoderURL = executableURL(
+            named: "mlx-coder",
+            preferredURL: coderExecutableURL,
+            relativeTo: resolvedServerURL?.deletingLastPathComponent()
+                ?? serverExecutableURL?.deletingLastPathComponent(),
+            fileManager: fileManager
+        )
+        var customAgents: [AionUICustomAgentDefinition] = []
+        var extensionAdapters: [AionUIACPAdapterDefinition] = []
+        var skippedCustomAgents: [String] = []
+
+        if let resolvedCoderURL {
+            customAgents.append(
+                AionUICustomAgentDefinition(
+                    name: "MLX Coder",
+                    command: resolvedCoderURL.path,
+                    args: ["--acp"]
+                )
+            )
+            extensionAdapters.append(
+                AionUIACPAdapterDefinition(
+                    id: "mlx-coder",
+                    name: "MLX Coder",
+                    description: "MLX Coder ACP adapter",
+                    command: resolvedCoderURL.path,
+                    args: ["--acp"]
+                )
+            )
+        } else {
+            skippedCustomAgents.append("MLX Coder (mlx-coder executable not found)")
+        }
+
+        if let resolvedServerURL {
+            customAgents.append(
+                AionUICustomAgentDefinition(
+                    name: "MLX Server Coder",
+                    command: resolvedServerURL.path,
+                    args: ["--coder", "--acp"]
+                )
+            )
+            extensionAdapters.append(
+                AionUIACPAdapterDefinition(
+                    id: "mlx-server-coder",
+                    name: "MLX Server Coder",
+                    description: "MLX Server local ACP adapter",
+                    command: resolvedServerURL.path,
+                    args: ["--coder", "--acp"]
+                )
+            )
+        } else {
+            skippedCustomAgents.append("MLX Server Coder (mlx-server executable not found)")
+        }
+
+        guard !customAgents.isEmpty else {
+            throw MLXServerAgentIntegrationError.aionUIACPExecutablesNotFound
+        }
+
+        guard let baseURL = aionUIBackendBaseURL(
+            homeDirectory: homeDirectory,
+            fileManager: fileManager
+        ) else {
+            throw MLXServerAgentIntegrationError.aionUINotRunning
+        }
+
+        let customAgentRegistration = try registerAionUICustomAgents(
+            customAgents: customAgents,
+            baseURL: baseURL
+        )
+        let extensionInstallation = try installAionUIACPAdapterExtension(
+            adapters: extensionAdapters,
+            homeDirectory: homeDirectory,
+            fileManager: fileManager
+        )
+        let channelConfiguration = try configureAionUIEnabledChannelAgents(
+            preferredAgentName: "MLX Coder",
+            extensionAdapters: extensionAdapters,
+            baseURL: baseURL,
+            homeDirectory: homeDirectory,
+            fileManager: fileManager
+        )
+
+        return MLXServerAionUIAgentIntegrationResult(
+            registeredCustomAgents: customAgentRegistration.registeredAgents,
+            updatedCustomAgents: customAgentRegistration.updatedAgents,
+            removedDuplicateCustomAgents: customAgentRegistration.removedDuplicateAgents,
+            skippedCustomAgents: skippedCustomAgents,
+            updatedChannelAgents: channelConfiguration.updatedChannelAgents,
+            preparedChannelSessions: channelConfiguration.preparedChannelSessions,
+            installedExtension: extensionInstallation.installed,
+            requiresAionUIRestart: extensionInstallation.requiresRestart
+        )
+    }
+
+    public static func aionUIACPAgentsEnabled(
+        homeDirectory: URL = defaultHomeDirectory(),
+        fileManager: FileManager = .default
+    ) -> Bool {
+        guard let baseURL = aionUIBackendBaseURL(
+            homeDirectory: homeDirectory,
+            fileManager: fileManager
+        ),
+        let agents = try? aionUIAgents(baseURL: baseURL) else {
+            return false
+        }
+        return aionUICustomAgentsAreRegistered(in: agents)
     }
 
     public static func codexCLIProfileUsesMLXServer(
@@ -270,15 +441,22 @@ private extension MLXServerAgentIntegrationService {
         )
         updatedText = updatedText.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        var providerLines = [
+            "[model_providers.\(tomlQuotedKey(codexProviderID))]",
+            "name = \"mlx-server\"",
+            "base_url = \"\(tomlEscapedString(providerBaseURL))\"",
+            "wire_api = \"responses\""
+        ]
+        if let authorizationLine = codexProviderAuthorizationLine(apiKey: configuration.apiKey) {
+            providerLines.append(authorizationLine)
+        }
+
         let mlxServerBlock = """
         model = "\(tomlEscapedString(normalizedModelID))"
         model_provider = "\(tomlEscapedString(codexProviderID))"
         forced_login_method = "api"
 
-        [model_providers.\(tomlQuotedKey(codexProviderID))]
-        name = "mlx-server"
-        base_url = "\(tomlEscapedString(providerBaseURL))"
-        wire_api = "responses"
+        \(providerLines.joined(separator: "\n"))
         """
 
         let finalText = updatedText.isEmpty
@@ -350,12 +528,19 @@ private extension MLXServerAgentIntegrationService {
             updatedText.append("\n\n")
         }
 
+        var providerLines = [
+            "[model_providers.\(tomlQuotedKey(codexProviderID))]",
+            "name = \"mlx-server\"",
+            "base_url = \"\(tomlEscapedString(providerBaseURL))\"",
+            "wire_api = \"responses\""
+        ]
+        if let authorizationLine = codexProviderAuthorizationLine(apiKey: configuration.apiKey) {
+            providerLines.append(authorizationLine)
+        }
+
+        updatedText.append(providerLines.joined(separator: "\n"))
         updatedText.append(
             """
-            [model_providers.\(tomlQuotedKey(codexProviderID))]
-            name = "mlx-server"
-            base_url = "\(tomlEscapedString(providerBaseURL))"
-            wire_api = "responses"
 
             [profiles.\(tomlQuotedKey(profileName))]
             model = "\(tomlEscapedString(normalizedModelID))"
@@ -501,6 +686,915 @@ private extension MLXServerAgentIntegrationService {
         var data = try encoder.encode(value)
         data.append(0x0A)
         try data.write(to: url, options: [.atomic])
+    }
+
+    static func installAionUIACPAdapterExtension(
+        adapters: [AionUIACPAdapterDefinition],
+        homeDirectory: URL,
+        fileManager: FileManager
+    ) throws -> AionUIExtensionInstallationResult {
+        guard !adapters.isEmpty else {
+            return AionUIExtensionInstallationResult()
+        }
+
+        let extensionDirectoryURL = aionUIExtensionDirectoryURL(
+            homeDirectory: homeDirectory
+        )
+        let manifestURL = extensionDirectoryURL.appendingPathComponent(
+            "aion-extension.json",
+            isDirectory: false
+        )
+        let manifest = AionUIExtensionManifest(
+            name: "aionext-mlx-server",
+            displayName: "MLX Server",
+            version: "0.1.0",
+            description: "Integrates MLX Coder and MLX Server Coder as ACP adapters in Aion UI.",
+            author: "MLX Server",
+            engine: AionUIExtensionEngine(aionui: "^2.0.0"),
+            contributes: AionUIExtensionContributes(
+                acpAdapters: adapters.map { adapter in
+                    AionUIExtensionACPAdapter(
+                        id: adapter.id,
+                        name: adapter.name,
+                        description: adapter.description,
+                        connectionType: "stdio",
+                        cliCommand: adapter.command,
+                        acpArgs: adapter.args,
+                        defaultCliPath: adapter.command,
+                        authRequired: false,
+                        supportsStreaming: true
+                    )
+                }
+            )
+        )
+        try writeJSON(manifest, to: manifestURL)
+        try updateAionUIExtensionState(
+            homeDirectory: homeDirectory,
+            fileManager: fileManager
+        )
+        return AionUIExtensionInstallationResult(
+            installed: true,
+            requiresRestart: true
+        )
+    }
+
+    static func updateAionUIExtensionState(
+        homeDirectory: URL,
+        fileManager: FileManager
+    ) throws {
+        let stateURL = aionUIDataDirectoryURL(homeDirectory: homeDirectory)
+            .appendingPathComponent("extension-states.json", isDirectory: false)
+        let states: AionUIExtensionStates
+        if fileManager.fileExists(atPath: stateURL.path),
+           let data = try? Data(contentsOf: stateURL),
+           let decoded = try? JSONDecoder().decode(AionUIExtensionStates.self, from: data) {
+            states = decoded
+        } else {
+            states = AionUIExtensionStates()
+        }
+        var updatedStates = states
+        updatedStates.extensions["aionext-mlx-server"] = AionUIExtensionState(
+            installed: true,
+            enabled: true,
+            lastVersion: "0.1.0"
+        )
+        try writeJSON(updatedStates, to: stateURL)
+    }
+
+    static func aionUIDataDirectoryURL(homeDirectory: URL) -> URL {
+        homeDirectory
+            .appendingPathComponent(".aionui", isDirectory: true)
+            .standardizedFileURL
+    }
+
+    static func aionUIExtensionDirectoryURL(homeDirectory: URL) -> URL {
+        aionUIDataDirectoryURL(homeDirectory: homeDirectory)
+            .appendingPathComponent("extensions", isDirectory: true)
+            .appendingPathComponent("aionext-mlx-server", isDirectory: true)
+    }
+
+    static func aionUIDatabaseURL(homeDirectory: URL) -> URL {
+        aionUIDataDirectoryURL(homeDirectory: homeDirectory)
+            .appendingPathComponent("aionui-backend.db", isDirectory: false)
+            .standardizedFileURL
+    }
+
+    static func registerAionUICustomAgents(
+        customAgents: [AionUICustomAgentDefinition],
+        baseURL: URL
+    ) throws -> AionUICustomAgentRegistrationResult {
+        let existingAgents = try aionUIAgents(baseURL: baseURL)
+        var registeredAgents: [String] = []
+        var updatedAgents: [String] = []
+        var removedDuplicateAgents: [String] = []
+
+        for customAgent in customAgents {
+            let matches = existingAgents.filter { agent in
+                aionUIAgent(agent, matches: customAgent)
+            }
+            let request = AionUICustomAgentRequest(
+                name: customAgent.name,
+                command: customAgent.command,
+                icon: "",
+                args: customAgent.args,
+                env: [],
+                advanced: AionUICustomAgentAdvanced()
+            )
+
+            if let existingAgent = matches.first {
+                _ = try updateAionUICustomAgent(
+                    id: existingAgent.id,
+                    request: request,
+                    baseURL: baseURL
+                )
+                updatedAgents.append(customAgent.name)
+            } else {
+                _ = try createAionUICustomAgent(
+                    request: request,
+                    baseURL: baseURL
+                )
+                registeredAgents.append(customAgent.name)
+            }
+
+            for duplicateAgent in matches.dropFirst() {
+                try deleteAionUICustomAgent(id: duplicateAgent.id, baseURL: baseURL)
+                removedDuplicateAgents.append(duplicateAgent.name)
+            }
+        }
+
+        return AionUICustomAgentRegistrationResult(
+            registeredAgents: registeredAgents,
+            updatedAgents: updatedAgents,
+            removedDuplicateAgents: removedDuplicateAgents
+        )
+    }
+
+    static func configureAionUIEnabledChannelAgents(
+        preferredAgentName: String,
+        extensionAdapters: [AionUIACPAdapterDefinition],
+        baseURL: URL,
+        homeDirectory: URL,
+        fileManager: FileManager
+    ) throws -> AionUIChannelConfigurationResult {
+        let agents = try aionUIAgents(baseURL: baseURL)
+        let managedAgents = agents.filter { agent in
+            agent.agentSource == "custom" && aionUIAgentIsManagedByMLXServer(agent)
+        }
+        guard let fallbackAgent = managedAgents.first(where: { $0.name == preferredAgentName })
+            ?? managedAgents.first else {
+            return AionUIChannelConfigurationResult()
+        }
+        let channelPreferences = (try? aionUIClientSettings(baseURL: baseURL)
+            .channelAgentPreferences) ?? [:]
+
+        let plugins = try aionUIChannelPlugins(baseURL: baseURL)
+        let enabledPlatforms = plugins
+            .filter(\.enabled)
+            .map(\.type)
+            .filter { !$0.isEmpty }
+
+        var updatedPlatforms: [String] = []
+        var preparedSessions: [String] = []
+        for platform in enabledPlatforms {
+            let customAgent = aionUIChannelCustomAgent(
+                platform: platform,
+                managedAgents: managedAgents,
+                extensionAdapters: extensionAdapters,
+                channelPreferences: channelPreferences,
+                fallbackAgent: fallbackAgent
+            )
+            try updateAionUIChannelAgent(
+                platform: platform,
+                customAgent: customAgent,
+                baseURL: baseURL
+            )
+            try syncAionUIChannelSettings(platform: platform, baseURL: baseURL)
+            updatedPlatforms.append(platform)
+            preparedSessions.append(
+                contentsOf: try prepareAionUIChannelSessions(
+                    platform: platform,
+                    customAgent: customAgent,
+                    homeDirectory: homeDirectory,
+                    fileManager: fileManager
+                )
+            )
+        }
+        return AionUIChannelConfigurationResult(
+            updatedChannelAgents: updatedPlatforms,
+            preparedChannelSessions: preparedSessions
+        )
+    }
+
+    static func aionUIChannelCustomAgent(
+        platform: String,
+        managedAgents: [AionUIAgent],
+        extensionAdapters: [AionUIACPAdapterDefinition],
+        channelPreferences: [String: AionUIChannelAgentSavedPreference],
+        fallbackAgent: AionUIAgent
+    ) -> AionUIAgent {
+        guard let preference = channelPreferences[platform] else {
+            return fallbackAgent
+        }
+        let referencedIDs = preference.referencedAgentIDs
+        if let agent = managedAgents.first(where: { referencedIDs.contains($0.id) }),
+           !agent.id.isEmpty {
+            return agent
+        }
+        if let adapter = extensionAdapters.first(where: { referencedIDs.contains($0.id) }),
+           let agent = managedAgents.first(where: { $0.name == adapter.name }) {
+            return agent
+        }
+        if let name = preference.name,
+           let agent = managedAgents.first(where: { $0.name == name }) {
+            return agent
+        }
+        return fallbackAgent
+    }
+
+    static func aionUIClientSettings(baseURL: URL) throws -> AionUIClientSettings {
+        let response: AionUIAPIEnvelope<AionUIClientSettings> = try sendAionUIAPIRequest(
+            method: "GET",
+            pathComponents: ["api", "settings", "client"],
+            body: Optional<AionUIEmptyRequest>.none,
+            baseURL: baseURL
+        )
+        guard response.success, let data = response.data else {
+            throw MLXServerAgentIntegrationError.aionUIAPIRequestFailed(
+                response.error ?? "Aion UI did not return client settings."
+            )
+        }
+        return data
+    }
+
+    static func aionUIChannelPlugins(baseURL: URL) throws -> [AionUIChannelPlugin] {
+        let response: AionUIAPIEnvelope<[AionUIChannelPlugin]> = try sendAionUIAPIRequest(
+            method: "GET",
+            pathComponents: ["api", "channel", "plugins"],
+            body: Optional<AionUIEmptyRequest>.none,
+            baseURL: baseURL
+        )
+        guard response.success, let data = response.data else {
+            throw MLXServerAgentIntegrationError.aionUIAPIRequestFailed(
+                response.error ?? "Aion UI did not return channel plugins."
+            )
+        }
+        return data
+    }
+
+    static func updateAionUIChannelAgent(
+        platform: String,
+        customAgent: AionUIAgent,
+        baseURL: URL
+    ) throws {
+        let response: AionUIAPIEnvelope<AionUIEmptyResponse> = try sendAionUIAPIRequest(
+            method: "PUT",
+            pathComponents: ["api", "settings", "client"],
+            body: AionUIChannelAgentPreferenceUpdate(
+                platform: platform,
+                preference: AionUIChannelAgentPreference(
+                    agentType: "acp",
+                    backend: "custom",
+                    agentID: customAgent.id,
+                    customAgentID: customAgent.id,
+                    id: customAgent.id,
+                    name: customAgent.name
+                )
+            ),
+            baseURL: baseURL
+        )
+        guard response.success else {
+            throw MLXServerAgentIntegrationError.aionUIAPIRequestFailed(
+                response.error ?? "Aion UI did not update the channel agent preference."
+            )
+        }
+    }
+
+    static func syncAionUIChannelSettings(platform: String, baseURL: URL) throws {
+        let response: AionUIAPIEnvelope<AionUIChannelSettingsSyncResponse> =
+            try sendAionUIAPIRequest(
+                method: "POST",
+                pathComponents: ["api", "channel", "settings", "sync"],
+                body: AionUIChannelSettingsSyncRequest(platform: platform),
+                baseURL: baseURL
+            )
+        guard response.success else {
+            throw MLXServerAgentIntegrationError.aionUIAPIRequestFailed(
+                response.error ?? "Aion UI did not sync channel settings."
+            )
+        }
+    }
+
+    static func prepareAionUIChannelSessions(
+        platform: String,
+        customAgent: AionUIAgent,
+        homeDirectory: URL,
+        fileManager: FileManager
+    ) throws -> [String] {
+        guard platform == "telegram" else {
+            return []
+        }
+        let databaseURL = aionUIDatabaseURL(homeDirectory: homeDirectory)
+        guard fileManager.fileExists(atPath: databaseURL.path) else {
+            return []
+        }
+
+        let users = try aionUIAssistantUsers(
+            platform: platform,
+            databaseURL: databaseURL,
+            fileManager: fileManager
+        )
+        guard !users.isEmpty else {
+            return []
+        }
+
+        var preparedSessions: [String] = []
+        for user in users {
+            let conversationID = stableAionUIID(
+                seed: "mlx-server:\(platform):\(user.id):\(customAgent.id)",
+                length: 8
+            )
+            let sessionID = stableAionUIUUID(
+                seed: "mlx-server-session:\(platform):\(user.id):\(customAgent.id)"
+            )
+            let workspaceURL = aionUIDataDirectoryURL(homeDirectory: homeDirectory)
+                .appendingPathComponent("conversations", isDirectory: true)
+                .appendingPathComponent("custom-temp-\(conversationID)", isDirectory: true)
+                .standardizedFileURL
+            try fileManager.createDirectory(
+                at: workspaceURL,
+                withIntermediateDirectories: true,
+                attributes: nil
+            )
+
+            let extra = AionUIChannelConversationExtra(
+                workspace: workspaceURL.path,
+                agentID: customAgent.id,
+                customAgentID: customAgent.id,
+                agentName: customAgent.name
+            )
+            let extraData = try JSONEncoder().encode(extra)
+            guard let extraJSON = String(data: extraData, encoding: .utf8) else {
+                throw MLXServerAgentIntegrationError.aionUIAPIRequestFailed(
+                    "Could not encode Aion UI channel conversation metadata."
+                )
+            }
+
+            let now = Int64(Date().timeIntervalSince1970 * 1000)
+            let conversationName = aionUIChannelConversationName(
+                platform: platform,
+                platformUserID: user.platformUserID
+            )
+            let sql = """
+            INSERT INTO conversations (
+              id,
+              user_id,
+              name,
+              type,
+              extra,
+              model,
+              status,
+              source,
+              channel_chat_id,
+              pinned,
+              created_at,
+              updated_at
+            )
+            VALUES (
+              \(sqliteQuotedString(conversationID)),
+              'system_default_user',
+              \(sqliteQuotedString(conversationName)),
+              'acp',
+              \(sqliteQuotedString(extraJSON)),
+              NULL,
+              'pending',
+              \(sqliteQuotedString(platform)),
+              \(sqliteQuotedString(user.platformUserID)),
+              0,
+              \(now),
+              \(now)
+            )
+            ON CONFLICT(id) DO UPDATE SET
+              name = excluded.name,
+              type = excluded.type,
+              extra = excluded.extra,
+              source = excluded.source,
+              channel_chat_id = excluded.channel_chat_id,
+              updated_at = excluded.updated_at;
+
+            UPDATE assistant_sessions
+            SET
+              agent_type = 'acp',
+              conversation_id = \(sqliteQuotedString(conversationID)),
+              workspace = \(sqliteQuotedString(workspaceURL.path)),
+              last_activity = \(now)
+            WHERE user_id = \(sqliteQuotedString(user.id))
+              AND chat_id = \(sqliteQuotedString(user.platformUserID))
+              AND agent_type = 'acp';
+
+            INSERT INTO assistant_sessions (
+              id,
+              user_id,
+              agent_type,
+              conversation_id,
+              workspace,
+              chat_id,
+              created_at,
+              last_activity
+            )
+            SELECT
+              \(sqliteQuotedString(sessionID)),
+              \(sqliteQuotedString(user.id)),
+              'acp',
+              \(sqliteQuotedString(conversationID)),
+              \(sqliteQuotedString(workspaceURL.path)),
+              \(sqliteQuotedString(user.platformUserID)),
+              \(now),
+              \(now)
+            WHERE changes() = 0;
+
+            UPDATE assistant_users
+            SET session_id = (
+              SELECT id
+              FROM assistant_sessions
+              WHERE user_id = \(sqliteQuotedString(user.id))
+                AND chat_id = \(sqliteQuotedString(user.platformUserID))
+                AND agent_type = 'acp'
+              ORDER BY last_activity DESC
+              LIMIT 1
+            )
+            WHERE id = \(sqliteQuotedString(user.id));
+            """
+            _ = try runSQLite(
+                databaseURL: databaseURL,
+                sql: sql,
+                fileManager: fileManager
+            )
+            preparedSessions.append("\(platform): \(user.displayName ?? user.platformUserID)")
+        }
+        return preparedSessions
+    }
+
+    static func aionUIAssistantUsers(
+        platform: String,
+        databaseURL: URL,
+        fileManager: FileManager
+    ) throws -> [AionUIAssistantUser] {
+        let sql = """
+        SELECT
+          id,
+          platform_user_id,
+          platform_type,
+          display_name
+        FROM assistant_users
+        WHERE platform_type = \(sqliteQuotedString(platform))
+        ORDER BY authorized_at DESC;
+        """
+        let output = try runSQLite(
+            databaseURL: databaseURL,
+            sql: sql,
+            arguments: ["-json"],
+            fileManager: fileManager
+        )
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return []
+        }
+        return try JSONDecoder().decode([AionUIAssistantUser].self, from: Data(trimmed.utf8))
+    }
+
+    static func aionUICustomAgentsAreRegistered(in agents: [AionUIAgent]) -> Bool {
+        let customAgents = agents.filter { $0.agentSource == "custom" }
+        let hasCoder = customAgents.contains { agent in
+            aionUIAgent(agent, matches: AionUICustomAgentDefinition(
+                name: "MLX Coder",
+                command: "mlx-coder",
+                args: ["--acp"]
+            ))
+        }
+        let hasServerCoder = customAgents.contains { agent in
+            aionUIAgent(agent, matches: AionUICustomAgentDefinition(
+                name: "MLX Server Coder",
+                command: "mlx-server",
+                args: ["--coder", "--acp"]
+            ))
+        }
+        return hasCoder && hasServerCoder
+    }
+
+    static func aionUIAgentIsManagedByMLXServer(_ agent: AionUIAgent) -> Bool {
+        let managedNames: Set<String> = [
+            "MLX Coder",
+            "MLX Server Coder"
+        ]
+        let isManagedCommand = agent.command?.hasSuffix("/mlx-coder") == true
+            || agent.command == "mlx-coder"
+            || (
+                (agent.command?.hasSuffix("/mlx-server") == true || agent.command == "mlx-server")
+                    && (agent.args ?? []) == ["--coder", "--acp"]
+            )
+        return managedNames.contains(agent.name)
+            || isManagedCommand
+    }
+
+    static func aionUIAgent(
+        _ agent: AionUIAgent,
+        matches customAgent: AionUICustomAgentDefinition
+    ) -> Bool {
+        agent.agentSource == "custom"
+            && (
+                agent.name == customAgent.name
+                    || (
+                        command(agent.command, matches: customAgent.command)
+                            && (agent.args ?? []) == customAgent.args
+                    )
+            )
+    }
+
+    static func command(_ command: String?, matches expectedCommand: String) -> Bool {
+        guard let command else {
+            return false
+        }
+        return command == expectedCommand || command.hasSuffix("/\(expectedCommand)")
+    }
+
+    static func aionUIBackendBaseURL(
+        homeDirectory: URL,
+        fileManager: FileManager
+    ) -> URL? {
+        for port in aionUIBackendPortCandidates(
+            homeDirectory: homeDirectory,
+            fileManager: fileManager
+        ) {
+            guard let baseURL = URL(string: "http://127.0.0.1:\(port)") else {
+                continue
+            }
+            if aionUIHealthCheck(baseURL: baseURL) {
+                return baseURL
+            }
+        }
+        return nil
+    }
+
+    static func runSQLite(
+        databaseURL: URL,
+        sql: String,
+        arguments: [String] = [],
+        fileManager: FileManager
+    ) throws -> String {
+        let executableURL = executableURLFromPath(
+            named: "sqlite3",
+            fileManager: fileManager
+        ) ?? URL(fileURLWithPath: "/usr/bin/sqlite3", isDirectory: false)
+        guard fileManager.isExecutableFile(atPath: executableURL.path) else {
+            throw MLXServerAgentIntegrationError.aionUIAPIRequestFailed(
+                "Could not find sqlite3 to configure Aion UI channel sessions."
+            )
+        }
+
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments + [databaseURL.path, sql]
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        try process.run()
+        process.waitUntilExit()
+
+        let stdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: stdout, encoding: .utf8) ?? ""
+        guard process.terminationStatus == 0 else {
+            let errorOutput = String(data: stderr, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw MLXServerAgentIntegrationError.aionUIAPIRequestFailed(
+                errorOutput ?? "sqlite3 failed while configuring Aion UI."
+            )
+        }
+        return output
+    }
+
+    static func sqliteQuotedString(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "''"))'"
+    }
+
+    static func aionUIChannelConversationName(
+        platform: String,
+        platformUserID: String
+    ) -> String {
+        let prefix = platform == "telegram" ? "tg" : platform
+        let userPrefix = String(platformUserID.prefix(8))
+        return "\(prefix)-acp-custom-\(userPrefix)"
+    }
+
+    static func stableAionUIID(seed: String, length: Int) -> String {
+        var output = ""
+        var salt: UInt64 = 0
+        while output.count < length {
+            var hash: UInt64 = 14_695_981_039_346_656_037 ^ salt
+            for byte in seed.utf8 {
+                hash ^= UInt64(byte)
+                hash &*= 1_099_511_628_211
+            }
+            output += String(format: "%016llx", hash)
+            salt &+= 1
+        }
+        return String(output.prefix(length))
+    }
+
+    static func stableAionUIUUID(seed: String) -> String {
+        let hex = stableAionUIID(seed: seed, length: 32)
+        return [
+            hex.prefix(8),
+            hex.dropFirst(8).prefix(4),
+            hex.dropFirst(12).prefix(4),
+            hex.dropFirst(16).prefix(4),
+            hex.dropFirst(20).prefix(12)
+        ].map(String.init).joined(separator: "-")
+    }
+
+    static func aionUIBackendPortCandidates(
+        homeDirectory: URL,
+        fileManager: FileManager
+    ) -> [Int] {
+        let logDirectoryURL = homeDirectory
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Logs", isDirectory: true)
+            .appendingPathComponent("AionUi", isDirectory: true)
+            .standardizedFileURL
+        let logURLs = ((try? fileManager.contentsOfDirectory(
+            at: logDirectoryURL,
+            includingPropertiesForKeys: [.contentModificationDateKey]
+        )) ?? [])
+            .filter { $0.pathExtension == "log" }
+            .sorted { lhs, rhs in
+                let lhsDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate ?? .distantPast
+                let rhsDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]))?
+                    .contentModificationDate ?? .distantPast
+                return lhsDate > rhsDate
+            }
+
+        var ports: [Int] = []
+        var seen: Set<Int> = []
+        for logURL in logURLs.prefix(4) {
+            guard let text = try? String(contentsOf: logURL, encoding: .utf8) else {
+                continue
+            }
+            for port in aionUIBackendPorts(in: text).reversed() {
+                guard !seen.contains(port) else {
+                    continue
+                }
+                seen.insert(port)
+                ports.append(port)
+            }
+        }
+        return ports
+    }
+
+    static func aionUIBackendPorts(in text: String) -> [Int] {
+        let markers = [
+            "backendManager.start ready (port=",
+            "selected backend port ",
+            "Server listening on 127.0.0.1:"
+        ]
+        var ports: [Int] = []
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            for marker in markers {
+                guard let markerRange = line.range(of: marker) else {
+                    continue
+                }
+                let suffix = line[markerRange.upperBound...]
+                let digits = suffix.prefix { character in
+                    character >= "0" && character <= "9"
+                }
+                guard let port = Int(digits), port > 0 else {
+                    continue
+                }
+                ports.append(port)
+            }
+        }
+        return ports
+    }
+
+    static func aionUIHealthCheck(baseURL: URL) -> Bool {
+        var url = baseURL
+        url.appendPathComponent("health")
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 2
+        switch performAionUIRequest(request) {
+        case .success(let value):
+            return (200..<300).contains(value.response.statusCode)
+        case .failure:
+            return false
+        }
+    }
+
+    static func aionUIAgents(baseURL: URL) throws -> [AionUIAgent] {
+        let response: AionUIAPIEnvelope<[AionUIAgent]> = try sendAionUIAPIRequest(
+            method: "GET",
+            pathComponents: ["api", "agents"],
+            body: Optional<AionUIEmptyRequest>.none,
+            baseURL: baseURL
+        )
+        guard response.success, let data = response.data else {
+            throw MLXServerAgentIntegrationError.aionUIAPIRequestFailed(
+                response.error ?? "Aion UI did not return an agent list."
+            )
+        }
+        return data
+    }
+
+    static func createAionUICustomAgent(
+        request: AionUICustomAgentRequest,
+        baseURL: URL
+    ) throws -> AionUIAgent {
+        let response: AionUIAPIEnvelope<AionUIAgent> = try sendAionUIAPIRequest(
+            method: "POST",
+            pathComponents: ["api", "agents", "custom"],
+            body: request,
+            baseURL: baseURL
+        )
+        guard response.success, let data = response.data else {
+            throw MLXServerAgentIntegrationError.aionUIAPIRequestFailed(
+                response.error ?? "Aion UI did not create the custom agent."
+            )
+        }
+        return data
+    }
+
+    static func updateAionUICustomAgent(
+        id: String,
+        request: AionUICustomAgentRequest,
+        baseURL: URL
+    ) throws -> AionUIAgent {
+        let response: AionUIAPIEnvelope<AionUIAgent> = try sendAionUIAPIRequest(
+            method: "PUT",
+            pathComponents: ["api", "agents", "custom", id],
+            body: request,
+            baseURL: baseURL
+        )
+        guard response.success, let data = response.data else {
+            throw MLXServerAgentIntegrationError.aionUIAPIRequestFailed(
+                response.error ?? "Aion UI did not update the custom agent."
+            )
+        }
+        return data
+    }
+
+    static func deleteAionUICustomAgent(id: String, baseURL: URL) throws {
+        let response: AionUIAPIEnvelope<AionUIEmptyResponse> = try sendAionUIAPIRequest(
+            method: "DELETE",
+            pathComponents: ["api", "agents", "custom", id],
+            body: Optional<AionUIEmptyRequest>.none,
+            baseURL: baseURL
+        )
+        guard response.success else {
+            throw MLXServerAgentIntegrationError.aionUIAPIRequestFailed(
+                response.error ?? "Aion UI did not delete the duplicate custom agent."
+            )
+        }
+    }
+
+    static func sendAionUIAPIRequest<RequestBody: Encodable, ResponseBody: Decodable>(
+        method: String,
+        pathComponents: [String],
+        body: RequestBody?,
+        baseURL: URL
+    ) throws -> AionUIAPIEnvelope<ResponseBody> {
+        var url = baseURL
+        for component in pathComponents {
+            url.appendPathComponent(component)
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 2
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONEncoder().encode(body)
+        }
+
+        let result = performAionUIRequest(request)
+        let data: Data
+        let response: HTTPURLResponse
+        switch result {
+        case .success(let value):
+            data = value.data
+            response = value.response
+        case .failure(let error):
+            throw error
+        }
+
+        guard (200..<300).contains(response.statusCode) else {
+            let message = String(data: data, encoding: .utf8) ?? "HTTP \(response.statusCode)"
+            throw MLXServerAgentIntegrationError.aionUIAPIRequestFailed(message)
+        }
+        return try JSONDecoder().decode(AionUIAPIEnvelope<ResponseBody>.self, from: data)
+    }
+
+    static func performAionUIRequest(
+        _ request: URLRequest
+    ) -> Result<(data: Data, response: HTTPURLResponse), Error> {
+        let semaphore = DispatchSemaphore(value: 0)
+        let box = AionUIHTTPResponseBox()
+        let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                box.result = .failure(error)
+            } else if let data, let response = response as? HTTPURLResponse {
+                box.result = .success((data, response))
+            } else {
+                box.result = .failure(
+                    MLXServerAgentIntegrationError.aionUIAPIRequestFailed(
+                        "Aion UI returned an invalid HTTP response."
+                    )
+                )
+            }
+            semaphore.signal()
+        }
+        task.resume()
+        if semaphore.wait(timeout: .now() + 2) == .timedOut {
+            task.cancel()
+            return .failure(
+                MLXServerAgentIntegrationError.aionUIAPIRequestFailed(
+                    "Timed out while contacting Aion UI."
+                )
+            )
+        }
+        return box.result ?? .failure(
+            MLXServerAgentIntegrationError.aionUIAPIRequestFailed(
+                "Aion UI request did not complete."
+            )
+        )
+    }
+
+    static func aionUIApplicationInstalled(
+        homeDirectory: URL,
+        fileManager: FileManager
+    ) -> Bool {
+        aionUIApplicationURLs(homeDirectory: homeDirectory).contains { url in
+            fileManager.fileExists(atPath: url.path)
+        }
+    }
+
+    static func aionUIApplicationURLs(homeDirectory: URL) -> [URL] {
+        [
+            URL(fileURLWithPath: "/Applications/AionUi.app", isDirectory: true),
+            homeDirectory
+                .appendingPathComponent("Applications", isDirectory: true)
+                .appendingPathComponent("AionUi.app", isDirectory: true)
+        ].map(\.standardizedFileURL)
+    }
+
+    static func removeItemIfPresent(at url: URL, fileManager: FileManager) throws {
+        do {
+            try fileManager.removeItem(at: url)
+        } catch {
+            if (error as NSError).code != NSFileNoSuchFileError {
+                throw error
+            }
+        }
+    }
+
+    static func executableURL(
+        named name: String,
+        preferredURL: URL?,
+        relativeTo directoryURL: URL?,
+        fileManager: FileManager
+    ) -> URL? {
+        let preferredExecutableURL = preferredURL?.lastPathComponent == name
+            ? preferredURL
+            : nil
+        let candidates = [
+            preferredExecutableURL,
+            directoryURL?.appendingPathComponent(name)
+        ]
+        for candidate in candidates.compactMap({ $0?.standardizedFileURL }) {
+            if fileManager.isExecutableFile(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return executableURLFromPath(named: name, fileManager: fileManager)
+    }
+
+    static func executableURLFromPath(
+        named name: String,
+        fileManager: FileManager
+    ) -> URL? {
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        for directory in path.split(separator: ":").map(String.init) {
+            guard !directory.isEmpty else {
+                continue
+            }
+            let url = URL(fileURLWithPath: directory, isDirectory: true)
+                .appendingPathComponent(name)
+                .standardizedFileURL
+            if fileManager.isExecutableFile(atPath: url.path) {
+                return url
+            }
+        }
+        return nil
     }
 
     static func normalizedProviderBaseURL(_ baseURL: String) -> String {
@@ -682,6 +1776,13 @@ private extension MLXServerAgentIntegrationService {
         "\"\(tomlEscapedString(value))\""
     }
 
+    static func codexProviderAuthorizationLine(apiKey: String?) -> String? {
+        guard let apiKey = apiKey?.trimmedNonEmpty else {
+            return nil
+        }
+        return "http_headers = { Authorization = \"Bearer \(tomlEscapedString(apiKey))\" }"
+    }
+
     static func tomlEscapedString(_ value: String) -> String {
         value
             .replacingOccurrences(of: "\\", with: "\\\\")
@@ -692,12 +1793,357 @@ private extension MLXServerAgentIntegrationService {
 
 public enum MLXServerAgentIntegrationError: LocalizedError, Sendable, Equatable {
     case emptyRequiredValue(String)
+    case aionUINotInstalled
+    case aionUINotRunning
+    case aionUIACPExecutablesNotFound
+    case aionUIAPIRequestFailed(String)
 
     public var errorDescription: String? {
         switch self {
         case .emptyRequiredValue(let fieldName):
             return "\(fieldName) can not be empty."
+        case .aionUINotInstalled:
+            return "Aion UI is not installed."
+        case .aionUINotRunning:
+            return "Aion UI is installed, but it is not running."
+        case .aionUIACPExecutablesNotFound:
+            return "Could not find mlx-coder or mlx-server executables for the Aion UI integration."
+        case .aionUIAPIRequestFailed(let message):
+            return message
         }
+    }
+}
+
+private struct AionUICustomAgentRegistrationResult: Sendable, Equatable {
+    var registeredAgents: [String] = []
+    var updatedAgents: [String] = []
+    var removedDuplicateAgents: [String] = []
+}
+
+private struct AionUIChannelConfigurationResult: Sendable, Equatable {
+    var updatedChannelAgents: [String] = []
+    var preparedChannelSessions: [String] = []
+}
+
+private struct AionUICustomAgentDefinition: Sendable, Equatable {
+    var name: String
+    var command: String
+    var args: [String]
+}
+
+private struct AionUIACPAdapterDefinition: Sendable, Equatable {
+    var id: String
+    var name: String
+    var description: String
+    var command: String
+    var args: [String]
+}
+
+private struct AionUIExtensionInstallationResult: Sendable, Equatable {
+    var installed: Bool = false
+    var requiresRestart: Bool = false
+}
+
+private struct AionUIAPIEnvelope<Value: Decodable>: Decodable {
+    var success: Bool
+    var data: Value?
+    var error: String?
+}
+
+private struct AionUIAgent: Decodable {
+    var id: String
+    var name: String
+    var backend: String?
+    var agentSource: String?
+    var command: String?
+    var args: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case backend
+        case agentSource = "agent_source"
+        case command
+        case args
+    }
+}
+
+private struct AionUIClientSettings: Decodable {
+    var channelAgentPreferences: [String: AionUIChannelAgentSavedPreference]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+        var preferences: [String: AionUIChannelAgentSavedPreference] = [:]
+        for key in container.allKeys {
+            let prefix = "assistant."
+            let suffix = ".agent"
+            guard key.stringValue.hasPrefix(prefix),
+                  key.stringValue.hasSuffix(suffix) else {
+                continue
+            }
+            let platformStart = key.stringValue.index(
+                key.stringValue.startIndex,
+                offsetBy: prefix.count
+            )
+            let platformEnd = key.stringValue.index(
+                key.stringValue.endIndex,
+                offsetBy: -suffix.count
+            )
+            let platform = String(key.stringValue[platformStart..<platformEnd])
+            guard let preference = try? container.decode(
+                AionUIChannelAgentSavedPreference.self,
+                forKey: key
+            ) else {
+                continue
+            }
+            preferences[platform] = preference
+        }
+        channelAgentPreferences = preferences
+    }
+}
+
+private struct AionUIChannelAgentSavedPreference: Decodable {
+    var backend: String?
+    var agentID: String?
+    var customAgentID: String?
+    var id: String?
+    var name: String?
+
+    var referencedAgentIDs: [String] {
+        [agentID, id, customAgentID, backend]
+            .compactMap { value in
+                guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !value.isEmpty else {
+                    return nil
+                }
+                return value
+            }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case backend
+        case agentID = "agent_id"
+        case customAgentID = "custom_agent_id"
+        case id
+        case name
+    }
+}
+
+private struct AionUIChannelPlugin: Decodable {
+    var type: String
+    var enabled: Bool
+}
+
+private struct AionUIAssistantUser: Decodable {
+    var id: String
+    var platformUserID: String
+    var platformType: String
+    var displayName: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case platformUserID = "platform_user_id"
+        case platformType = "platform_type"
+        case displayName = "display_name"
+    }
+}
+
+private struct AionUIChannelConversationExtra: Encodable {
+    var backend: String = "custom"
+    var mcpServerIDs: [String] = []
+    var mcpServers: [String] = []
+    var mcpStatuses: [String] = []
+    var sessionMode: String = "default"
+    var skills: [String] = [
+        "aionui-skills",
+        "cron",
+        "officecli",
+        "skill-creator"
+    ]
+    var workspace: String
+    var agentID: String
+    var customAgentID: String
+    var agentName: String
+
+    enum CodingKeys: String, CodingKey {
+        case backend
+        case mcpServerIDs = "mcp_server_ids"
+        case mcpServers = "mcp_servers"
+        case mcpStatuses = "mcp_statuses"
+        case sessionMode = "session_mode"
+        case skills
+        case workspace
+        case agentID = "agent_id"
+        case customAgentID = "custom_agent_id"
+        case agentName = "agent_name"
+    }
+}
+
+private struct AionUIChannelAgentPreferenceUpdate: Encodable {
+    var platform: String
+    var preference: AionUIChannelAgentPreference
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: DynamicCodingKey.self)
+        try container.encode(
+            preference,
+            forKey: DynamicCodingKey("assistant.\(platform).agent")
+        )
+    }
+}
+
+private struct AionUIChannelAgentPreference: Encodable {
+    var agentType: String
+    var backend: String
+    var agentID: String
+    var customAgentID: String
+    var id: String
+    var name: String
+
+    enum CodingKeys: String, CodingKey {
+        case agentType = "agent_type"
+        case backend
+        case agentID = "agent_id"
+        case customAgentID = "custom_agent_id"
+        case id
+        case name
+    }
+}
+
+private struct AionUIExtensionManifest: Encodable {
+    var schema: String = "https://raw.githubusercontent.com/iOfficeAI/AionHub/spec/v0/extension-manifest.schema.json"
+    var name: String
+    var displayName: String
+    var version: String
+    var description: String
+    var author: String
+    var engine: AionUIExtensionEngine
+    var contributes: AionUIExtensionContributes
+
+    enum CodingKeys: String, CodingKey {
+        case schema = "$schema"
+        case name
+        case displayName
+        case version
+        case description
+        case author
+        case engine
+        case contributes
+    }
+}
+
+private struct AionUIExtensionEngine: Encodable {
+    var aionui: String
+}
+
+private struct AionUIExtensionContributes: Encodable {
+    var acpAdapters: [AionUIExtensionACPAdapter]
+}
+
+private struct AionUIExtensionACPAdapter: Encodable {
+    var id: String
+    var name: String
+    var description: String
+    var connectionType: String
+    var cliCommand: String
+    var acpArgs: [String]
+    var defaultCliPath: String
+    var authRequired: Bool
+    var supportsStreaming: Bool
+}
+
+private struct AionUIExtensionStates: Codable {
+    var version: Int
+    var extensions: [String: AionUIExtensionState]
+
+    init(
+        version: Int = 1,
+        extensions: [String: AionUIExtensionState] = [:]
+    ) {
+        self.version = version
+        self.extensions = extensions
+    }
+}
+
+private struct AionUIExtensionState: Codable {
+    var installed: Bool
+    var enabled: Bool
+    var lastVersion: String
+
+    init(
+        installed: Bool = true,
+        enabled: Bool = true,
+        lastVersion: String
+    ) {
+        self.installed = installed
+        self.enabled = enabled
+        self.lastVersion = lastVersion
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        installed = (try? container.decode(Bool.self, forKey: .installed)) ?? true
+        enabled = (try? container.decode(Bool.self, forKey: .enabled)) ?? true
+        lastVersion = (try? container.decode(String.self, forKey: .lastVersion)) ?? "0.1.0"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case installed
+        case enabled
+        case lastVersion
+    }
+}
+
+private struct AionUIChannelSettingsSyncRequest: Encodable {
+    var platform: String
+}
+
+private struct AionUIChannelSettingsSyncResponse: Decodable {
+    var success: Bool?
+    var message: String?
+}
+
+private struct AionUICustomAgentRequest: Encodable {
+    var name: String
+    var command: String
+    var icon: String
+    var args: [String]
+    var env: [AionUICustomAgentEnvironmentVariable]
+    var advanced: AionUICustomAgentAdvanced
+}
+
+private struct AionUICustomAgentEnvironmentVariable: Encodable {
+    var name: String
+    var value: String
+}
+
+private struct AionUICustomAgentAdvanced: Encodable {}
+
+private struct AionUIEmptyRequest: Encodable {}
+
+private struct AionUIEmptyResponse: Decodable {}
+
+private final class AionUIHTTPResponseBox: @unchecked Sendable {
+    var result: Result<(data: Data, response: HTTPURLResponse), Error>?
+}
+
+private struct DynamicCodingKey: CodingKey {
+    var stringValue: String
+    var intValue: Int?
+
+    init(_ stringValue: String) {
+        self.stringValue = stringValue
+        intValue = nil
+    }
+
+    init?(stringValue: String) {
+        self.stringValue = stringValue
+        intValue = nil
+    }
+
+    init?(intValue: Int) {
+        self.stringValue = "\(intValue)"
+        self.intValue = intValue
     }
 }
 
@@ -794,5 +2240,10 @@ private struct CodexTruncationPolicy: Encodable {
 private extension String {
     var dropTrailingSlash: String {
         hasSuffix("/") ? String(dropLast()) : self
+    }
+
+    var trimmedNonEmpty: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

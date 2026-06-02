@@ -58,7 +58,7 @@ The server is not a desktop app and does not own UI settings. It is the runtime/
 
 The server uses two explicit files under `~/.mlx-server/`. There is no fallback list and no cache-folder scan at request time.
 
-- `~/.mlx-server/settings.json`: host, port, TLS, HTTP/2, metrics log, disk KV cache, and model retention policy.
+- `~/.mlx-server/settings.json`: host, port, optional API key, TLS, HTTP/2, metrics log, disk KV cache, and model retention policy.
 - `~/.mlx-server/models.json`: the exposed model ids, Hugging Face repositories, generation defaults, and thinking configuration.
 
 Run setup once:
@@ -172,7 +172,7 @@ let stream = try await runtime.generate(
 
 ## HTTP API
 
-The server reads runtime settings only from `~/.mlx-server/settings.json`; command line flags do not change host, port, TLS, HTTP/2, metrics logging, model retention, or disk KV cache behavior.
+The server reads runtime settings only from `~/.mlx-server/settings.json`; command line flags do not change host, port, API key, TLS, HTTP/2, metrics logging, model retention, or disk KV cache behavior.
 
 Run the optimized server:
 
@@ -189,6 +189,7 @@ Supported routes:
 - `POST /v1/messages`
 
 The three generation endpoints support non-stream JSON responses and SSE streaming with `stream: true`.
+If `api_key` is set in `settings.json`, all routes except `GET /health` require either `Authorization: Bearer <api_key>` or `X-API-Key: <api_key>`.
 
 Protocol mapping is handled inside the HTTP layer:
 
@@ -259,6 +260,7 @@ Quick checks:
 curl -s http://127.0.0.1:8080/health
 
 curl -s http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Authorization: Bearer <api_key>' \
   -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"Ciao"}],"max_tokens":128}'
 ```

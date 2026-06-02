@@ -34,6 +34,7 @@ public enum MLXServerAgentSetupRunner {
             - Codex App: \(enabledLabel(status.codexAppEnabled))
             - Codex in Xcode: \(enabledLabel(status.codexXcodeAppEnabled))
             - Claude Code in Xcode: \(enabledLabel(status.xcodeClaudeCodeEnabled))
+            - Aion UI ACP agents: \(enabledLabel(status.aionUIACPAgentsEnabled))
 
             """
         )
@@ -54,6 +55,10 @@ public enum MLXServerAgentSetupRunner {
             "Enable Claude Code in Xcode?",
             defaultValue: status.xcodeClaudeCodeEnabled
         )
+        let desiredAionUIACPAgents = try promptYesNo(
+            "Enable Aion UI ACP agents?",
+            defaultValue: status.aionUIACPAgentsEnabled
+        )
 
         let needsConfiguration = desiredCodexCLI
             || desiredCodexApp
@@ -70,7 +75,8 @@ public enum MLXServerAgentSetupRunner {
             codexCLI: desiredCodexCLI,
             codexApp: desiredCodexApp,
             codexXcodeApp: desiredCodexXcodeApp,
-            xcodeClaudeCode: desiredXcodeClaudeCode
+            xcodeClaudeCode: desiredXcodeClaudeCode,
+            aionUIACPAgents: desiredAionUIACPAgents
         )
 
         if let configuration {
@@ -82,12 +88,16 @@ public enum MLXServerAgentSetupRunner {
                 configuration: configuration
             )
         }
+        if desiredAionUIACPAgents {
+            try applyAionUIACPAgentsIntegration()
+        }
 
         FileHandle.standardError.writeString("\nAgent integration setup completed.\n\n")
     }
 
     private static func promptIntegrationConfiguration()
         throws -> MLXServerAgentIntegrationConfiguration {
+        let serverSettings = MLXServerSettingsStore.loadOrDefault()
         let baseURL = try promptString(
             "Base URL mlx-server",
             defaultValue: MLXServerAgentIntegrationService.defaultServerBaseURL(),
@@ -97,7 +107,8 @@ public enum MLXServerAgentSetupRunner {
         return MLXServerAgentIntegrationConfiguration(
             baseURL: baseURL,
             modelID: modelSelection.modelID,
-            contextWindow: modelSelection.contextWindow
+            contextWindow: modelSelection.contextWindow,
+            apiKey: serverSettings.apiKey
         )
     }
 
@@ -105,7 +116,8 @@ public enum MLXServerAgentSetupRunner {
         codexCLI: Bool,
         codexApp: Bool,
         codexXcodeApp: Bool,
-        xcodeClaudeCode: Bool
+        xcodeClaudeCode: Bool,
+        aionUIACPAgents _: Bool
     ) throws {
         if !codexCLI {
             try MLXServerAgentIntegrationService.removeCodexCLIProfile()
@@ -154,6 +166,56 @@ public enum MLXServerAgentSetupRunner {
             )
             FileHandle.standardError.writeString("Updated: Claude Code in Xcode\n")
         }
+    }
+
+    private static func applyAionUIACPAgentsIntegration() throws {
+        let result: MLXServerAionUIAgentIntegrationResult
+        do {
+            result = try MLXServerAgentIntegrationService.configureAionUIACPAgents()
+        } catch MLXServerAgentIntegrationError.aionUINotInstalled {
+            FileHandle.standardError.writeString(
+                """
+                Aion UI is not installed.
+                To use the desktop integration through Aion UI, run `brew install aionui`, open Aion UI, then run `mlx-server --setup-agents` again.
+                """
+            )
+            return
+        } catch MLXServerAgentIntegrationError.aionUINotRunning {
+            FileHandle.standardError.writeString(
+                """
+                Aion UI is installed, but it is not running.
+                Open Aion UI, then run `mlx-server --setup-agents` again to register MLX Coder and MLX Server Coder.
+                """
+            )
+            return
+        }
+        for agentName in result.registeredCustomAgents {
+            FileHandle.standardError.writeString("Registered: Aion UI \(agentName)\n")
+        }
+        for agentName in result.updatedCustomAgents {
+            FileHandle.standardError.writeString("Updated: Aion UI \(agentName)\n")
+        }
+        for agentName in result.removedDuplicateCustomAgents {
+            FileHandle.standardError.writeString("Removed duplicate: Aion UI \(agentName)\n")
+        }
+        for skippedAgent in result.skippedCustomAgents {
+            FileHandle.standardError.writeString("Skipped: \(skippedAgent)\n")
+        }
+        if result.installedExtension {
+            FileHandle.standardError.writeString("Installed: Aion UI MLX ACP adapter extension\n")
+        }
+        for platform in result.updatedChannelAgents {
+            FileHandle.standardError.writeString("Updated: Aion UI \(platform) agent\n")
+        }
+        for session in result.preparedChannelSessions {
+            FileHandle.standardError.writeString("Prepared: Aion UI \(session) channel session\n")
+        }
+        if result.requiresAionUIRestart {
+            FileHandle.standardError.writeString(
+                "Restart Aion UI before using MLX agents from desktop channels such as Telegram.\n"
+            )
+        }
+        FileHandle.standardError.writeString("Aion UI agent catalog updated.\n")
     }
 
     private static func promptModelSelection() throws -> ModelSelection {

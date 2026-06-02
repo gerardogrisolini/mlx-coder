@@ -421,7 +421,7 @@ extension TerminalChat {
             switch line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
             case "":
                 return false
-            case "y", "yes", "true", "1", "s", "si", "sì":
+            case "y", "yes", "true", "1":
                 return true
             case "n", "no", "false", "0":
                 return false

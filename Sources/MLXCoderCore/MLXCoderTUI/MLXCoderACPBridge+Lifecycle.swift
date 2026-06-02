@@ -19,7 +19,7 @@ extension MLXCoderACPBridge {
             "agentCapabilities": [
                 "loadSession": false,
                 "promptCapabilities": [
-                    "image": false,
+                    "image": true,
                     "audio": false,
                     "embeddedContext": true
                 ],
@@ -62,7 +62,6 @@ extension MLXCoderACPBridge {
             ?? (params["cacheKey"] as? String)
         let allowedToolNames = Self.allowedToolNames(from: params["allowedTools"])
             ?? configuration.selectedAgent?.allowedToolNames()
-        try await authorizeACPWorkspace(cwd: cwd)
         let systemPrompt = resolvedSystemPrompt(
             providedSystemPrompt: params["systemPrompt"] as? String,
             cwd: cwd,
@@ -102,12 +101,17 @@ extension MLXCoderACPBridge {
                 "modes": [
                     "availableModes": [
                         [
+                            "id": "default",
+                            "name": "Default",
+                            "description": "Use the configured mlx-coder agent runtime."
+                        ],
+                        [
                             "id": "chat",
                             "name": "Chat",
-                            "description": "Use the configured mlx-coder agent runtime."
+                            "description": "Alias for the default mlx-coder agent runtime."
                         ]
                     ],
-                    "currentModeId": "chat"
+                    "currentModeId": "default"
                 ],
                 "configOptions": []
             ])
@@ -116,6 +120,37 @@ extension MLXCoderACPBridge {
             sessionID: sessionID,
             title: URL(fileURLWithPath: cwd).lastPathComponent
         )
+    }
+
+    public func setMode(id: JSONValue?, params: [String: Any]) async throws {
+        guard let sessionID = Self.sessionID(from: params) else {
+            throw ACPError(code: -32602, message: "Missing sessionId.")
+        }
+        guard sessions[sessionID] != nil else {
+            throw ACPError(code: -32002, message: "Unknown session: \(sessionID)")
+        }
+        let modeID = ((params["modeId"] as? String) ?? (params["mode_id"] as? String) ?? "default")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedModeID = modeID.isEmpty ? "default" : modeID
+        guard normalizedModeID == "default" || normalizedModeID == "chat" else {
+            throw ACPError(code: -32602, message: "Unsupported mode: \(normalizedModeID)")
+        }
+        await writer.sendResultIfRequest(
+            id: id,
+            result: JSONValue.acpValue(from: [
+                "sessionId": sessionID,
+                "modeId": normalizedModeID
+            ])
+        )
+    }
+
+    private static func sessionID(from params: [String: Any]) -> String? {
+        for key in ["sessionId", "session_id"] {
+            if let value = (params[key] as? String)?.nilIfBlank {
+                return value
+            }
+        }
+        return nil
     }
 
     private func defaultSessionConfiguration(
@@ -138,19 +173,4 @@ extension MLXCoderACPBridge {
         )
     }
 
-    private func authorizeACPWorkspace(cwd: String) async throws {
-        #if os(macOS)
-        let granted = await TerminalWorkspaceToolAccessStore.shared
-            .authorizeWithPickerIfNeeded(
-                for: URL(fileURLWithPath: cwd, isDirectory: true)
-            )
-        guard granted else {
-            throw ACPError.internalError(
-                "Workspace access was not granted for \(cwd)."
-            )
-        }
-        #else
-        _ = cwd
-        #endif
-    }
 }

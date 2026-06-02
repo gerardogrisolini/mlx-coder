@@ -819,7 +819,8 @@ public enum MLXServerModelSetupRunner {
         let configuration = MLXServerAgentIntegrationConfiguration(
             baseURL: MLXServerAgentIntegrationService.defaultServerBaseURL(),
             modelID: defaultModel.id,
-            contextWindow: defaultModel.generationDefaults.contextWindow
+            contextWindow: defaultModel.generationDefaults.contextWindow,
+            apiKey: MLXServerSettingsStore.loadOrDefault().apiKey
         )
 
         if status.codexCLIEnabled {

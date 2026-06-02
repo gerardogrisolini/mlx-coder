@@ -35,7 +35,8 @@ func codexCLIProfileWritesExpectedTOMLAndCatalog() throws {
         configuration: MLXServerAgentIntegrationConfiguration(
             baseURL: " http://127.0.0.1:8080/ ",
             modelID: " mlx-community/test-model ",
-            contextWindow: 262_144
+            contextWindow: 262_144,
+            apiKey: #"local "secret""#
         ),
         homeDirectory: home
     )
@@ -48,6 +49,7 @@ func codexCLIProfileWritesExpectedTOMLAndCatalog() throws {
     #expect(configText.contains("name = \"mlx-server\""))
     #expect(configText.contains("base_url = \"http://127.0.0.1:8080/v1\""))
     #expect(configText.contains("wire_api = \"responses\""))
+    #expect(configText.contains(#"http_headers = { Authorization = "Bearer local \"secret\"" }"#))
     #expect(configText.contains("[profiles.\"mlx-server\"]"))
     #expect(configText.contains("model = \"mlx-community/test-model\""))
     #expect(configText.contains("openai_base_url = \"http://127.0.0.1:8080/v1\""))
@@ -111,7 +113,8 @@ func xcodeCodexProfileWritesOnlyXcodeConfigurationTree() throws {
         configuration: MLXServerAgentIntegrationConfiguration(
             baseURL: "http://127.0.0.1:9090",
             modelID: "mlx-community/xcode-model",
-            contextWindow: 65_536
+            contextWindow: 65_536,
+            apiKey: "xcode-secret"
         ),
         homeDirectory: home
     )
@@ -134,6 +137,7 @@ func xcodeCodexProfileWritesOnlyXcodeConfigurationTree() throws {
     #expect(configText.contains("model_provider = \"mlx-server\""))
     #expect(configText.contains("forced_login_method = \"api\""))
     #expect(configText.contains("base_url = \"http://127.0.0.1:9090/v1\""))
+    #expect(configText.contains("http_headers = { Authorization = \"Bearer xcode-secret\" }"))
     #expect(configText.contains("model = \"mlx-community/xcode-model\""))
     #expect(!FileManager.default.fileExists(atPath: codexCatalogURL(home: home, target: .xcode).path))
 }
@@ -264,7 +268,8 @@ func xcodeAgentIntegrationsUseDedicatedConfigurationFiles() throws {
 
     let configuration = MLXServerAgentIntegrationConfiguration(
         baseURL: "http://127.0.0.1:8080/v1",
-        modelID: "mlx-community/test-model"
+        modelID: "mlx-community/test-model",
+        apiKey: "claude-secret"
     )
     try MLXServerAgentIntegrationService.configureCodexAppProfile(
         target: .xcode,
@@ -280,7 +285,7 @@ func xcodeAgentIntegrationsUseDedicatedConfigurationFiles() throws {
         at: MLXServerAgentIntegrationService.xcodeClaudeCodeSettingsURL(homeDirectory: home)
     )
     #expect(claudeSettings.env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:8080")
-    #expect(claudeSettings.env["ANTHROPIC_AUTH_TOKEN"] == "")
+    #expect(claudeSettings.env["ANTHROPIC_AUTH_TOKEN"] == "claude-secret")
     #expect(claudeSettings.env["API_TIMEOUT_MS"] == "3000000")
     #expect(claudeSettings.env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1")
     #expect(claudeSettings.env["ANTHROPIC_MODEL"] == "mlx-community/test-model")
