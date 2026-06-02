@@ -247,13 +247,19 @@ public enum MLXServerAgentIntegrationService {
         var customAgents: [AionUICustomAgentDefinition] = []
         var extensionAdapters: [AionUIACPAdapterDefinition] = []
         var skippedCustomAgents: [String] = []
+        let coderModelIDs = aionUICoderModelIDs(
+            homeDirectory: homeDirectory,
+            fileManager: fileManager
+        )
+        let serverCoderModelIDs = aionUIServerCoderModelIDs(fileManager: fileManager)
 
         if let resolvedCoderURL {
             customAgents.append(
                 AionUICustomAgentDefinition(
                     name: "mlx-coder",
                     command: resolvedCoderURL.path,
-                    args: ["--acp"]
+                    args: ["--acp"],
+                    models: coderModelIDs
                 )
             )
             extensionAdapters.append(
@@ -262,7 +268,8 @@ public enum MLXServerAgentIntegrationService {
                     name: "mlx-coder",
                     description: "mlx-coder ACP adapter.",
                     command: resolvedCoderURL.path,
-                    args: ["--acp"]
+                    args: ["--acp"],
+                    models: coderModelIDs
                 )
             )
         } else {
@@ -272,22 +279,24 @@ public enum MLXServerAgentIntegrationService {
         if let resolvedServerURL {
             customAgents.append(
                 AionUICustomAgentDefinition(
-                    name: "mlx-server + mlx-coder",
+                    name: "mlx-server-coder",
                     command: resolvedServerURL.path,
-                    args: ["--coder", "--acp"]
+                    args: ["--coder", "--acp"],
+                    models: serverCoderModelIDs
                 )
             )
             extensionAdapters.append(
                 AionUIACPAdapterDefinition(
                     id: "mlx-server-coder",
-                    name: "mlx-server + mlx-coder",
-                    description: "mlx-server local ACP adapter for mlx-coder.",
+                    name: "mlx-server-coder",
+                    description: "mlx-server-coder ACP adapter.",
                     command: resolvedServerURL.path,
-                    args: ["--coder", "--acp"]
+                    args: ["--coder", "--acp"],
+                    models: serverCoderModelIDs
                 )
             )
         } else {
-            skippedCustomAgents.append("mlx-server + mlx-coder (mlx-server executable not found)")
+            skippedCustomAgents.append("mlx-server-coder (mlx-server executable not found)")
         }
 
         guard !customAgents.isEmpty else {
@@ -303,7 +312,9 @@ public enum MLXServerAgentIntegrationService {
 
         let customAgentRegistration = try registerAionUICustomAgents(
             customAgents: customAgents,
-            baseURL: baseURL
+            baseURL: baseURL,
+            homeDirectory: homeDirectory,
+            fileManager: fileManager
         )
         let extensionInstallation = try installAionUIACPAdapterExtension(
             adapters: extensionAdapters,
@@ -688,6 +699,63 @@ private extension MLXServerAgentIntegrationService {
         try data.write(to: url, options: [.atomic])
     }
 
+    static func aionUICoderModelIDs(
+        homeDirectory: URL,
+        fileManager: FileManager
+    ) -> [String] {
+        let settingsURL = mlxCoderSettingsURL(homeDirectory: homeDirectory)
+        guard fileManager.fileExists(atPath: settingsURL.path),
+              let data = try? Data(contentsOf: settingsURL),
+              let manifest = try? JSONDecoder().decode(
+                  AionUICoderSettingsManifest.self,
+                  from: data
+              ) else {
+            return []
+        }
+        return uniqueAionUIModelIDs(manifest.models.map(\.selectionID))
+    }
+
+    static func aionUIServerCoderModelIDs(fileManager: FileManager) -> [String] {
+        guard let manifest = try? MLXServerModelsManifestStore.loadRequired(
+            fileManager: fileManager
+        ),
+        let catalog = try? MLXServerModelCatalog(manifest: manifest) else {
+            return []
+        }
+        return uniqueAionUIModelIDs(catalog.models.map { Optional($0.id) })
+    }
+
+    static func mlxCoderSettingsURL(homeDirectory: URL) -> URL {
+        if let rawSupportDirectory = ProcessInfo
+            .processInfo
+            .environment["MLX_CODER_SUPPORT_DIRECTORY"]?
+            .trimmedNonEmpty {
+            return URL(fileURLWithPath: rawSupportDirectory, isDirectory: true)
+                .standardizedFileURL
+                .appendingPathComponent("settings.json")
+        }
+        return homeDirectory
+            .appendingPathComponent(".mlx-coder", isDirectory: true)
+            .appendingPathComponent("settings.json")
+            .standardizedFileURL
+    }
+
+    static func uniqueAionUIModelIDs(_ values: [String?]) -> [String] {
+        var seen = Set<String>()
+        var output: [String] = []
+        for value in values {
+            guard let modelID = value?.trimmedNonEmpty else {
+                continue
+            }
+            let key = modelID.lowercased()
+            guard seen.insert(key).inserted else {
+                continue
+            }
+            output.append(modelID)
+        }
+        return output
+    }
+
     static func installAionUIACPAdapterExtension(
         adapters: [AionUIACPAdapterDefinition],
         homeDirectory: URL,
@@ -708,7 +776,7 @@ private extension MLXServerAgentIntegrationService {
             name: "aionext-mlx-server",
             displayName: "MLX Server",
             version: "0.1.0",
-            description: "Integrates mlx-coder and mlx-server + mlx-coder as ACP adapters in Aion UI.",
+            description: "Integrates mlx-coder and mlx-server-coder as ACP adapters in Aion UI.",
             author: "MLX Server",
             engine: AionUIExtensionEngine(aionui: "^2.0.0"),
             contributes: AionUIExtensionContributes(
@@ -722,7 +790,8 @@ private extension MLXServerAgentIntegrationService {
                         acpArgs: adapter.args,
                         defaultCliPath: adapter.command,
                         authRequired: false,
-                        supportsStreaming: true
+                        supportsStreaming: true,
+                        models: adapter.models
                     )
                 }
             )
@@ -762,7 +831,16 @@ private extension MLXServerAgentIntegrationService {
     }
 
     static func aionUIDataDirectoryURL(homeDirectory: URL) -> URL {
-        homeDirectory
+        let applicationSupportURL = homeDirectory
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+            .appendingPathComponent("AionUi", isDirectory: true)
+            .appendingPathComponent("aionui", isDirectory: true)
+            .standardizedFileURL
+        if FileManager.default.fileExists(atPath: applicationSupportURL.path) {
+            return applicationSupportURL
+        }
+        return homeDirectory
             .appendingPathComponent(".aionui", isDirectory: true)
             .standardizedFileURL
     }
@@ -781,12 +859,15 @@ private extension MLXServerAgentIntegrationService {
 
     static func registerAionUICustomAgents(
         customAgents: [AionUICustomAgentDefinition],
-        baseURL: URL
+        baseURL: URL,
+        homeDirectory: URL,
+        fileManager: FileManager
     ) throws -> AionUICustomAgentRegistrationResult {
         let existingAgents = try aionUIAgents(baseURL: baseURL)
         var registeredAgents: [String] = []
         var updatedAgents: [String] = []
         var removedDuplicateAgents: [String] = []
+        var retainedAgentIDs = Set<String>()
         let desiredAgentNames = Set(customAgents.map(\.name))
 
         for customAgent in customAgents {
@@ -804,16 +885,30 @@ private extension MLXServerAgentIntegrationService {
             )
 
             if let existingAgent = matches.first {
-                _ = try updateAionUICustomAgent(
+                let updatedAgent = try updateAionUICustomAgent(
                     id: existingAgent.id,
                     request: request,
                     baseURL: baseURL
                 )
+                retainedAgentIDs.insert(updatedAgent.id)
+                try persistAionUICustomAgentModelMetadata(
+                    agentID: updatedAgent.id,
+                    models: customAgent.models,
+                    homeDirectory: homeDirectory,
+                    fileManager: fileManager
+                )
                 updatedAgents.append(customAgent.name)
             } else {
-                _ = try createAionUICustomAgent(
+                let createdAgent = try createAionUICustomAgent(
                     request: request,
                     baseURL: baseURL
+                )
+                retainedAgentIDs.insert(createdAgent.id)
+                try persistAionUICustomAgentModelMetadata(
+                    agentID: createdAgent.id,
+                    models: customAgent.models,
+                    homeDirectory: homeDirectory,
+                    fileManager: fileManager
                 )
                 registeredAgents.append(customAgent.name)
             }
@@ -825,6 +920,7 @@ private extension MLXServerAgentIntegrationService {
         }
 
         for staleAgent in existingAgents where staleAgent.agentSource == "custom"
+            && !retainedAgentIDs.contains(staleAgent.id)
             && !desiredAgentNames.contains(staleAgent.name)
             && (
                 staleAgent.name == "MLX Coder"
@@ -832,7 +928,7 @@ private extension MLXServerAgentIntegrationService {
                     || staleAgent.name.hasPrefix("MLX Coder - ")
                     || staleAgent.name.hasPrefix("MLX Server Coder - ")
                     || staleAgent.name.hasPrefix("mlx-coder - ")
-                    || staleAgent.name.hasPrefix("mlx-server + mlx-coder - ")
+                    || staleAgent.name.hasPrefix("mlx-server-coder - ")
             ) {
             try deleteAionUICustomAgent(id: staleAgent.id, baseURL: baseURL)
             removedDuplicateAgents.append(staleAgent.name)
@@ -843,6 +939,92 @@ private extension MLXServerAgentIntegrationService {
             updatedAgents: updatedAgents,
             removedDuplicateAgents: removedDuplicateAgents
         )
+    }
+
+    static func persistAionUICustomAgentModelMetadata(
+        agentID: String,
+        models: [String],
+        homeDirectory: URL,
+        fileManager: FileManager
+    ) throws {
+        let databaseURL = aionUIDatabaseURL(homeDirectory: homeDirectory)
+        guard fileManager.fileExists(atPath: databaseURL.path) else {
+            return
+        }
+        let configOptions = AionUIAgentConfigOptions(
+            configOptions: aionUIModelConfigOptions(models: models)
+        )
+        let configOptionsJSON = try compactJSONString(configOptions)
+        let availableModelsJSON = try compactJSONString(
+            aionUIAvailableModels(models: models)
+        )
+        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        _ = try runSQLite(
+            databaseURL: databaseURL,
+            sql: """
+            UPDATE agent_metadata
+               SET config_options = \(sqliteQuotedString(configOptionsJSON)),
+                   available_models = \(sqliteQuotedString(availableModelsJSON)),
+                   updated_at = \(timestamp)
+             WHERE id = \(sqliteQuotedString(agentID));
+            """,
+            fileManager: fileManager
+        )
+    }
+
+    static func aionUIModelConfigOptions(models: [String]) -> [AionUIAgentConfigOption] {
+        guard let currentValue = models.first else {
+            return []
+        }
+        return [
+            AionUIAgentConfigOption(
+                id: "model",
+                name: "Model",
+                category: "model",
+                type: "select",
+                currentValue: currentValue,
+                options: models.map { modelID in
+                    AionUIAgentConfigOptionValue(
+                        value: modelID,
+                        name: aionUIModelDisplayName(modelID),
+                        description: modelID
+                    )
+                }
+            )
+        ]
+    }
+
+    static func aionUIAvailableModels(models: [String]) -> AionUIAgentAvailableModels {
+        let currentModelID = models.first ?? ""
+        return AionUIAgentAvailableModels(
+            currentModelID: currentModelID,
+            currentModelLabel: currentModelID.trimmedNonEmpty.map(aionUIModelDisplayName),
+            availableModels: models.map { modelID in
+                AionUIAgentAvailableModel(
+                    id: modelID,
+                    label: aionUIModelDisplayName(modelID)
+                )
+            }
+        )
+    }
+
+    static func aionUIModelDisplayName(_ modelID: String) -> String {
+        let trimmed = modelID.trimmedNonEmpty ?? modelID
+        if trimmed.hasPrefix("chatgpt:") {
+            return String(trimmed.dropFirst("chatgpt:".count))
+        }
+        if trimmed.hasPrefix("remoteapi:"),
+           let suffix = trimmed.split(separator: ":", maxSplits: 2).last {
+            return aionUIModelDisplayName(String(suffix))
+        }
+        return trimmed.split(separator: "/").last.map(String.init) ?? trimmed
+    }
+
+    static func compactJSONString(_ value: some Encodable) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(value)
+        return String(data: data, encoding: .utf8) ?? "{}"
     }
 
     static func configureAionUIEnabledChannelAgents(
@@ -1342,7 +1524,7 @@ private extension MLXServerAgentIntegrationService {
         }
         let hasServerCoder = customAgents.contains { agent in
             aionUIAgent(agent, matches: AionUICustomAgentDefinition(
-                name: "mlx-server + mlx-coder",
+                name: "mlx-server-coder",
                 command: "mlx-server",
                 args: ["--coder", "--acp"]
             ))
@@ -1352,7 +1534,7 @@ private extension MLXServerAgentIntegrationService {
 
     static func aionUIAgentIsManagedByMLXServer(_ agent: AionUIAgent) -> Bool {
         let isManagedName = agent.name == "mlx-coder"
-            || agent.name == "mlx-server + mlx-coder"
+            || agent.name == "mlx-server-coder"
             || agent.name == "MLX Coder"
             || agent.name == "MLX Server Coder"
         let args = agent.args ?? []
@@ -2002,6 +2184,7 @@ private struct AionUICustomAgentDefinition: Sendable, Equatable {
     var name: String
     var command: String
     var args: [String]
+    var models: [String] = []
 }
 
 private struct AionUIACPAdapterDefinition: Sendable, Equatable {
@@ -2010,6 +2193,84 @@ private struct AionUIACPAdapterDefinition: Sendable, Equatable {
     var description: String
     var command: String
     var args: [String]
+    var models: [String] = []
+}
+
+private struct AionUIAgentConfigOptions: Encodable {
+    var configOptions: [AionUIAgentConfigOption]
+
+    enum CodingKeys: String, CodingKey {
+        case configOptions = "config_options"
+    }
+}
+
+private struct AionUIAgentConfigOption: Encodable {
+    var id: String
+    var name: String
+    var category: String
+    var type: String
+    var currentValue: String
+    var options: [AionUIAgentConfigOptionValue]
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case category
+        case type
+        case currentValue = "current_value"
+        case options
+    }
+}
+
+private struct AionUIAgentConfigOptionValue: Encodable {
+    var value: String
+    var name: String
+    var description: String
+}
+
+private struct AionUIAgentAvailableModels: Encodable {
+    var currentModelID: String
+    var currentModelLabel: String?
+    var availableModels: [AionUIAgentAvailableModel]
+
+    enum CodingKeys: String, CodingKey {
+        case currentModelID = "current_model_id"
+        case currentModelLabel = "current_model_label"
+        case availableModels = "available_models"
+    }
+}
+
+private struct AionUIAgentAvailableModel: Encodable {
+    var id: String
+    var label: String
+}
+
+private struct AionUICoderSettingsManifest: Decodable {
+    var models: [AionUICoderSettingsModel]
+
+    enum CodingKeys: String, CodingKey {
+        case models
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        models = try container.decodeIfPresent(
+            [AionUICoderSettingsModel].self,
+            forKey: .models
+        ) ?? []
+    }
+}
+
+private struct AionUICoderSettingsModel: Decodable {
+    var id: String?
+    var llmID: String?
+    var modelID: String?
+
+    var selectionID: String? {
+        id?.trimmedNonEmpty
+            ?? llmID?.trimmedNonEmpty
+            ?? modelID?.trimmedNonEmpty
+    }
 }
 
 private struct AionUIExtensionInstallationResult: Sendable, Equatable {
@@ -2227,6 +2488,7 @@ private struct AionUIExtensionACPAdapter: Encodable {
     var defaultCliPath: String
     var authRequired: Bool
     var supportsStreaming: Bool
+    var models: [String]
 }
 
 private struct AionUIExtensionStates: Codable {

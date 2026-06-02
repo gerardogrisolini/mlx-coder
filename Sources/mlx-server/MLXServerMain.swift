@@ -197,21 +197,6 @@ struct MLXServerMain {
         }
 
         let stdinIsTerminal = TerminalRawInput.supportsInteractiveInput()
-        if options.telegram, !stdinIsTerminal {
-            let telegram = try AgentTelegramControlRuntime(
-                configuration: configuration,
-                sessionRunner: sessionRunner
-            )
-            do {
-                try await telegram.run()
-                await sessionRunner.shutdown()
-            } catch {
-                await sessionRunner.shutdown()
-                throw error
-            }
-            return
-        }
-
         if stdinIsTerminal {
             AgentOutput.clearTerminalScreenIfNeeded()
         }
@@ -220,22 +205,11 @@ struct MLXServerMain {
             stdinIsTerminal: stdinIsTerminal,
             sessionRunner: sessionRunner
         )
-        let telegramTask: Task<Void, Never>?
-        if options.telegram {
-            telegramTask = try startTelegramControlTask(
-                configuration: configuration,
-                sessionRunner: sessionRunner
-            )
-        } else {
-            telegramTask = nil
-        }
 
         do {
             try await terminal.run()
-            telegramTask?.cancel()
             await sessionRunner.shutdown()
         } catch {
-            telegramTask?.cancel()
             await sessionRunner.shutdown()
             throw error
         }
@@ -277,26 +251,6 @@ struct MLXServerMain {
         }
 
         await bridge.shutdown()
-    }
-
-    private static func startTelegramControlTask(
-        configuration: AgentConfiguration,
-        sessionRunner: AgentCoreSessionRunner
-    ) throws -> Task<Void, Never> {
-        let telegram = try AgentTelegramControlRuntime(
-            configuration: configuration,
-            sessionRunner: sessionRunner
-        )
-        return Task {
-            do {
-                try await telegram.run()
-            } catch is CancellationError {
-            } catch {
-                AgentOutput.standardError.writeString(
-                    "mlx-coder telegram: \(error.localizedDescription)\n"
-                )
-            }
-        }
     }
 
     private static func ensureCoderProjectAgentsFileExists(workingDirectory: URL) throws {
@@ -658,7 +612,6 @@ private struct MLXServerCoderOptions {
     var maxToolRounds: Int
     var maxOutputTokens: Int?
     var verboseLogging: Bool
-    var telegram: Bool
     var acp: Bool
 
     init(arguments: [String]) throws {
@@ -670,7 +623,6 @@ private struct MLXServerCoderOptions {
         var maxToolRounds = 100
         var maxOutputTokens: Int?
         var verboseLogging = false
-        var telegram = false
         var acp = false
         var didSeeCoder = false
         var index = arguments.startIndex
@@ -705,8 +657,6 @@ private struct MLXServerCoderOptions {
                 maxOutputTokens = parsed
             case "--verbose":
                 verboseLogging = true
-            case "--telegram":
-                telegram = true
             case "--acp":
                 acp = true
             default:
@@ -718,10 +668,6 @@ private struct MLXServerCoderOptions {
         guard didSeeCoder else {
             throw MLXServerMainError.missingRequiredArgument("--coder")
         }
-        guard !(acp && telegram) else {
-            throw MLXServerMainError.incompatibleArguments("--acp", "--telegram")
-        }
-
         self.modelID = modelID
         self.agentName = agentName
         self.workingDirectory = AgentConfiguration.resolvedWorkingDirectory(
@@ -731,7 +677,6 @@ private struct MLXServerCoderOptions {
         self.maxToolRounds = maxToolRounds
         self.maxOutputTokens = maxOutputTokens
         self.verboseLogging = verboseLogging
-        self.telegram = telegram
         self.acp = acp
     }
 
@@ -862,7 +807,7 @@ private enum MLXServerHelp {
       mlx-server --reset
       mlx-server --reset-disk-cache
       mlx-server
-      mlx-server --coder [--acp | --telegram] [--cwd <path>] [--model <id>] [--agent <name>] [--skills <list>]
+      mlx-server --coder [--acp] [--cwd <path>] [--model <id>] [--agent <name>] [--skills <list>]
                  [--max-output-tokens <count>] [--max-tool-rounds <count>] [--verbose]
       mlx-server --chat [initial text] [--model <id>] [--max-tokens <count>] [--quiet]
 
@@ -874,7 +819,6 @@ private enum MLXServerHelp {
     Run mlx-server --reset-disk-cache to empty the configured disk KV cache directory. Default: ~/.mlx-server/KVCaches.
     Run mlx-server --coder to start the mlx-coder TUI with the local MLXServerRuntime directly, without HTTP or ACP.
     Add --acp to --coder to expose the direct local MLXServerRuntime to ACP clients such as Aion UI.
-    Add --telegram to --coder to run Telegram control alongside the TUI on the direct local MLXServerRuntime.
     Run mlx-server --chat to start an interactive terminal chat. Press Ctrl+D to exit.
     The server reads runtime settings from ~/.mlx-server/settings.json and models only from ~/.mlx-server/models.json.
     """

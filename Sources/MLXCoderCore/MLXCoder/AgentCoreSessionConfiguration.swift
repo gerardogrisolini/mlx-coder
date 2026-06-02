@@ -158,6 +158,28 @@ public struct AgentCoreSessionConfiguration: Sendable {
             && thinkingSelection == other.thinkingSelection
             && preserveThinking == other.preserveThinking
     }
+
+    public func withModelID(_ modelID: String?) -> AgentCoreSessionConfiguration {
+        AgentCoreSessionConfiguration(
+            sessionID: sessionID,
+            modelID: modelID,
+            bearerToken: bearerToken,
+            workingDirectory: workingDirectory,
+            systemPrompt: systemPrompt,
+            cacheKey: cacheKey,
+            sessionRevision: sessionRevision + 1,
+            history: history,
+            allowedToolNames: allowedToolNames,
+            configuredContextWindowLimit: configuredContextWindowLimit,
+            generationParameterOverrides: generationParameterOverrides,
+            maxToolRounds: maxToolRounds,
+            maxOutputTokens: maxOutputTokens,
+            verboseLogging: verboseLogging,
+            appMode: appMode,
+            thinkingSelection: thinkingSelection,
+            preserveThinking: preserveThinking
+        )
+    }
 }
 
 extension AgentCoreSessionConfiguration: Equatable {

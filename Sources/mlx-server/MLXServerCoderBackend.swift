@@ -228,6 +228,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         let splitMessages = Self.snapshotMessages(from: session.messages)
         return AgentRuntimeSessionSnapshot(
             sessionID: id,
+            modelID: model.id,
             workingDirectoryPath: session.cwd.path,
             systemPrompt: splitMessages.systemPrompt,
             cacheKey: session.cacheKey,

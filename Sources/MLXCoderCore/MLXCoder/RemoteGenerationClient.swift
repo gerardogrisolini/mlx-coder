@@ -185,6 +185,7 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
         let splitMessages = Self.snapshotMessages(from: session.messages)
         return AgentRuntimeSessionSnapshot(
             sessionID: id,
+            modelID: configuration.modelID ?? provider.modelID,
             workingDirectoryPath: session.cwd.path,
             systemPrompt: splitMessages.systemPrompt ?? session.systemPrompt,
             cacheKey: session.cacheKey,

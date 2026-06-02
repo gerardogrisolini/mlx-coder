@@ -163,7 +163,7 @@ extension MLXCoderACPBridge {
             )
             return PromptCompletion(
                 text: response.text,
-                stopReason: response.stopReason
+                stopReason: Self.acpStopReason(response.stopReason)
             )
         }
 
@@ -195,6 +195,27 @@ extension MLXCoderACPBridge {
             await persistSessionSnapshotIfAvailable(sessionID: sessionID)
             sessions[sessionID]?.activePromptTask = nil
             throw error
+        }
+    }
+
+    public static func acpStopReason(_ value: String?) -> String {
+        switch value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() {
+        case "end_turn", "endturn":
+            return "end_turn"
+        case "max_tokens", "max_output_tokens", "length":
+            return "max_tokens"
+        case "max_turn_requests", "tool_round_limit", "too_many_tool_rounds":
+            return "max_turn_requests"
+        case "refusal", "content_filter", "safety":
+            return "refusal"
+        case "cancelled", "canceled", "cancel":
+            return "cancelled"
+        case "stop", "completed", "complete", "done", "tool_calls", "function_call", nil, "":
+            return "end_turn"
+        default:
+            return "end_turn"
         }
     }
 

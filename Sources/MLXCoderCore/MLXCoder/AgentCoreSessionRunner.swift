@@ -253,6 +253,7 @@ public actor AgentCoreSessionRunner {
         }
         return AgentRuntimeSessionSnapshot(
             sessionID: configuration.sessionID,
+            modelID: configuration.modelID,
             workingDirectoryPath: configuration.workingDirectoryPath,
             systemPrompt: configuration.systemPrompt,
             cacheKey: configuration.cacheKey,
@@ -652,6 +653,7 @@ private actor AgentCorePromptTurnRecorder {
         }
         return AgentRuntimeSessionSnapshot(
             sessionID: initialSnapshot.sessionID,
+            modelID: initialSnapshot.modelID,
             workingDirectoryPath: initialSnapshot.workingDirectoryPath,
             systemPrompt: initialSnapshot.systemPrompt,
             cacheKey: initialSnapshot.cacheKey,
@@ -707,6 +709,7 @@ private extension AgentRuntimeSessionSnapshot {
     init(configuration: AgentCoreSessionConfiguration) {
         self.init(
             sessionID: configuration.sessionID,
+            modelID: configuration.modelID,
             workingDirectoryPath: configuration.workingDirectoryPath,
             systemPrompt: configuration.systemPrompt,
             cacheKey: configuration.cacheKey,
@@ -742,7 +745,7 @@ private extension AgentCoreSessionConfiguration {
     ) -> AgentCoreSessionConfiguration {
         AgentCoreSessionConfiguration(
             sessionID: snapshot.sessionID,
-            modelID: modelID,
+            modelID: snapshot.modelID ?? modelID,
             bearerToken: bearerToken,
             workingDirectory: URL(fileURLWithPath: snapshot.workingDirectoryPath),
             systemPrompt: snapshot.systemPrompt,

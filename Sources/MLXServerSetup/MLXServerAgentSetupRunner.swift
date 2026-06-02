@@ -184,7 +184,7 @@ public enum MLXServerAgentSetupRunner {
             FileHandle.standardError.writeString(
                 """
                 Aion UI is installed, but it is not running.
-                Open Aion UI, then run `mlx-server --setup-agents` again to register mlx-coder and mlx-server + mlx-coder.
+                Open Aion UI, then run `mlx-server --setup-agents` again to register mlx-coder and mlx-server-coder.
                 """
             )
             return

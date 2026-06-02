@@ -202,7 +202,10 @@ extension RemoteGenerationClient {
             }
 
             if role != "tool" {
-                let contentItems = responsesContentItems(from: message["content"])
+                let contentItems = responsesContentItems(
+                    from: message["content"],
+                    role: role
+                )
                 if !contentItems.isEmpty {
                     input.append(
                         responsesMessagePayload(
@@ -250,7 +253,11 @@ extension RemoteGenerationClient {
         ]
     }
 
-    public static func responsesContentItems(from value: Any?) -> [[String: Any]] {
+    public static func responsesContentItems(
+        from value: Any?,
+        role: String = "user"
+    ) -> [[String: Any]] {
+        let textType = responsesTextContentType(forRole: role)
         if let text = value as? String {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
@@ -258,7 +265,7 @@ extension RemoteGenerationClient {
             }
             return [
                 [
-                    "type": "input_text",
+                    "type": textType,
                     "text": trimmed
                 ]
             ]
@@ -271,23 +278,28 @@ extension RemoteGenerationClient {
         return items.compactMap { item in
             let type = stringValue(item["type"])?.lowercased()
             switch type {
-            case "input_text":
+            case "input_text", "output_text", "text":
                 guard let text = stringValue(item["text"])?.nilIfBlank else {
                     return nil
                 }
                 return [
-                    "type": "input_text",
+                    "type": textType,
                     "text": text
                 ]
-            case "text":
-                guard let text = stringValue(item["text"])?.nilIfBlank else {
+            case "refusal":
+                guard textType == "output_text",
+                      let refusal = stringValue(item["refusal"])?.nilIfBlank
+                          ?? stringValue(item["text"])?.nilIfBlank else {
                     return nil
                 }
                 return [
-                    "type": "input_text",
-                    "text": text
+                    "type": "refusal",
+                    "refusal": refusal
                 ]
             case "input_image":
+                guard textType == "input_text" else {
+                    return nil
+                }
                 guard let imageURL = stringValue(item["image_url"])?.nilIfBlank else {
                     return nil
                 }
@@ -296,6 +308,9 @@ extension RemoteGenerationClient {
                     "image_url": imageURL
                 ]
             case "image_url":
+                guard textType == "input_text" else {
+                    return nil
+                }
                 guard let imageURL = chatCompletionsImageURL(from: item)?.nilIfBlank else {
                     return nil
                 }
@@ -307,6 +322,11 @@ extension RemoteGenerationClient {
                 return nil
             }
         }
+    }
+
+    public static func responsesTextContentType(forRole role: String) -> String {
+        role.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "assistant" ? "output_text" : "input_text"
     }
 
     public static func responseFunctionCallPayload(

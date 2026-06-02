@@ -136,6 +136,7 @@ public struct AgentRuntimeMessage: Codable, Equatable, Sendable {
 
 public struct AgentRuntimeSessionSnapshot: Sendable {
     public let sessionID: String
+    public let modelID: String?
     public let workingDirectoryPath: String
     public let systemPrompt: String?
     public let cacheKey: String?
@@ -146,6 +147,7 @@ public struct AgentRuntimeSessionSnapshot: Sendable {
 
     public init(
         sessionID: String,
+        modelID: String? = nil,
         workingDirectoryPath: String,
         systemPrompt: String?,
         cacheKey: String?,
@@ -155,6 +157,7 @@ public struct AgentRuntimeSessionSnapshot: Sendable {
         preserveThinking: Bool
     ) {
         self.sessionID = sessionID.nilIfBlank ?? "agent-core-\(UUID().uuidString.lowercased())"
+        self.modelID = modelID?.nilIfBlank
         self.workingDirectoryPath = workingDirectoryPath
         self.systemPrompt = systemPrompt?.nilIfBlank
         self.cacheKey = cacheKey?.nilIfBlank

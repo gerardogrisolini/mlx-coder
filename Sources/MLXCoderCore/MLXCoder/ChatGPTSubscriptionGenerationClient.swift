@@ -374,6 +374,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         )
         return AgentRuntimeSessionSnapshot(
             sessionID: id,
+            modelID: configuration.modelID,
             workingDirectoryPath: session.cwd,
             systemPrompt: splitMessages.systemPrompt ?? session.systemPrompt,
             cacheKey: session.cacheKey,

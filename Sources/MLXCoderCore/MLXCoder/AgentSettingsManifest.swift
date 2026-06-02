@@ -14,7 +14,6 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
         case models
         case selected
         case remoteAPIKeysByProviderID
-        case telegram
     }
 
     public static let currentVersion = 6
@@ -26,7 +25,6 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
     public let selectedModelID: String?
     public let selectedThinkingSelection: AgentThinkingSelection?
     public let remoteAPIKeysByProviderID: [String: String]
-    public let telegramBotToken: String?
 
     public init(
         version: Int = Self.currentVersion,
@@ -34,8 +32,7 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
         models: [AgentSettingsModelManifest],
         selectedModelID: String? = nil,
         selectedThinkingSelection: AgentThinkingSelection? = nil,
-        remoteAPIKeysByProviderID: [String: String] = [:],
-        telegramBotToken: String? = nil
+        remoteAPIKeysByProviderID: [String: String] = [:]
     ) {
         let normalizedProviders = Self.normalizedProviders(
             providers,
@@ -60,7 +57,6 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
             remoteAPIKeysByProviderID,
             models: normalizedModels
         )
-        self.telegramBotToken = telegramBotToken?.nilIfBlank
     }
 
     public init(from decoder: Decoder) throws {
@@ -83,11 +79,7 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
             remoteAPIKeysByProviderID: try container.decodeIfPresent(
                 [String: String].self,
                 forKey: .remoteAPIKeysByProviderID
-            ) ?? [:],
-            telegramBotToken: try container.decodeIfPresent(
-                AgentTelegramSettingsManifest.self,
-                forKey: .telegram
-            )?.botToken
+            ) ?? [:]
         )
     }
 
@@ -108,10 +100,6 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
         if !remoteAPIKeysByProviderID.isEmpty {
             try container.encode(remoteAPIKeysByProviderID, forKey: .remoteAPIKeysByProviderID)
         }
-        let telegram = AgentTelegramSettingsManifest(botToken: telegramBotToken)
-        if !telegram.isEmpty {
-            try container.encode(telegram, forKey: .telegram)
-        }
     }
 
     public var isEmpty: Bool {
@@ -120,19 +108,6 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
             && selectedModelID == nil
             && selectedThinkingSelection == nil
             && remoteAPIKeysByProviderID.isEmpty
-            && telegramBotToken == nil
-    }
-
-    public func withTelegramBotToken(_ token: String?) -> AgentSettingsManifest {
-        AgentSettingsManifest(
-            version: version,
-            providers: providers,
-            models: models,
-            selectedModelID: selectedModelID,
-            selectedThinkingSelection: selectedThinkingSelection,
-            remoteAPIKeysByProviderID: remoteAPIKeysByProviderID,
-            telegramBotToken: token
-        )
     }
 
     private static func normalizedModels(
@@ -213,22 +188,6 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
             normalized[providerUUID.uuidString.lowercased()] = normalizedAPIKey
         }
         return normalized
-    }
-}
-
-public struct AgentTelegramSettingsManifest: Codable, Equatable, Sendable {
-    private enum CodingKeys: String, CodingKey {
-        case botToken
-    }
-
-    public let botToken: String?
-
-    public init(botToken: String? = nil) {
-        self.botToken = botToken?.nilIfBlank
-    }
-
-    public var isEmpty: Bool {
-        botToken == nil
     }
 }
 

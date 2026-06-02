@@ -165,6 +165,7 @@ public actor AgentCoreBackend {
         }
         return AgentRuntimeSessionSnapshot(
             sessionID: sessionID,
+            modelID: configuration.modelID,
             workingDirectoryPath: seed.cwd,
             systemPrompt: seed.systemPrompt,
             cacheKey: seed.cacheKey,

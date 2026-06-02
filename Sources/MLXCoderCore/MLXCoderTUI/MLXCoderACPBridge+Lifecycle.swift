@@ -43,9 +43,10 @@ extension MLXCoderACPBridge {
     }
 
     public func preloadModel(id: JSONValue?, params: [String: Any]) async throws {
-        _ = params
+        let preloadConfiguration = defaultSessionConfiguration(sessionID: "preload")
+            .withModelID(Self.modelID(from: params) ?? configuration.effectiveModelID)
         let modelID = try await sessionRunner.preloadModel(
-            configuration: defaultSessionConfiguration(sessionID: "preload")
+            configuration: preloadConfiguration
         ) { _ in }
         await writer.sendResultIfRequest(
             id: id,
@@ -57,6 +58,8 @@ extension MLXCoderACPBridge {
         let rawCwd = Self.workingDirectory(from: params)
             ?? configuration.workingDirectory.path
         let cwd = AgentConfiguration.resolvedWorkingDirectory(rawValue: rawCwd).path
+        let modelID = Self.modelID(from: params)
+            ?? configuration.effectiveModelID
 
         let sessionID = "swiftmlx-\(UUID().uuidString.lowercased())"
         let cacheKey = (params["sessionKey"] as? String)
@@ -72,7 +75,7 @@ extension MLXCoderACPBridge {
         let preserveThinking = (params["preserveThinking"] as? Bool) ?? false
         let configuration = AgentCoreSessionConfiguration(
             sessionID: sessionID,
-            modelID: self.configuration.effectiveModelID,
+            modelID: modelID,
             bearerToken: self.configuration.bearerToken,
             workingDirectory: cwd,
             systemPrompt: systemPrompt,
@@ -128,6 +131,67 @@ extension MLXCoderACPBridge {
                 "modeId": normalizedModeID
             ])
         )
+    }
+
+    public func setConfigOption(id: JSONValue?, params: [String: Any]) async throws {
+        guard let sessionID = Self.sessionID(from: params),
+              let session = sessions[sessionID] else {
+            throw ACPError.invalidParams("Unknown or missing sessionId.")
+        }
+        guard session.activePromptTask == nil else {
+            throw ACPError.invalidParams("Cannot change session options while a prompt is running.")
+        }
+
+        guard let configID = Self.configOptionID(from: params) else {
+            throw ACPError.invalidParams("Missing configId.")
+        }
+        guard let value = Self.configOptionValue(from: params) else {
+            throw ACPError.invalidParams("Missing config option value.")
+        }
+        guard configID == "model" else {
+            throw ACPError.invalidParams("Unsupported config option: \(configID)")
+        }
+        let availableModels = modelConfigOptions()
+        guard availableModels.contains(where: { option in
+            (option["value"] as? String) == value
+        }) else {
+            throw ACPError.invalidParams("Unsupported model: \(value)")
+        }
+
+        let updatedConfiguration = session.configuration.withModelID(value)
+        sessions[sessionID] = sessionState(configuration: updatedConfiguration)
+        try await sessionRunner.createSession(configuration: updatedConfiguration)
+        await persistSessionSnapshotIfAvailable(sessionID: sessionID)
+        await writer.sendResultIfRequest(
+            id: id,
+            result: JSONValue.acpValue(from: [
+                "configOptions": configOptions(for: updatedConfiguration.modelID)
+            ])
+        )
+    }
+
+    public func setModel(id: JSONValue?, params: [String: Any]) async throws {
+        guard let sessionID = Self.sessionID(from: params),
+              let session = sessions[sessionID] else {
+            throw ACPError.invalidParams("Unknown or missing sessionId.")
+        }
+        guard session.activePromptTask == nil else {
+            throw ACPError.invalidParams("Cannot change session model while a prompt is running.")
+        }
+        guard let modelID = Self.modelID(from: params) else {
+            throw ACPError.invalidParams("Missing modelId.")
+        }
+        guard modelConfigOptions().contains(where: { option in
+            (option["value"] as? String) == modelID
+        }) else {
+            throw ACPError.invalidParams("Unsupported model: \(modelID)")
+        }
+
+        let updatedConfiguration = session.configuration.withModelID(modelID)
+        sessions[sessionID] = sessionState(configuration: updatedConfiguration)
+        try await sessionRunner.createSession(configuration: updatedConfiguration)
+        await persistSessionSnapshotIfAvailable(sessionID: sessionID)
+        await writer.sendResultIfRequest(id: id, result: .object([:]))
     }
 
     public func restoreSession(
@@ -190,6 +254,48 @@ extension MLXCoderACPBridge {
         return nil
     }
 
+    public static func configOptionID(from params: [String: Any]) -> String? {
+        (params["configId"] as? String)?.nilIfBlank
+            ?? (params["configID"] as? String)?.nilIfBlank
+            ?? (params["config_id"] as? String)?.nilIfBlank
+            ?? (params["id"] as? String)?.nilIfBlank
+    }
+
+    public static func configOptionValue(from params: [String: Any]) -> String? {
+        if let value = (params["value"] as? String)?.nilIfBlank
+            ?? (params["currentValue"] as? String)?.nilIfBlank
+            ?? (params["current_value"] as? String)?.nilIfBlank {
+            return value
+        }
+        if let option = params["option"] as? [String: Any] {
+            return (option["value"] as? String)?.nilIfBlank
+                ?? (option["id"] as? String)?.nilIfBlank
+        }
+        return nil
+    }
+
+    public static func modelID(from params: [String: Any]) -> String? {
+        if let value = (params["modelId"] as? String)?.nilIfBlank
+            ?? (params["modelID"] as? String)?.nilIfBlank
+            ?? (params["model_id"] as? String)?.nilIfBlank
+            ?? (params["currentModelId"] as? String)?.nilIfBlank
+            ?? (params["current_model_id"] as? String)?.nilIfBlank
+            ?? (params["model"] as? String)?.nilIfBlank {
+            return value
+        }
+        if let config = params["config"] as? [String: Any],
+           let value = (config["model"] as? String)?.nilIfBlank
+               ?? (config["modelId"] as? String)?.nilIfBlank
+               ?? (config["model_id"] as? String)?.nilIfBlank {
+            return value
+        }
+        if let models = params["models"] as? [String: Any] {
+            return (models["currentModelId"] as? String)?.nilIfBlank
+                ?? (models["current_model_id"] as? String)?.nilIfBlank
+        }
+        return nil
+    }
+
     private func defaultSessionConfiguration(
         sessionID: String
     ) -> AgentCoreSessionConfiguration {
@@ -211,7 +317,9 @@ extension MLXCoderACPBridge {
     }
 
     public func sessionLifecycleResult(sessionID: String) -> [String: Any] {
-        [
+        let modelID = sessions[sessionID]?.configuration.modelID
+            ?? configuration.effectiveModelID
+        return [
             "sessionId": sessionID,
             "modes": [
                 "availableModes": [
@@ -228,7 +336,58 @@ extension MLXCoderACPBridge {
                 ],
                 "currentModeId": "default"
             ],
-            "configOptions": []
+            "configOptions": configOptions(for: modelID),
+            "models": modelState(for: modelID)
+        ]
+    }
+
+    public func configOptions(for modelID: String?) -> [[String: Any]] {
+        let modelOptions = modelConfigOptions()
+        guard !modelOptions.isEmpty else {
+            return []
+        }
+        let selectedModelID = modelID?.nilIfBlank
+            ?? configuration.effectiveModelID?.nilIfBlank
+            ?? (modelOptions.first?["value"] as? String)
+            ?? ""
+        return [
+            [
+                "id": "model",
+                "name": "Model",
+                "category": "model",
+                "type": "select",
+                "currentValue": selectedModelID,
+                "options": modelOptions
+            ]
+        ]
+    }
+
+    public func modelConfigOptions() -> [[String: Any]] {
+        let models = configuration.hostedModels ?? AgentSettingsStore.availableModels()
+        return models.map { model in
+            [
+                "value": model.id,
+                "name": model.displayTitle,
+                "description": model.modelID
+            ]
+        }
+    }
+
+    public func modelState(for modelID: String?) -> [String: Any] {
+        let modelOptions = modelConfigOptions()
+        let selectedModelID = modelID?.nilIfBlank
+            ?? configuration.effectiveModelID?.nilIfBlank
+            ?? (modelOptions.first?["value"] as? String)
+            ?? ""
+        return [
+            "currentModelId": selectedModelID,
+            "availableModels": modelOptions.map { option in
+                [
+                    "modelId": option["value"] as? String ?? "",
+                    "name": option["name"] as? String ?? "",
+                    "description": option["description"] as? String ?? ""
+                ]
+            }
         ]
     }
 
@@ -250,7 +409,7 @@ extension MLXCoderACPBridge {
     ) -> AgentCoreSessionConfiguration {
         AgentCoreSessionConfiguration(
             sessionID: snapshot.sessionID,
-            modelID: configuration.effectiveModelID,
+            modelID: snapshot.modelID ?? configuration.effectiveModelID,
             bearerToken: configuration.bearerToken,
             workingDirectory: snapshot.workingDirectoryPath,
             systemPrompt: snapshot.systemPrompt,

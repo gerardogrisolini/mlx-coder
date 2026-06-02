@@ -12,6 +12,7 @@ public struct MLXCoderACPSavedSession: Codable, Equatable, Sendable {
     public let sessionID: String
     public let workingDirectoryPath: String
     public let savedAt: Date
+    public let modelID: String?
     public let systemPrompt: String?
     public let cacheKey: String?
     public let history: [AgentRuntimeMessage]
@@ -24,6 +25,7 @@ public struct MLXCoderACPSavedSession: Codable, Equatable, Sendable {
         sessionID: String,
         workingDirectoryPath: String,
         savedAt: Date,
+        modelID: String? = nil,
         systemPrompt: String?,
         cacheKey: String?,
         history: [AgentRuntimeMessage],
@@ -37,6 +39,7 @@ public struct MLXCoderACPSavedSession: Codable, Equatable, Sendable {
             .standardizedFileURL
             .path
         self.savedAt = savedAt
+        self.modelID = modelID?.nilIfBlank
         self.systemPrompt = systemPrompt?.nilIfBlank
         self.cacheKey = cacheKey?.nilIfBlank
         self.history = history
@@ -50,6 +53,7 @@ public struct MLXCoderACPSavedSession: Codable, Equatable, Sendable {
             sessionID: snapshot.sessionID,
             workingDirectoryPath: snapshot.workingDirectoryPath,
             savedAt: savedAt,
+            modelID: snapshot.modelID,
             systemPrompt: snapshot.systemPrompt,
             cacheKey: snapshot.cacheKey,
             history: snapshot.history,
@@ -62,6 +66,7 @@ public struct MLXCoderACPSavedSession: Codable, Equatable, Sendable {
     public var snapshot: AgentRuntimeSessionSnapshot {
         AgentRuntimeSessionSnapshot(
             sessionID: sessionID,
+            modelID: modelID,
             workingDirectoryPath: workingDirectoryPath,
             systemPrompt: systemPrompt,
             cacheKey: cacheKey,

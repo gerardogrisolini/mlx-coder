@@ -29,12 +29,11 @@ public struct AgentConfiguration: Sendable {
     Autonomous mlx-coder CLI and ACP agent.
 
     Usage:
-      mlx-coder [--acp] [--telegram] [--agent NAME] [--model MODEL_ID] [--cwd PATH] [--skills LIST]
+      mlx-coder [--acp] [--agent NAME] [--model MODEL_ID] [--cwd PATH] [--skills LIST]
 
     Modes:
       default                Human terminal chat.
-      --acp                  ACP JSON-RPC over stdio for clients such as AionUi.
-      --telegram             Telegram remote-control process. Uses the token configured by mlx-coder --setup.
+      --acp                  ACP JSON-RPC over stdio for clients such as Aion UI.
 
     Agent runtime:
       --agent NAME           Agent profile from ~/.mlx-coder/agents.json. Default is used when omitted.
