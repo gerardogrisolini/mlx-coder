@@ -5,6 +5,66 @@ import Testing
 @Suite
 struct ACPCompatibilityTests {
     @Test
+    func sessionIDAcceptsACPAndSnakeCaseKeys() {
+        #expect(MLXCoderACPBridge.sessionID(from: ["sessionId": "abc"]) == "abc")
+        #expect(MLXCoderACPBridge.sessionID(from: ["session_id": "def"]) == "def")
+        #expect(MLXCoderACPBridge.sessionID(from: ["id": "ghi"]) == "ghi")
+        #expect(MLXCoderACPBridge.sessionID(from: ["sessionId": "   "]) == nil)
+    }
+
+    @Test
+    func acpSessionStoreRoundTripsRuntimeSnapshot() throws {
+        let supportURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-acp-session-store-\(UUID().uuidString)", isDirectory: true)
+        let workspaceURL = supportURL.appendingPathComponent("workspace", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: supportURL)
+        }
+        try FileManager.default.createDirectory(
+            at: workspaceURL,
+            withIntermediateDirectories: true
+        )
+
+        let snapshot = AgentRuntimeSessionSnapshot(
+            sessionID: "swiftmlx-session-1",
+            workingDirectoryPath: workspaceURL.path,
+            systemPrompt: "System",
+            cacheKey: "cache",
+            history: [
+                AgentRuntimeMessage(role: .user, content: "Hello"),
+                AgentRuntimeMessage(
+                    role: .assistant,
+                    content: "Hi",
+                    reasoningContent: "Thinking"
+                )
+            ],
+            allowedToolNames: ["local.readFile", "local.exec"],
+            thinkingSelection: .medium,
+            preserveThinking: true
+        )
+
+        let fileURL = try MLXCoderACPSessionStore.save(
+            snapshot,
+            supportDirectoryURL: supportURL
+        )
+        #expect(fileURL.pathExtension == MLXCoderACPSessionStore.fileExtension)
+
+        let loadedSnapshot = try MLXCoderACPSessionStore.load(
+            sessionID: snapshot.sessionID,
+            workingDirectory: workspaceURL,
+            supportDirectoryURL: supportURL
+        )
+        #expect(loadedSnapshot?.sessionID == snapshot.sessionID)
+        #expect(loadedSnapshot?.workingDirectoryPath == snapshot.workingDirectoryPath)
+        #expect(loadedSnapshot?.systemPrompt == snapshot.systemPrompt)
+        #expect(loadedSnapshot?.cacheKey == snapshot.cacheKey)
+        #expect(loadedSnapshot?.history == snapshot.history)
+        #expect(loadedSnapshot?.allowedToolNames == snapshot.allowedToolNames)
+        #expect(loadedSnapshot?.thinkingSelection == snapshot.thinkingSelection)
+        #expect(loadedSnapshot?.preserveThinking == snapshot.preserveThinking)
+    }
+
+    @Test
     func toolCallUpdatesUseACPv1WireKeys() throws {
         let toolCall = DirectAgentToolCall(
             id: "call_001",

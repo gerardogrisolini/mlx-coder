@@ -113,12 +113,10 @@ public actor MLXCoderACPBridge {
                 try await cancel(id: id, params: objectParams(from: message))
             case "session/close":
                 try await close(id: id, params: objectParams(from: message))
-            case "session/load", "session/resume":
-                await writer.sendErrorIfRequest(
-                    id: id,
-                    code: -32601,
-                    message: "\(method) is not supported by mlx-coder yet."
-                )
+            case "session/load":
+                try await loadSession(id: id, params: objectParams(from: message))
+            case "session/resume":
+                try await resumeSession(id: id, params: objectParams(from: message))
             default:
                 await writer.sendErrorIfRequest(
                     id: id,

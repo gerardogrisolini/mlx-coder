@@ -49,6 +49,7 @@ public enum MLXServerModelSetupRunner {
                 manifest = try MLXServerModelsManifestStore.loadRequired(from: modelsURL)
                 refreshExistingModelRuntimeKinds(in: &manifest)
                 printExistingModels(manifest)
+                try removeConfiguredModelsIfRequested(in: &manifest)
                 try reconfigureExistingModelsIfRequested(in: &manifest)
             } catch {
                 let shouldOverwrite = try promptYesNo(
@@ -145,6 +146,101 @@ public enum MLXServerModelSetupRunner {
                 in: &manifest
             )
         }
+    }
+
+    private static func removeConfiguredModelsIfRequested(
+        in manifest: inout MLXServerModelsManifest
+    ) throws {
+        guard !manifest.models.isEmpty else {
+            return
+        }
+        guard try promptYesNo(
+            "Remove configured models from models.json?",
+            defaultValue: false
+        ) else {
+            return
+        }
+
+        while !manifest.models.isEmpty {
+            printModelRemovalChoices(manifest)
+            let selection = try promptString(
+                "Model to remove (number or id, empty to stop)",
+                defaultValue: nil,
+                allowEmpty: true
+            ).trimmedNonEmpty
+            guard let selection else {
+                return
+            }
+            guard let index = modelIndex(matching: selection, in: manifest.models) else {
+                FileHandle.standardError.writeString("Invalid model selection.\n")
+                continue
+            }
+
+            let model = manifest.models[index]
+            guard try promptYesNo(
+                "Remove \(model.id) from models.json and delete cached files?",
+                defaultValue: false
+            ) else {
+                continue
+            }
+
+            try removeCachedModelFiles(for: model)
+            manifest.models.remove(at: index)
+            refreshDefaultModel(in: &manifest)
+            FileHandle.standardError.writeString("Removed: \(model.id)\n")
+
+            guard !manifest.models.isEmpty else {
+                FileHandle.standardError.writeString("No configured models remain.\n\n")
+                return
+            }
+            guard try promptYesNo("Remove another model?", defaultValue: false) else {
+                FileHandle.standardError.writeString("\n")
+                return
+            }
+        }
+    }
+
+    private static func removeCachedModelFiles(
+        for model: MLXServerModelRecord,
+        cache: HubCache = MLXServerHuggingFaceCacheAccessStore.cache,
+        fileManager: FileManager = .default
+    ) throws {
+        guard let repoID = Repo.ID(rawValue: model.repositoryID) else {
+            FileHandle.standardError.writeString(
+                "Skipped cache removal for invalid repository id: \(model.repositoryID)\n"
+            )
+            return
+        }
+
+        let urls = cachedModelRemovalURLs(repoID: repoID, cache: cache)
+        var removedAny = false
+        for url in urls {
+            guard fileManager.fileExists(atPath: url.path) else {
+                continue
+            }
+            try fileManager.removeItem(at: url)
+            removedAny = true
+        }
+
+        if removedAny {
+            FileHandle.standardError.writeString("Removed cached files for \(model.repositoryID)\n")
+        } else {
+            FileHandle.standardError.writeString("No cached files found for \(model.repositoryID)\n")
+        }
+    }
+
+    private static func cachedModelRemovalURLs(
+        repoID: Repo.ID,
+        cache: HubCache
+    ) -> [URL] {
+        let repositoryURL = cache.repoDirectory(repo: repoID, kind: .model)
+        let metadataURL = cache.metadataDirectory(repo: repoID, kind: .model)
+        return [
+            repositoryURL,
+            metadataURL,
+            cache.lockPath(for: repositoryURL),
+            cache.lockPath(for: metadataURL)
+        ]
     }
 
     private static func importCachedModelsIfRequested(into manifest: inout MLXServerModelsManifest) throws {
@@ -741,6 +837,32 @@ public enum MLXServerModelSetupRunner {
         }
     }
 
+    private static func refreshDefaultModel(in manifest: inout MLXServerModelsManifest) {
+        if let defaultModelID = manifest.defaultModelID,
+           manifest.models.contains(where: { $0.id == defaultModelID }) {
+            return
+        }
+        manifest.defaultModelID = preferredDefaultModelID(in: manifest)
+    }
+
+    private static func preferredDefaultModelID(in manifest: MLXServerModelsManifest) -> String? {
+        manifest.models.first(where: \.enabled)?.id
+            ?? manifest.models.first?.id
+    }
+
+    private static func modelIndex(
+        matching selection: String,
+        in models: [MLXServerModelRecord]
+    ) -> Int? {
+        if let numericSelection = Int(selection),
+           models.indices.contains(numericSelection - 1) {
+            return numericSelection - 1
+        }
+        return models.firstIndex {
+            $0.id == selection || $0.repositoryID == selection
+        }
+    }
+
     private static func updateDefaultModel(
         afterAdding record: MLXServerModelRecord,
         in manifest: inout MLXServerModelsManifest
@@ -857,6 +979,17 @@ public enum MLXServerModelSetupRunner {
         for model in manifest.models {
             let marker = model.id == manifest.defaultModelID ? "*" : " "
             FileHandle.standardError.writeString("\(marker) \(model.id) -> \(model.repositoryID)\n")
+        }
+        FileHandle.standardError.writeString("\n")
+    }
+
+    private static func printModelRemovalChoices(_ manifest: MLXServerModelsManifest) {
+        FileHandle.standardError.writeString("\nConfigured models:\n")
+        for (index, model) in manifest.models.enumerated() {
+            let marker = model.id == manifest.defaultModelID ? " *" : ""
+            FileHandle.standardError.writeString(
+                "\(index + 1). \(model.id)\(marker) -> \(model.repositoryID)\n"
+            )
         }
         FileHandle.standardError.writeString("\n")
     }

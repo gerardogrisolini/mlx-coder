@@ -13,7 +13,7 @@ import Foundation
 
 extension MLXCoderACPBridge {
     public func prompt(id: JSONValue?, params: [String: Any]) async throws {
-        guard let sessionID = params["sessionId"] as? String,
+        guard let sessionID = Self.sessionID(from: params),
               var session = sessions[sessionID] else {
             throw ACPError.invalidParams("Unknown or missing sessionId.")
         }
@@ -173,6 +173,7 @@ extension MLXCoderACPBridge {
         do {
             let completion = try await activePromptTask.value
             await flushPromptUpdates()
+            await persistSessionSnapshotIfAvailable(sessionID: sessionID)
             var refreshedSession = sessions[sessionID] ?? session
             refreshedSession.activePromptTask = nil
             sessions[sessionID] = refreshedSession
@@ -183,6 +184,7 @@ extension MLXCoderACPBridge {
             )
         } catch is CancellationError {
             await flushPromptUpdates()
+            await persistSessionSnapshotIfAvailable(sessionID: sessionID)
             sessions[sessionID]?.activePromptTask = nil
             await writer.sendResultIfRequest(
                 id: id,
@@ -190,13 +192,14 @@ extension MLXCoderACPBridge {
             )
         } catch {
             await flushPromptUpdates()
+            await persistSessionSnapshotIfAvailable(sessionID: sessionID)
             sessions[sessionID]?.activePromptTask = nil
             throw error
         }
     }
 
     public func cancel(id: JSONValue?, params: [String: Any]) async throws {
-        guard let sessionID = params["sessionId"] as? String,
+        guard let sessionID = Self.sessionID(from: params),
               var session = sessions[sessionID] else {
             throw ACPError.invalidParams("Unknown or missing sessionId.")
         }
@@ -207,10 +210,11 @@ extension MLXCoderACPBridge {
     }
 
     public func close(id: JSONValue?, params: [String: Any]) async throws {
-        guard let sessionID = params["sessionId"] as? String else {
+        guard let sessionID = Self.sessionID(from: params) else {
             throw ACPError.invalidParams("session/close requires params.sessionId.")
         }
         sessions[sessionID]?.activePromptTask?.cancel()
+        await persistSessionSnapshotIfAvailable(sessionID: sessionID)
         sessions.removeValue(forKey: sessionID)
         await sessionRunner.closeSession(id: sessionID)
         await writer.sendResultIfRequest(id: id, result: .object([:]))

@@ -251,7 +251,7 @@ public enum MLXServerAgentIntegrationService {
         if let resolvedCoderURL {
             customAgents.append(
                 AionUICustomAgentDefinition(
-                    name: "MLX Coder",
+                    name: "mlx-coder",
                     command: resolvedCoderURL.path,
                     args: ["--acp"]
                 )
@@ -259,20 +259,20 @@ public enum MLXServerAgentIntegrationService {
             extensionAdapters.append(
                 AionUIACPAdapterDefinition(
                     id: "mlx-coder",
-                    name: "MLX Coder",
-                    description: "MLX Coder ACP adapter",
+                    name: "mlx-coder",
+                    description: "mlx-coder ACP adapter.",
                     command: resolvedCoderURL.path,
                     args: ["--acp"]
                 )
             )
         } else {
-            skippedCustomAgents.append("MLX Coder (mlx-coder executable not found)")
+            skippedCustomAgents.append("mlx-coder (mlx-coder executable not found)")
         }
 
         if let resolvedServerURL {
             customAgents.append(
                 AionUICustomAgentDefinition(
-                    name: "MLX Server Coder",
+                    name: "mlx-server + mlx-coder",
                     command: resolvedServerURL.path,
                     args: ["--coder", "--acp"]
                 )
@@ -280,14 +280,14 @@ public enum MLXServerAgentIntegrationService {
             extensionAdapters.append(
                 AionUIACPAdapterDefinition(
                     id: "mlx-server-coder",
-                    name: "MLX Server Coder",
-                    description: "MLX Server local ACP adapter",
+                    name: "mlx-server + mlx-coder",
+                    description: "mlx-server local ACP adapter for mlx-coder.",
                     command: resolvedServerURL.path,
                     args: ["--coder", "--acp"]
                 )
             )
         } else {
-            skippedCustomAgents.append("MLX Server Coder (mlx-server executable not found)")
+            skippedCustomAgents.append("mlx-server + mlx-coder (mlx-server executable not found)")
         }
 
         guard !customAgents.isEmpty else {
@@ -311,7 +311,7 @@ public enum MLXServerAgentIntegrationService {
             fileManager: fileManager
         )
         let channelConfiguration = try configureAionUIEnabledChannelAgents(
-            preferredAgentName: "MLX Coder",
+            preferredAgentName: "mlx-coder",
             extensionAdapters: extensionAdapters,
             baseURL: baseURL,
             homeDirectory: homeDirectory,
@@ -708,7 +708,7 @@ private extension MLXServerAgentIntegrationService {
             name: "aionext-mlx-server",
             displayName: "MLX Server",
             version: "0.1.0",
-            description: "Integrates MLX Coder and MLX Server Coder as ACP adapters in Aion UI.",
+            description: "Integrates mlx-coder and mlx-server + mlx-coder as ACP adapters in Aion UI.",
             author: "MLX Server",
             engine: AionUIExtensionEngine(aionui: "^2.0.0"),
             contributes: AionUIExtensionContributes(
@@ -787,6 +787,7 @@ private extension MLXServerAgentIntegrationService {
         var registeredAgents: [String] = []
         var updatedAgents: [String] = []
         var removedDuplicateAgents: [String] = []
+        let desiredAgentNames = Set(customAgents.map(\.name))
 
         for customAgent in customAgents {
             let matches = existingAgents.filter { agent in
@@ -797,6 +798,7 @@ private extension MLXServerAgentIntegrationService {
                 command: customAgent.command,
                 icon: "",
                 args: customAgent.args,
+                enabled: true,
                 env: [],
                 advanced: AionUICustomAgentAdvanced()
             )
@@ -820,6 +822,20 @@ private extension MLXServerAgentIntegrationService {
                 try deleteAionUICustomAgent(id: duplicateAgent.id, baseURL: baseURL)
                 removedDuplicateAgents.append(duplicateAgent.name)
             }
+        }
+
+        for staleAgent in existingAgents where staleAgent.agentSource == "custom"
+            && !desiredAgentNames.contains(staleAgent.name)
+            && (
+                staleAgent.name == "MLX Coder"
+                    || staleAgent.name == "MLX Server Coder"
+                    || staleAgent.name.hasPrefix("MLX Coder - ")
+                    || staleAgent.name.hasPrefix("MLX Server Coder - ")
+                    || staleAgent.name.hasPrefix("mlx-coder - ")
+                    || staleAgent.name.hasPrefix("mlx-server + mlx-coder - ")
+            ) {
+            try deleteAionUICustomAgent(id: staleAgent.id, baseURL: baseURL)
+            removedDuplicateAgents.append(staleAgent.name)
         }
 
         return AionUICustomAgentRegistrationResult(
@@ -867,6 +883,12 @@ private extension MLXServerAgentIntegrationService {
                 platform: platform,
                 customAgent: customAgent,
                 baseURL: baseURL
+            )
+            try persistAionUIChannelAgentPreference(
+                platform: platform,
+                customAgent: customAgent,
+                homeDirectory: homeDirectory,
+                fileManager: fileManager
             )
             try syncAionUIChannelSettings(platform: platform, baseURL: baseURL)
             updatedPlatforms.append(platform)
@@ -969,6 +991,55 @@ private extension MLXServerAgentIntegrationService {
         }
     }
 
+    static func persistAionUIChannelAgentPreference(
+        platform: String,
+        customAgent: AionUIAgent,
+        homeDirectory: URL,
+        fileManager: FileManager
+    ) throws {
+        let databaseURL = aionUIDatabaseURL(homeDirectory: homeDirectory)
+        guard fileManager.fileExists(atPath: databaseURL.path) else {
+            return
+        }
+
+        let preference = AionUIChannelAgentPreference(
+            agentType: "acp",
+            backend: "custom",
+            agentID: customAgent.id,
+            customAgentID: customAgent.id,
+            id: customAgent.id,
+            name: customAgent.name
+        )
+        let preferenceData = try JSONEncoder().encode(preference)
+        guard let preferenceJSON = String(data: preferenceData, encoding: .utf8) else {
+            throw MLXServerAgentIntegrationError.aionUIAPIRequestFailed(
+                "Could not encode Aion UI channel agent preference."
+            )
+        }
+
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let sql = """
+        INSERT INTO client_preferences (
+          key,
+          value,
+          updated_at
+        )
+        VALUES (
+          \(sqliteQuotedString("assistant.\(platform).agent")),
+          \(sqliteQuotedString(preferenceJSON)),
+          \(now)
+        )
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at;
+        """
+        _ = try runSQLite(
+            databaseURL: databaseURL,
+            sql: sql,
+            fileManager: fileManager
+        )
+    }
+
     static func syncAionUIChannelSettings(platform: String, baseURL: URL) throws {
         let response: AionUIAPIEnvelope<AionUIChannelSettingsSyncResponse> =
             try sendAionUIAPIRequest(
@@ -1009,17 +1080,20 @@ private extension MLXServerAgentIntegrationService {
 
         var preparedSessions: [String] = []
         for user in users {
-            let conversationID = stableAionUIID(
-                seed: "mlx-server:\(platform):\(user.id):\(customAgent.id)",
+            let existingConversationIDs = try aionUIChannelConversationIDs(
+                platform: platform,
+                platformUserID: user.platformUserID,
+                databaseURL: databaseURL,
+                fileManager: fileManager
+            )
+            let conversationID = existingConversationIDs.first ?? stableAionUIID(
+                seed: "mlx-server:\(platform):\(user.platformUserID):acp",
                 length: 8
             )
             let sessionID = stableAionUIUUID(
                 seed: "mlx-server-session:\(platform):\(user.id):\(customAgent.id)"
             )
-            let workspaceURL = aionUIDataDirectoryURL(homeDirectory: homeDirectory)
-                .appendingPathComponent("conversations", isDirectory: true)
-                .appendingPathComponent("custom-temp-\(conversationID)", isDirectory: true)
-                .standardizedFileURL
+            let workspaceURL = homeDirectory.standardizedFileURL
             try fileManager.createDirectory(
                 at: workspaceURL,
                 withIntermediateDirectories: true,
@@ -1044,6 +1118,43 @@ private extension MLXServerAgentIntegrationService {
                 platform: platform,
                 platformUserID: user.platformUserID
             )
+            let configuredConversationIDs = uniqueAionUIIDs(
+                [conversationID] + existingConversationIDs
+            )
+            let acpSessionSQL = configuredConversationIDs.map { configuredConversationID in
+                """
+                INSERT INTO acp_session (
+                  conversation_id,
+                  agent_backend,
+                  agent_source,
+                  agent_id,
+                  session_id,
+                  session_status,
+                  session_config,
+                  last_active_at
+                )
+                VALUES (
+                  \(sqliteQuotedString(configuredConversationID)),
+                  'custom',
+                  'builtin',
+                  \(sqliteQuotedString(customAgent.id)),
+                  NULL,
+                  'idle',
+                  '{}',
+                  \(now)
+                )
+                ON CONFLICT(conversation_id) DO UPDATE SET
+                  agent_backend = excluded.agent_backend,
+                  agent_source = excluded.agent_source,
+                  agent_id = excluded.agent_id,
+                  session_status = excluded.session_status,
+                  session_config = CASE
+                    WHEN acp_session.session_config = '' THEN '{}'
+                    ELSE acp_session.session_config
+                  END,
+                  last_active_at = excluded.last_active_at;
+                """
+            }.joined(separator: "\n\n")
             let sql = """
             INSERT INTO conversations (
               id,
@@ -1081,15 +1192,26 @@ private extension MLXServerAgentIntegrationService {
               channel_chat_id = excluded.channel_chat_id,
               updated_at = excluded.updated_at;
 
-            UPDATE assistant_sessions
+            UPDATE conversations
             SET
-              agent_type = 'acp',
-              conversation_id = \(sqliteQuotedString(conversationID)),
-              workspace = \(sqliteQuotedString(workspaceURL.path)),
-              last_activity = \(now)
-            WHERE user_id = \(sqliteQuotedString(user.id))
-              AND chat_id = \(sqliteQuotedString(user.platformUserID))
-              AND agent_type = 'acp';
+              name = \(sqliteQuotedString(conversationName)),
+              extra = json_set(
+                CASE WHEN json_valid(extra) THEN extra ELSE '{}' END,
+                '$.backend',
+                'custom',
+                '$.agent_id',
+                \(sqliteQuotedString(customAgent.id)),
+                '$.custom_agent_id',
+                \(sqliteQuotedString(customAgent.id)),
+                '$.agent_name',
+                \(sqliteQuotedString(customAgent.name)),
+                '$.workspace',
+                \(sqliteQuotedString(workspaceURL.path))
+              ),
+              updated_at = \(now)
+            WHERE source = \(sqliteQuotedString(platform))
+              AND channel_chat_id = \(sqliteQuotedString(user.platformUserID))
+              AND type = 'acp';
 
             INSERT INTO assistant_sessions (
               id,
@@ -1101,7 +1223,7 @@ private extension MLXServerAgentIntegrationService {
               created_at,
               last_activity
             )
-            SELECT
+            VALUES (
               \(sqliteQuotedString(sessionID)),
               \(sqliteQuotedString(user.id)),
               'acp',
@@ -1110,18 +1232,27 @@ private extension MLXServerAgentIntegrationService {
               \(sqliteQuotedString(user.platformUserID)),
               \(now),
               \(now)
-            WHERE changes() = 0;
+            )
+            ON CONFLICT(id) DO UPDATE SET
+              agent_type = excluded.agent_type,
+              conversation_id = excluded.conversation_id,
+              workspace = excluded.workspace,
+              chat_id = excluded.chat_id,
+              last_activity = excluded.last_activity;
+
+            UPDATE assistant_sessions
+            SET
+              agent_type = 'acp',
+              conversation_id = \(sqliteQuotedString(conversationID)),
+              workspace = \(sqliteQuotedString(workspaceURL.path)),
+              last_activity = \(now)
+            WHERE user_id = \(sqliteQuotedString(user.id))
+              AND chat_id = \(sqliteQuotedString(user.platformUserID));
+
+            \(acpSessionSQL)
 
             UPDATE assistant_users
-            SET session_id = (
-              SELECT id
-              FROM assistant_sessions
-              WHERE user_id = \(sqliteQuotedString(user.id))
-                AND chat_id = \(sqliteQuotedString(user.platformUserID))
-                AND agent_type = 'acp'
-              ORDER BY last_activity DESC
-              LIMIT 1
-            )
+            SET session_id = \(sqliteQuotedString(sessionID))
             WHERE id = \(sqliteQuotedString(user.id));
             """
             _ = try runSQLite(
@@ -1132,6 +1263,44 @@ private extension MLXServerAgentIntegrationService {
             preparedSessions.append("\(platform): \(user.displayName ?? user.platformUserID)")
         }
         return preparedSessions
+    }
+
+    static func aionUIChannelConversationIDs(
+        platform: String,
+        platformUserID: String,
+        databaseURL: URL,
+        fileManager: FileManager
+    ) throws -> [String] {
+        let sql = """
+        SELECT id
+        FROM conversations
+        WHERE source = \(sqliteQuotedString(platform))
+          AND channel_chat_id = \(sqliteQuotedString(platformUserID))
+          AND type = 'acp'
+        ORDER BY updated_at DESC;
+        """
+        let output = try runSQLite(
+            databaseURL: databaseURL,
+            sql: sql,
+            arguments: ["-json"],
+            fileManager: fileManager
+        )
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return []
+        }
+        return try JSONDecoder()
+            .decode([AionUIChannelConversationRow].self, from: Data(trimmed.utf8))
+            .map(\.id)
+    }
+
+    static func uniqueAionUIIDs(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        var output: [String] = []
+        for value in values where !value.isEmpty && seen.insert(value).inserted {
+            output.append(value)
+        }
+        return output
     }
 
     static func aionUIAssistantUsers(
@@ -1166,14 +1335,14 @@ private extension MLXServerAgentIntegrationService {
         let customAgents = agents.filter { $0.agentSource == "custom" }
         let hasCoder = customAgents.contains { agent in
             aionUIAgent(agent, matches: AionUICustomAgentDefinition(
-                name: "MLX Coder",
+                name: "mlx-coder",
                 command: "mlx-coder",
                 args: ["--acp"]
             ))
         }
         let hasServerCoder = customAgents.contains { agent in
             aionUIAgent(agent, matches: AionUICustomAgentDefinition(
-                name: "MLX Server Coder",
+                name: "mlx-server + mlx-coder",
                 command: "mlx-server",
                 args: ["--coder", "--acp"]
             ))
@@ -1182,18 +1351,22 @@ private extension MLXServerAgentIntegrationService {
     }
 
     static func aionUIAgentIsManagedByMLXServer(_ agent: AionUIAgent) -> Bool {
-        let managedNames: Set<String> = [
-            "MLX Coder",
-            "MLX Server Coder"
-        ]
-        let isManagedCommand = agent.command?.hasSuffix("/mlx-coder") == true
-            || agent.command == "mlx-coder"
-            || (
-                (agent.command?.hasSuffix("/mlx-server") == true || agent.command == "mlx-server")
-                    && (agent.args ?? []) == ["--coder", "--acp"]
-            )
-        return managedNames.contains(agent.name)
-            || isManagedCommand
+        let isManagedName = agent.name == "mlx-coder"
+            || agent.name == "mlx-server + mlx-coder"
+            || agent.name == "MLX Coder"
+            || agent.name == "MLX Server Coder"
+        let args = agent.args ?? []
+        let isManagedCoderCommand = (
+            agent.command?.hasSuffix("/mlx-coder") == true
+                || agent.command == "mlx-coder"
+        ) && args == ["--acp"]
+        let isManagedServerCommand = (
+            agent.command?.hasSuffix("/mlx-server") == true
+                || agent.command == "mlx-server"
+        ) && args == ["--coder", "--acp"]
+        return isManagedName
+            || isManagedCoderCommand
+            || isManagedServerCommand
     }
 
     static func aionUIAgent(
@@ -1285,7 +1458,7 @@ private extension MLXServerAgentIntegrationService {
     ) -> String {
         let prefix = platform == "telegram" ? "tg" : platform
         let userPrefix = String(platformUserID.prefix(8))
-        return "\(prefix)-acp-custom-\(userPrefix)"
+        return "\(prefix)-acp-\(userPrefix)"
     }
 
     static func stableAionUIID(seed: String, length: Int) -> String {
@@ -1948,6 +2121,10 @@ private struct AionUIAssistantUser: Decodable {
     }
 }
 
+private struct AionUIChannelConversationRow: Decodable {
+    var id: String
+}
+
 private struct AionUIChannelConversationExtra: Encodable {
     var backend: String = "custom"
     var mcpServerIDs: [String] = []
@@ -2108,6 +2285,7 @@ private struct AionUICustomAgentRequest: Encodable {
     var command: String
     var icon: String
     var args: [String]
+    var enabled: Bool
     var env: [AionUICustomAgentEnvironmentVariable]
     var advanced: AionUICustomAgentAdvanced
 }
