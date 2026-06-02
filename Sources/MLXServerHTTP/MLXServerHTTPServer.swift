@@ -203,10 +203,11 @@ public final class MLXServerHTTPServer {
         to channel: Channel,
         application: MLXServerHTTPApplication
     ) -> EventLoopFuture<Void> {
-        channel.pipeline.addHandlers([
-            MLXServerNIOHTTPHandler(application: application),
-            MLXServerNIOErrorHandler()
-        ])
+        channel.eventLoop.makeCompletedFuture {
+            let sync = channel.pipeline.syncOperations
+            try sync.addHandler(MLXServerNIOHTTPHandler(application: application))
+            try sync.addHandler(MLXServerNIOErrorHandler())
+        }
     }
 }
 
@@ -220,7 +221,7 @@ private struct MLXServerHTTPApplication: Sendable {
 }
 
 private extension MLXServerHTTPApplication {
-    fileprivate func respond(to request: HTTPRequest, writer: MLXServerNIOResponseWriter) async {
+    func respond(to request: HTTPRequest, writer: MLXServerNIOResponseWriter) async {
         do {
             guard isAuthorized(request) else {
                 try await writer.sendJSON(
@@ -568,7 +569,7 @@ private extension MLXServerHTTPApplication {
         )
     }
 
-    fileprivate func sendError(_ error: any Error, status: HTTPStatus, writer: MLXServerNIOResponseWriter) async {
+    func sendError(_ error: any Error, status: HTTPStatus, writer: MLXServerNIOResponseWriter) async {
         do {
             try await writer.sendJSON(
                 ErrorResponse(
