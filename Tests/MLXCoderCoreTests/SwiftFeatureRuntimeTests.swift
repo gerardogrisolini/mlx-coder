@@ -858,6 +858,40 @@ struct SwiftFeatureRuntimeTests {
     }
 
     @Test
+    func bundledExecutableCandidatesIncludeSourcePackageBuildProductsFromOtherWorkingDirectory() throws {
+        let outsideWorkingDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-feature-cwd-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: outsideWorkingDirectory)
+        }
+        try FileManager.default.createDirectory(
+            at: outsideWorkingDirectory,
+            withIntermediateDirectories: true
+        )
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .standardizedFileURL
+        let packageBuildPrefix = packageRoot
+            .appendingPathComponent(".build", isDirectory: true)
+            .path + "/"
+
+        let candidates = SwiftFeatureRuntime.bundledExecutableCandidateURLs(
+            named: "mlx-git-tools-feature",
+            fileManager: .default,
+            workingDirectoryURL: outsideWorkingDirectory
+        )
+
+        #expect(
+            candidates.contains {
+                $0.path.hasPrefix(packageBuildPrefix)
+                    && $0.lastPathComponent == "mlx-git-tools-feature"
+            }
+        )
+    }
+
+    @Test
     func directToolExecutorRoutesMatchingToolToSwiftFeature() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("mlx-swift-feature-routing-\(UUID().uuidString)", isDirectory: true)

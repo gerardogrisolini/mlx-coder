@@ -684,6 +684,61 @@ struct AgentConfigurationTests {
         #expect(effectiveModelID == "mlx-community/server-model")
     }
 
+    @Test
+    func terminalSessionConfigurationUsesStableProjectCacheKeyByDefault() throws {
+        let workingDirectory = URL(
+            fileURLWithPath: "/tmp/mlx-coder-cache-project",
+            isDirectory: true
+        )
+        let configuration = try AgentConfiguration(
+            hostedModelID: "mlx-community/test",
+            availableAgents: AgentProfileStore.defaultProfiles(),
+            workingDirectory: workingDirectory
+        )
+        let terminal = TerminalChat(
+            configuration: configuration,
+            stdinIsTerminal: false
+        )
+
+        let sessionConfiguration = terminal.currentSessionConfiguration(
+            allowedToolNames: []
+        )
+
+        #expect(
+            sessionConfiguration.cacheKey
+                == AgentKVCachePersistencePolicy.terminalDiskCacheKey(
+                    workingDirectoryPath: workingDirectory.path
+                )
+        )
+    }
+
+    @Test
+    func terminalSessionConfigurationPreservesLoadedCacheKey() throws {
+        let workingDirectory = URL(
+            fileURLWithPath: "/tmp/mlx-coder-cache-project",
+            isDirectory: true
+        )
+        let configuration = try AgentConfiguration(
+            hostedModelID: "mlx-community/test",
+            availableAgents: AgentProfileStore.defaultProfiles(),
+            workingDirectory: workingDirectory
+        )
+        let terminal = TerminalChat(
+            configuration: configuration,
+            stdinIsTerminal: false
+        )
+        terminal.activeSessionCacheKey = "terminal:/tmp/mlx-coder-cache-project:session:plan"
+
+        let sessionConfiguration = terminal.currentSessionConfiguration(
+            allowedToolNames: []
+        )
+
+        #expect(
+            sessionConfiguration.cacheKey
+                == "terminal:/tmp/mlx-coder-cache-project:session:plan"
+        )
+    }
+
     private func featureStatus(
         id: String,
         displayName: String? = nil,

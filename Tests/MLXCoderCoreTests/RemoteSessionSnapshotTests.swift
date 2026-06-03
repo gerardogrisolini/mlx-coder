@@ -174,6 +174,28 @@ struct RemoteSessionSnapshotTests {
         #expect((cachedPayload["input"] as? [Any])?.count == payload.cachedWebSocketInput?.count)
         #expect(cachedPayload["type"] as? String == "response.create")
     }
+
+    @Test
+    func chatGPTSubscriptionContinuationUsesToolOutputDelta() throws {
+        let messages = chatGPTContinuationMessagesWithToolOutput()
+        let fullPayload = RemoteGenerationClient.responsesInputPayload(from: messages)
+        let payload = ChatGPTSubscriptionRequestBuilder.requestInputPayload(
+            from: messages,
+            continuation: ChatGPTSubscriptionContinuationState(
+                responseID: "resp_tool_call",
+                messageCount: 3,
+                instructions: "System prompt"
+            )
+        )
+        let cachedInput = try #require(payload.cachedWebSocketInput)
+        let cachedObject = try #require(cachedInput.first as? [String: Any])
+
+        #expect(payload.input.count == fullPayload.input.count)
+        #expect(cachedInput.count == 1)
+        #expect(cachedObject["type"] as? String == "function_call_output")
+        #expect(cachedObject["call_id"] as? String == "call_memory")
+        #expect(payload.previousResponseID == "resp_tool_call")
+    }
 #endif
 
     private func remoteHistory() -> [AgentRuntimeMessage] {
@@ -222,6 +244,40 @@ struct RemoteSessionSnapshotTests {
                 content: "second prompt",
                 attachments: []
             )
+        ]
+    }
+
+    private func chatGPTContinuationMessagesWithToolOutput() -> [[String: Any]] {
+        [
+            [
+                "role": "system",
+                "content": "System prompt"
+            ],
+            RemoteGenerationClient.remoteMessage(
+                role: "user",
+                content: "update the journal",
+                attachments: []
+            ),
+            [
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    [
+                        "id": "call_memory",
+                        "type": "function",
+                        "function": [
+                            "name": "memory_write",
+                            "arguments": #"{"entry":"Updated journal."}"#
+                        ]
+                    ]
+                ]
+            ],
+            [
+                "role": "tool",
+                "tool_call_id": "call_memory",
+                "name": "memory_write",
+                "content": "Saved memory entry to project MEMORY.md."
+            ]
         ]
     }
 #endif

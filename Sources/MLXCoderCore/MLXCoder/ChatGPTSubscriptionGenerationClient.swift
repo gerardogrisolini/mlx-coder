@@ -1372,6 +1372,15 @@ public struct ChatGPTSubscriptionResponsesClient {
         let didEmitEvents: Bool
     }
 
+    private struct WebSocketIdleTimeoutError: LocalizedError {
+        let timeoutNanoseconds: UInt64
+
+        var errorDescription: String? {
+            let seconds = timeoutNanoseconds / 1_000_000_000
+            return "WebSocket idle timeout after \(seconds)s"
+        }
+    }
+
     public let credentials: CodexAgentCredentials
     public let baseURL: URL
     public let urlSession: URLSession
@@ -1380,6 +1389,7 @@ public struct ChatGPTSubscriptionResponsesClient {
     private static let maxRetries = 3
     private static let baseRetryDelayNanoseconds: UInt64 = 1_000_000_000
     private static let webSocketBetaHeader = "responses_websockets=2026-02-06"
+    private static let webSocketIdleTimeoutNanoseconds: UInt64 = 30_000_000_000
 
     public init(
         credentials: CodexAgentCredentials,
@@ -1583,7 +1593,10 @@ public struct ChatGPTSubscriptionResponsesClient {
 
             while !didReceiveTerminalEvent {
                 try Task.checkCancellation()
-                let message = try await lease.task.receive()
+                let message = try await Self.receiveWebSocketMessage(
+                    from: lease.task,
+                    timeoutNanoseconds: Self.webSocketIdleTimeoutNanoseconds
+                )
                 guard let data = Self.webSocketData(from: message) else {
                     continue
                 }
@@ -1609,6 +1622,37 @@ public struct ChatGPTSubscriptionResponsesClient {
                 underlying: error,
                 didEmitEvents: didEmitEvents
             )
+        }
+    }
+
+    private static func receiveWebSocketMessage(
+        from task: URLSessionWebSocketTask,
+        timeoutNanoseconds: UInt64
+    ) async throws -> URLSessionWebSocketTask.Message {
+        try await withThrowingTaskGroup(
+            of: URLSessionWebSocketTask.Message.self
+        ) { group in
+            group.addTask {
+                try await task.receive()
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                task.cancel(with: .normalClosure, reason: nil)
+                throw WebSocketIdleTimeoutError(
+                    timeoutNanoseconds: timeoutNanoseconds
+                )
+            }
+
+            do {
+                guard let message = try await group.next() else {
+                    throw ChatGPTSubscriptionGenerationError.invalidResponse
+                }
+                group.cancelAll()
+                return message
+            } catch {
+                group.cancelAll()
+                throw error
+            }
         }
     }
 

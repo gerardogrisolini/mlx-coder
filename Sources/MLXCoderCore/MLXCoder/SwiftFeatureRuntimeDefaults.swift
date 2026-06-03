@@ -388,29 +388,45 @@ extension SwiftFeatureRuntime {
             ?? URL(fileURLWithPath: executableName).standardizedFileURL
     }
 
-    private static func bundledExecutableCandidateURLs(
+    static func bundledExecutableCandidateURLs(
         named executableName: String,
-        fileManager: FileManager
+        fileManager: FileManager,
+        workingDirectoryURL explicitWorkingDirectoryURL: URL? = nil
     ) -> [URL] {
         var seenPaths = Set<String>()
         let baseDirectories = [
             Bundle.main.executableURL?.deletingLastPathComponent(),
+            Bundle.main.executableURL?
+                .resolvingSymlinksInPath()
+                .deletingLastPathComponent(),
             CommandLine.arguments.first.map {
                 URL(fileURLWithPath: $0)
                     .standardizedFileURL
                     .deletingLastPathComponent()
+            },
+            CommandLine.arguments.first.map {
+                URL(fileURLWithPath: $0)
+                    .resolvingSymlinksInPath()
+                    .deletingLastPathComponent()
             }
         ].compactMap { $0 }
-        let workingDirectoryURL = URL(
-            fileURLWithPath: fileManager.currentDirectoryPath,
-            isDirectory: true
-        ).standardizedFileURL
-        let buildDirectoryURL = workingDirectoryURL
-            .appendingPathComponent(".build", isDirectory: true)
-        let buildProductDirectories = swiftPMBuildProductDirectories(
-            buildDirectoryURL: buildDirectoryURL,
-            fileManager: fileManager
-        )
+        let workingDirectoryURL = explicitWorkingDirectoryURL?.standardizedFileURL
+            ?? URL(
+                fileURLWithPath: fileManager.currentDirectoryPath,
+                isDirectory: true
+            ).standardizedFileURL
+        let buildRootURLs = [
+            workingDirectoryURL,
+            sourcePackageRootURL(fileManager: fileManager)
+        ]
+            .compactMap { $0 }
+            .map { $0.appendingPathComponent(".build", isDirectory: true) }
+        let buildProductDirectories = buildRootURLs.flatMap {
+            swiftPMBuildProductDirectories(
+                buildDirectoryURL: $0,
+                fileManager: fileManager
+            )
+        }
         let candidateDirectories = baseDirectories.flatMap { directoryURL in
             var directories = [directoryURL]
             var parentURL = directoryURL
@@ -430,6 +446,25 @@ extension SwiftFeatureRuntime {
             }
             return executableURL
         }
+    }
+
+    private static func sourcePackageRootURL(fileManager: FileManager) -> URL? {
+        var directoryURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .standardizedFileURL
+        for _ in 0..<8 {
+            if fileManager.fileExists(
+                atPath: directoryURL.appendingPathComponent("Package.swift").path
+            ) {
+                return directoryURL
+            }
+            let parentURL = directoryURL.deletingLastPathComponent()
+            guard parentURL.path != directoryURL.path else {
+                return nil
+            }
+            directoryURL = parentURL
+        }
+        return nil
     }
 
     private static func swiftPMBuildProductDirectories(
