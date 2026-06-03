@@ -31,11 +31,24 @@ extension MLXCoderACPBridge {
         )
         let promptText = Self.promptTextRemovingAionFilesMarker(rawPromptText)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !promptText.isEmpty || !attachments.isEmpty else {
+        let agentMentionResolution = try resolveLeadingACPAgentMention(in: promptText)
+        let routedPromptText = agentMentionResolution?.prompt ?? promptText
+        guard !routedPromptText.isEmpty || !attachments.isEmpty else {
             throw ACPError.invalidParams("session/prompt requires prompt text or attachments.")
         }
 
-        let visiblePromptText = promptText.isEmpty ? "Analyze the attached media." : promptText
+        let promptConfiguration: AgentCoreSessionConfiguration
+        if let agentMentionResolution {
+            promptConfiguration = acpSessionConfiguration(
+                applying: agentMentionResolution.agent,
+                to: session.configuration
+            )
+            session = sessionState(configuration: promptConfiguration)
+        } else {
+            promptConfiguration = session.configuration
+        }
+
+        let visiblePromptText = routedPromptText.isEmpty ? "Analyze the attached media." : routedPromptText
         await sendUserMessageChunk(sessionID: sessionID, text: visiblePromptText)
         await sendSessionInfoUpdate(sessionID: sessionID, title: promptTitle(from: visiblePromptText))
 
@@ -72,11 +85,10 @@ extension MLXCoderACPBridge {
             }
         }
 
-        let promptConfiguration = session.configuration
         let activePromptTask = Task {
             let response = try await sessionRunner.sendPrompt(
                 configuration: promptConfiguration,
-                prompt: promptText,
+                prompt: routedPromptText,
                 attachments: attachments,
                 onEvent: { event in
                     switch event {
@@ -488,5 +500,98 @@ extension MLXCoderACPBridge {
             contentType: contentType
         )
         return fileExtension.isEmpty ? "image" : "image.\(fileExtension)"
+    }
+}
+
+private struct ACPAgentMentionResolution {
+    let agent: AgentProfile
+    let prompt: String
+}
+
+private extension MLXCoderACPBridge {
+    func resolveLeadingACPAgentMention(in prompt: String) throws -> ACPAgentMentionResolution? {
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedPrompt.hasPrefix("@") else {
+            return nil
+        }
+
+        let mentionBody = String(trimmedPrompt.dropFirst())
+        let splitIndex = mentionBody.firstIndex { $0.isWhitespace }
+            ?? mentionBody.endIndex
+        let rawMention = String(mentionBody[..<splitIndex])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let mentionKey = Self.acpAgentMentionLookupKey(rawMention)
+        guard !mentionKey.isEmpty else {
+            return nil
+        }
+
+        let agents = try availableACPAgentProfiles()
+        guard let agent = agents.first(where: { Self.acpAgentMentionLookupKeys(for: $0).contains(mentionKey) }) else {
+            return nil
+        }
+
+        let remainingPrompt = String(mentionBody[splitIndex...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return ACPAgentMentionResolution(agent: agent, prompt: remainingPrompt)
+    }
+
+    func availableACPAgentProfiles() throws -> [AgentProfile] {
+        if let hostedAgentProfiles = configuration.hostedAgentProfiles {
+            return hostedAgentProfiles
+        }
+        return try AgentProfileStore.loadRequired()
+    }
+
+    func acpSessionConfiguration(
+        applying agent: AgentProfile,
+        to baseConfiguration: AgentCoreSessionConfiguration
+    ) -> AgentCoreSessionConfiguration {
+        let allowedToolNames = agent.allowedToolNames()
+        let modelID = agent.modelID ?? baseConfiguration.modelID
+        let systemPrompt = AgentCoreAppSessionFactory.resolvedSystemPrompt(
+            providedSystemPrompt: nil,
+            cwd: baseConfiguration.workingDirectory.path,
+            selectedAgent: agent,
+            allowedToolNames: allowedToolNames
+        )
+
+        return AgentCoreSessionConfiguration(
+            sessionID: baseConfiguration.sessionID,
+            modelID: modelID,
+            bearerToken: baseConfiguration.bearerToken,
+            workingDirectory: baseConfiguration.workingDirectory,
+            systemPrompt: systemPrompt,
+            cacheKey: baseConfiguration.cacheKey,
+            sessionRevision: baseConfiguration.sessionRevision + 1,
+            history: baseConfiguration.history,
+            allowedToolNames: allowedToolNames,
+            configuredContextWindowLimit: baseConfiguration.configuredContextWindowLimit,
+            generationParameterOverrides: baseConfiguration.generationParameterOverrides,
+            maxToolRounds: baseConfiguration.maxToolRounds,
+            maxOutputTokens: baseConfiguration.maxOutputTokens,
+            verboseLogging: baseConfiguration.verboseLogging,
+            appMode: baseConfiguration.appMode,
+            thinkingSelection: baseConfiguration.thinkingSelection,
+            preserveThinking: baseConfiguration.preserveThinking
+        )
+    }
+
+    static func acpAgentMentionLookupKeys(for agent: AgentProfile) -> Set<String> {
+        Set([
+            acpAgentMentionLookupKey(agent.id),
+            acpAgentMentionLookupKey(agent.name),
+            acpAgentMentionLookupKey(agent.displayName)
+        ].filter { !$0.isEmpty })
+    }
+
+    static func acpAgentMentionLookupKey(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .unicodeScalars
+            .filter { CharacterSet.alphanumerics.contains($0) }
+            .map(String.init)
+            .joined()
+            .lowercased()
     }
 }

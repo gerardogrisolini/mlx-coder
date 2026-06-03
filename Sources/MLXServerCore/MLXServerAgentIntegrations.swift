@@ -877,7 +877,7 @@ private extension MLXServerAgentIntegrationService {
             let request = AionUICustomAgentRequest(
                 name: customAgent.name,
                 command: customAgent.command,
-                icon: "",
+                icon: "✴️",
                 args: customAgent.args,
                 enabled: true,
                 env: [],

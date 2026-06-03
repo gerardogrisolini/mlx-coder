@@ -178,7 +178,7 @@ struct MLXServerMain {
                 from: modelCatalog.models,
                 kvCacheSettings: settings.kvCache
             ),
-            cacheAgentProfiles: false,
+            cacheAgentProfiles: options.acp,
             bearerToken: nil,
             runMode: options.acp ? .acp : .chat,
             workingDirectory: options.workingDirectory,
