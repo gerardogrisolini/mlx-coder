@@ -55,6 +55,43 @@ struct AgentConfigurationTests {
     }
 
     @Test
+    func groupedModelTitlesOmitRedundantProviderFallback() throws {
+        let providerID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+        let fallbackTitleModel = AgentSettingsModelManifestFactory.remoteAPIModel(
+            title: nil,
+            modelID: "mlx-community/qwen3",
+            providerID: providerID,
+            providerName: "mlx-server",
+            baseURL: "http://127.0.0.1:8080/v1",
+            chatEndpoint: .responses,
+            configuredContextWindowLimit: nil,
+            generationParameterOverrides: nil,
+            thinkingSupport: nil
+        )
+        let titledModel = AgentSettingsModelManifestFactory.remoteAPIModel(
+            title: "Qwen3 Local",
+            modelID: "mlx-community/qwen3-local",
+            providerID: providerID,
+            providerName: "mlx-server",
+            baseURL: "http://127.0.0.1:8080/v1",
+            chatEndpoint: .responses,
+            configuredContextWindowLimit: nil,
+            generationParameterOverrides: nil,
+            thinkingSupport: nil
+        )
+
+        let group = try #require(
+            AgentModelCatalogPresentation.groupedByProvider([fallbackTitleModel, titledModel])
+                .first { $0.title == "mlx-server" }
+        )
+
+        #expect(fallbackTitleModel.displayTitle == "mlx-server - mlx-community/qwen3")
+        #expect(AgentModelCatalogPresentation.modelTitle(for: fallbackTitleModel) == "mlx-community/qwen3")
+        #expect(AgentModelCatalogPresentation.modelTitle(for: fallbackTitleModel, in: group) == "mlx-community/qwen3")
+        #expect(AgentModelCatalogPresentation.modelTitle(for: titledModel, in: group) == "Qwen3 Local")
+    }
+
+    @Test
     func defaultAgentProfilesUseFocusedToolSelections() throws {
         let profiles = Dictionary(
             uniqueKeysWithValues: AgentProfileStore.defaultProfiles().map { ($0.name, $0) }

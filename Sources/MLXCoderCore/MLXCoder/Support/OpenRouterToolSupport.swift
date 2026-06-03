@@ -301,6 +301,29 @@ public nonisolated struct RemoteToolWireCatalog {
         bindings.compactMap(\.responsesToolPayload)
     }
 
+    public func wireMessages(from messages: [[String: Any]]) -> [[String: Any]] {
+        messages.map(wireMessage)
+    }
+
+    public func wireMessage(from message: [String: Any]) -> [String: Any] {
+        var message = message
+        if let toolCalls = message["tool_calls"] as? [[String: Any]] {
+            message["tool_calls"] = toolCalls.map(wireToolCallPayload)
+        }
+        if remoteToolWireStringValue(message["role"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "tool",
+           let toolName = remoteToolWireStringValue(message["name"])?.nilIfBlank {
+            message["name"] = wireName(forToolName: toolName)
+        }
+        return message
+    }
+
+    public func wireName(forToolName toolName: String) -> String {
+        binding(forToolName: toolName)?.wireName
+            ?? sanitizedRemoteToolWireName(for: toolName)
+    }
+
     public func localToolCall(from toolCall: DirectAgentToolCall) -> DirectAgentToolCall {
         guard let binding = binding(forToolName: toolCall.name),
               binding.descriptor.name != toolCall.name else {
@@ -383,6 +406,18 @@ public nonisolated struct RemoteToolWireCatalog {
         if overwrite || lookup[foldedName] == nil {
             lookup[foldedName] = binding
         }
+    }
+
+    private func wireToolCallPayload(_ toolCall: [String: Any]) -> [String: Any] {
+        guard var function = toolCall["function"] as? [String: Any],
+              let toolName = remoteToolWireStringValue(function["name"])?.nilIfBlank else {
+            return toolCall
+        }
+
+        var toolCall = toolCall
+        function["name"] = wireName(forToolName: toolName)
+        toolCall["function"] = function
+        return toolCall
     }
 }
 
@@ -501,6 +536,10 @@ public nonisolated func sanitizedRemoteToolWireName(
 
 private nonisolated func foldedToolWireName(_ name: String) -> String {
     name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+}
+
+private nonisolated func remoteToolWireStringValue(_ value: Any?) -> String? {
+    JSONValue(jsonObject: value).flexibleStringValue
 }
 
 private extension UnicodeScalar {

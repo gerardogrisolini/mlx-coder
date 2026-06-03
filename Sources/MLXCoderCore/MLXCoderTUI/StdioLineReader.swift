@@ -507,6 +507,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
     private static let escapeSequenceInitialTimeout: Int32 = 120
     private static let escapeSequenceContinuationTimeout: Int32 = 60
     private static let escapeSequenceMaximumLength = 24
+    static let maximumPanelCommandSuggestionLines = 6
 
     private var history: [String] = []
     private var historyIndex: Int?
@@ -1049,9 +1050,37 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
             suggestions.count - 1
         )
 
-        return suggestions.enumerated().map { index, suggestion in
-            let marker = index == panelCommandSuggestionIndex ? "›" : " "
-            return "\(marker) \(suggestion.command)  \(suggestion.summary)"
+        let visibleSuggestions = Self.visiblePanelCommandSuggestionWindow(
+            suggestions: suggestions,
+            selectedIndex: panelCommandSuggestionIndex,
+            maximumLineCount: Self.maximumPanelCommandSuggestionLines
+        )
+        return visibleSuggestions.map { item in
+            let marker = item.index == panelCommandSuggestionIndex ? "›" : " "
+            return "\(marker) \(item.suggestion.command)  \(item.suggestion.summary)"
+        }
+    }
+
+    static func visiblePanelCommandSuggestionWindow(
+        suggestions: [TerminalCommandSuggestion],
+        selectedIndex: Int,
+        maximumLineCount: Int = maximumPanelCommandSuggestionLines
+    ) -> [(index: Int, suggestion: TerminalCommandSuggestion)] {
+        guard !suggestions.isEmpty, maximumLineCount > 0 else {
+            return []
+        }
+
+        let boundedSelectedIndex = min(
+            max(0, selectedIndex),
+            suggestions.count - 1
+        )
+        let visibleCount = min(maximumLineCount, suggestions.count)
+        let minimumStart = max(0, boundedSelectedIndex - visibleCount + 1)
+        let maximumStart = max(0, suggestions.count - visibleCount)
+        let start = min(minimumStart, maximumStart)
+        let end = min(start + visibleCount, suggestions.count)
+        return suggestions[start..<end].enumerated().map { offset, suggestion in
+            (index: start + offset, suggestion: suggestion)
         }
     }
 

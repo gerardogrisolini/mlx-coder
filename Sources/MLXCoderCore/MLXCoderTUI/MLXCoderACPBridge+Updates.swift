@@ -208,7 +208,7 @@ extension MLXCoderACPBridge {
             "directoryPath"
         ]
         var seen = Set<String>()
-        return candidateKeys.compactMap { key in
+        let locations = candidateKeys.compactMap { key -> [String: Any]? in
             guard let rawPath = toolCall.argumentsObject[key] as? String,
                   let path = rawPath.nilIfBlank else {
                 return nil
@@ -221,6 +221,36 @@ extension MLXCoderACPBridge {
             }
             return ["path": normalizedPath]
         }
+        return locations.filter { location in
+            guard let path = location["path"] as? String else {
+                return true
+            }
+            return !locations.contains { candidate in
+                guard let candidatePath = candidate["path"] as? String else {
+                    return false
+                }
+                return isAncestorLocation(path, of: candidatePath)
+            }
+        }
+    }
+
+    private static func isAncestorLocation(
+        _ ancestorPath: String,
+        of descendantPath: String
+    ) -> Bool {
+        let ancestor = URL(fileURLWithPath: ancestorPath)
+            .standardizedFileURL
+            .path
+        let descendant = URL(fileURLWithPath: descendantPath)
+            .standardizedFileURL
+            .path
+        guard ancestor != descendant else {
+            return false
+        }
+        guard ancestor != "/" else {
+            return descendant.hasPrefix("/")
+        }
+        return descendant.hasPrefix("\(ancestor)/")
     }
 
     public static func displayToolTarget(for toolCall: DirectAgentToolCall) -> String? {

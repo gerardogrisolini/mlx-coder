@@ -250,6 +250,37 @@ public enum AgentModelCatalogPresentation {
         return "RemoteAPI"
     }
 
+    public static func modelTitle(
+        for model: AgentSettingsModelManifest,
+        in group: AgentModelProviderGroup
+    ) -> String {
+        modelTitle(for: model, providerGroupTitle: group.title)
+    }
+
+    public static func modelTitle(
+        for model: AgentSettingsModelManifest
+    ) -> String {
+        modelTitle(
+            for: model,
+            providerGroupTitle: providerGroupTitle(for: model)
+        )
+    }
+
+    public static func modelTitle(
+        for model: AgentSettingsModelManifest,
+        providerGroupTitle: String?
+    ) -> String {
+        guard model.title == nil,
+              let providerTitle = model.provider?.displayTitle.nilIfBlank,
+              let providerGroupTitle = providerGroupTitle?.nilIfBlank,
+              providerTitle.foldedProviderGroupKey == providerGroupTitle.foldedProviderGroupKey,
+              let modelID = model.modelID.nilIfBlank else {
+            return model.displayTitle
+        }
+
+        return modelID
+    }
+
     private static func providerGroupID(
         for model: AgentSettingsModelManifest
     ) -> String {

@@ -101,6 +101,26 @@ struct ACPCompatibilityTests {
     }
 
     @Test
+    func toolLocationsOmitAncestorWhenSpecificPathExists() throws {
+        let root = "/Users/gerardo/Projects/mlx-server"
+        let file = "\(root)/Tests/MLXCoderCoreTests/RemoteModelCatalogClientTests.swift"
+        let toolCall = DirectAgentToolCall(
+            id: "call_read",
+            name: "local.readFile",
+            argumentsObject: [
+                "path": root,
+                "file_path": file
+            ],
+            argumentsJSON: "{}"
+        )
+        let paths = MLXCoderACPBridge.toolLocations(for: toolCall).compactMap {
+            $0["path"] as? String
+        }
+
+        #expect(paths == [file])
+    }
+
+    @Test
     func permissionResponsesAcceptACPAndAionUIShapes() {
         let cases: [(JSONValue, String)] = [
             (.string("allow_once"), "allow_once"),

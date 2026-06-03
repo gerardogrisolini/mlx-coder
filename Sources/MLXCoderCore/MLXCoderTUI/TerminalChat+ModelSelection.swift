@@ -36,7 +36,7 @@ extension TerminalChat {
             manualModelIDOverride = model.id
             manualThinkingSelectionOverride = thinkingSelection
             writeSystemMessage(
-                "Selected model: \(model.displayTitle)\(thinkingSuffix(thinkingSelection))\n"
+                "Selected model: \(modelDisplayTitle(model))\(thinkingSuffix(thinkingSelection))\n"
             )
             return
         }
@@ -59,7 +59,7 @@ extension TerminalChat {
         manualModelIDOverride = model.id
         manualThinkingSelectionOverride = thinkingSelection
         writeSystemMessage(
-            "Selected model: \(model.displayTitle)\(thinkingSuffix(thinkingSelection))\n"
+            "Selected model: \(modelDisplayTitle(model))\(thinkingSuffix(thinkingSelection))\n"
         )
     }
 
@@ -108,7 +108,7 @@ extension TerminalChat {
             refreshInitialStatusBarContextWindow()
             if previousThinkingSelection == selectedThinkingSelection {
                 writeSystemMessage(
-                    "Already using \(selectedModel.displayTitle)\(thinkingSuffix(selectedThinkingSelection)). Session options refreshed.\n"
+                    "Already using \(modelDisplayTitle(selectedModel))\(thinkingSuffix(selectedThinkingSelection)). Session options refreshed.\n"
                 )
                 return
             }
@@ -162,8 +162,9 @@ extension TerminalChat {
             for model in group.models {
                 let marker = selectedModelID.map(model.matches) == true ? " *" : ""
                 let thinking = modelThinkingSuffix(model)
+                let title = AgentModelCatalogPresentation.modelTitle(for: model, in: group)
                 writeSystemMessage(
-                    "    \(offset). \(model.displayTitle)\(thinking)\(marker)\n"
+                    "    \(offset). \(title)\(thinking)\(marker)\n"
                 )
                 offset += 1
             }
@@ -186,7 +187,7 @@ extension TerminalChat {
         )
         let defaultSelection = currentSelection ?? model.resolvedDefaultThinkingSelection
         return TerminalCheckboxMenu.selectOne(
-            title: "Thinking / effort for \(model.displayTitle)",
+            title: "Thinking / effort for \(modelDisplayTitle(model))",
             items: thinkingSelectionItems(options),
             selected: defaultSelection,
             reservedBottomRows: statusBar.reservedRowsForOverlay()
@@ -200,7 +201,7 @@ extension TerminalChat {
             group.models.map { model in
                 TerminalCheckboxMenuItem(
                     value: model,
-                    title: model.displayTitle,
+                    title: AgentModelCatalogPresentation.modelTitle(for: model, in: group),
                     detail: modelThinkingDetail(model),
                     groupTitle: group.title
                 )
@@ -341,7 +342,7 @@ extension TerminalChat {
         }
 
         if let hostedModel = hostedModelManifest(for: modelID) {
-            return hostedModel.displayTitle
+            return modelDisplayTitle(hostedModel)
         }
 
         if let selection = AgentSettingsStore.defaultSelection(
@@ -355,5 +356,9 @@ extension TerminalChat {
         }
 
         return trimmedModelID
+    }
+
+    public func modelDisplayTitle(_ model: AgentSettingsModelManifest) -> String {
+        AgentModelCatalogPresentation.modelTitle(for: model)
     }
 }

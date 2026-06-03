@@ -73,6 +73,22 @@ struct RemoteModelCatalogClientTests {
     }
 
     @Test
+    func fallsBackToGenericThinkingForModalDirectModelsWithoutMetadata() {
+        let support = RemoteModelCatalogClient.thinkingSupport(
+            fromModelMetadata: [
+                "id": "zai-org/GLM-5.1-FP8"
+            ],
+            baseURL: "https://api.us-west-2.modal.direct/v1",
+            modelID: "zai-org/GLM-5.1-FP8"
+        )
+
+        #expect(support?.supportsThinking == true)
+        #expect(support?.supportsReasoningEffort == false)
+        #expect(support?.availableSelections == [.enabled, .off])
+        #expect(support?.defaultSelection == .enabled)
+    }
+
+    @Test
     func modalDirectProvidersRequireAPIKeys() {
         let provider = AgentRemoteProvider(
             name: "Modal",

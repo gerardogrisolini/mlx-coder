@@ -212,7 +212,7 @@ public enum DirectToolCatalog {
         ),
         DirectToolDescriptor(
             name: "local.exec",
-            description: "Runs a shell command in the working directory and returns stdout, stderr, and exit code.",
+            description: "Runs a shell command in the working directory and returns stdout, stderr, and exit code. Reserve this for commands not covered by dedicated file, text, search, Git, web, Xcode, Figma, memory, or feature tools.",
             inputSchema: #"{"type":"object","properties":{"command":{"type":"string"},"cwd":{"type":"string"},"workingDirectory":{"type":"string"},"timeoutSeconds":{"type":"number"},"timeout":{"type":"number"}},"required":["command"]}"#
         ),
         DirectToolDescriptor(

@@ -102,7 +102,15 @@ public final class RemoteModelCatalogClient {
             return support
         }
 
-        return MLXModelThinkingSupport.fromSparseRemoteModelIdentifier(modelID)
+        if let sparseSupport = MLXModelThinkingSupport.fromSparseRemoteModelIdentifier(modelID) {
+            return sparseSupport
+        }
+
+        if AgentRemoteProvider.isModalDirectBaseURL(baseURL) {
+            return .generic
+        }
+
+        return nil
     }
 }
 

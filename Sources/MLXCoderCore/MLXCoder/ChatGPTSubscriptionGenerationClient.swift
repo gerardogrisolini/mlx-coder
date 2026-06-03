@@ -41,7 +41,7 @@ public enum ChatGPTSubscriptionRequestBuilder {
     public static func requestInputPayload(
         from messages: [[String: Any]],
         continuation: ChatGPTSubscriptionContinuationState?
-    ) -> (instructions: String?, input: [Any], previousResponseID: String?) {
+    ) -> (instructions: String?, input: [Any], cachedWebSocketInput: [Any]?, previousResponseID: String?) {
         let fullPayload = RemoteGenerationClient.responsesInputPayload(from: messages)
         let normalizedInstructions = fullPayload.instructions?.nilIfBlank
 
@@ -53,6 +53,7 @@ public enum ChatGPTSubscriptionRequestBuilder {
             return (
                 normalizedInstructions,
                 fullPayload.input,
+                nil,
                 nil
             )
         }
@@ -64,12 +65,14 @@ public enum ChatGPTSubscriptionRequestBuilder {
             return (
                 normalizedInstructions,
                 fullPayload.input,
+                nil,
                 nil
             )
         }
 
         return (
             normalizedInstructions,
+            fullPayload.input,
             deltaPayload.input,
             continuation.responseID
         )
@@ -82,7 +85,6 @@ public enum ChatGPTSubscriptionRequestBuilder {
         reasoningEffort: String?,
         textVerbosity: String,
         sessionID: String,
-        previousResponseID: String? = nil,
         toolPayloads: JSONValue = .array([]),
         maxOutputTokens: Int? = nil
     ) -> [String: Any] {
@@ -105,10 +107,6 @@ public enum ChatGPTSubscriptionRequestBuilder {
             body["tools"] = toolPayloads.acpJSONObject
             body["tool_choice"] = "auto"
             body["parallel_tool_calls"] = true
-        }
-
-        if let previousResponseID = previousResponseID?.nilIfBlank {
-            body["previous_response_id"] = previousResponseID
         }
 
         if let maxOutputTokens, maxOutputTokens > 0 {
@@ -442,17 +440,17 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         var generationStats: [RemoteGenerationStats] = []
 
         for round in 0..<configuration.maxToolRounds {
-            let requestPayload = ChatGPTSubscriptionRequestBuilder.requestInputPayload(
-                from: session.messages,
-                continuation: session.continuation
-            )
-            let instructions = requestPayload.instructions?.nilIfBlank
-                ?? "You are a helpful coding assistant."
             let toolCatalog = RemoteToolWireCatalog(
                 descriptors: await toolExecutor.descriptors(
                     allowedToolNames: session.allowedToolNames
                 )
             )
+            let requestPayload = ChatGPTSubscriptionRequestBuilder.requestInputPayload(
+                from: toolCatalog.wireMessages(from: session.messages),
+                continuation: session.continuation
+            )
+            let instructions = requestPayload.instructions?.nilIfBlank
+                ?? "You are a helpful coding assistant."
             let toolPayloads = toolCatalog.responsesToolPayloads
 
             var responseText = ""
@@ -463,7 +461,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
             let requestStartedAt = Date()
             var firstDeltaAt: Date?
             var didReceiveContentDelta = false
-            var latestResponseID = requestPayload.previousResponseID
+            var latestResponseID: String?
 
             func markFirstDelta() {
                 if firstDeltaAt == nil {
@@ -471,13 +469,16 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                 }
             }
 
-                let completion = try await client.streamEvents(
+            let completion = try await client.streamEvents(
                 input: JSONValue.acpValue(from: requestPayload.input),
                 model: modelID,
                 instructions: instructions,
                 reasoningEffort: reasoningEffort,
                 textVerbosity: "low",
                 sessionID: chatGPTSessionID,
+                cachedWebSocketInput: requestPayload.cachedWebSocketInput.map {
+                    JSONValue.acpValue(from: $0)
+                },
                 previousResponseID: requestPayload.previousResponseID,
                 toolPayloads: JSONValue.acpValue(from: toolPayloads),
                 maxOutputTokens: configuration.maxOutputTokens
@@ -578,7 +579,6 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
 
             let remoteToolCalls = try toolCallAccumulator.finalize()
             let toolCalls = remoteToolCalls.map(toolCatalog.localToolCall)
-            let wireToolCalls = remoteToolCalls.map(toolCatalog.wireToolCall)
             generationStats.append(
                 RemoteGenerationStats(
                     usage: requestUsage,
@@ -593,7 +593,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
             Self.appendAssistantMessage(
                 text: responseText,
                 reasoningText: responseReasoningText,
-                toolCalls: wireToolCalls,
+                toolCalls: toolCalls,
                 to: &session.messages
             )
             if let responseID = latestResponseID?.nilIfBlank {
@@ -627,8 +627,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                 )
             }
 
-            for (index, toolCall) in toolCalls.enumerated() {
-                let wireToolCall = wireToolCalls[index]
+            for toolCall in toolCalls {
                 await onEvent(.toolCallStarted(toolCall))
                 let result = await toolExecutor.execute(
                     sessionID: session.id,
@@ -639,8 +638,8 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                 await onEvent(.toolCallCompleted(toolCall, result))
                 session.messages.append([
                     "role": "tool",
-                    "tool_call_id": wireToolCall.id,
-                    "name": wireToolCall.name,
+                    "tool_call_id": toolCall.id,
+                    "name": toolCall.name,
                     "content": result.output
                 ])
             }
@@ -1365,6 +1364,7 @@ public struct ChatGPTSubscriptionResponsesClient {
         let sessionID: String
         let task: URLSessionWebSocketTask
         let isCached: Bool
+        let isReused: Bool
     }
 
     private struct WebSocketFailure: Error {
@@ -1400,6 +1400,7 @@ public struct ChatGPTSubscriptionResponsesClient {
         reasoningEffort: String?,
         textVerbosity: String,
         sessionID: String,
+        cachedWebSocketInput: JSONValue? = nil,
         previousResponseID: String? = nil,
         toolPayloads: JSONValue = .array([]),
         maxOutputTokens: Int? = nil,
@@ -1412,7 +1413,6 @@ public struct ChatGPTSubscriptionResponsesClient {
             reasoningEffort: reasoningEffort,
             textVerbosity: textVerbosity,
             sessionID: sessionID,
-            previousResponseID: previousResponseID,
             toolPayloads: toolPayloads,
             maxOutputTokens: maxOutputTokens
         )
@@ -1421,6 +1421,8 @@ public struct ChatGPTSubscriptionResponsesClient {
             do {
                 return try await streamEventsOverWebSocket(
                     body: body,
+                    cachedInput: cachedWebSocketInput,
+                    previousResponseID: previousResponseID,
                     sessionID: sessionID,
                     onEvent: onEvent
                 )
@@ -1538,6 +1540,8 @@ public struct ChatGPTSubscriptionResponsesClient {
 
     private func streamEventsOverWebSocket(
         body: [String: Any],
+        cachedInput: JSONValue?,
+        previousResponseID: String?,
         sessionID: String,
         onEvent: ([String: Any]) async throws -> Void
     ) async throws -> StreamCompletion {
@@ -1561,7 +1565,12 @@ public struct ChatGPTSubscriptionResponsesClient {
 
         do {
             let payload = try JSONValue(
-                jsonObject: Self.webSocketRequestPayload(body: body)
+                jsonObject: Self.webSocketRequestPayload(
+                    body: body,
+                    cachedInput: cachedInput,
+                    previousResponseID: previousResponseID,
+                    useCachedContinuation: lease.isReused
+                )
             ).jsonData(
                 outputFormatting: [.withoutEscapingSlashes]
             )
@@ -1724,10 +1733,19 @@ public struct ChatGPTSubscriptionResponsesClient {
         return components.url ?? codexResponsesURL(baseURL: baseURL)
     }
 
-    private static func webSocketRequestPayload(
-        body: [String: Any]
+    static func webSocketRequestPayload(
+        body: [String: Any],
+        cachedInput: JSONValue? = nil,
+        previousResponseID: String? = nil,
+        useCachedContinuation: Bool = false
     ) -> [String: Any] {
         var payload = body
+        if useCachedContinuation,
+           let previousResponseID = previousResponseID?.nilIfBlank,
+           let cachedInput {
+            payload["previous_response_id"] = previousResponseID
+            payload["input"] = cachedInput.acpJSONObject
+        }
         payload["type"] = "response.create"
         return payload
     }
@@ -1962,7 +1980,8 @@ public final class ChatGPTSubscriptionWebSocketPool: @unchecked Sendable {
             return ChatGPTSubscriptionResponsesClient.WebSocketLease(
                 sessionID: sessionID,
                 task: existing.task,
-                isCached: true
+                isCached: true,
+                isReused: true
             )
         }
 
@@ -1983,7 +2002,8 @@ public final class ChatGPTSubscriptionWebSocketPool: @unchecked Sendable {
         return ChatGPTSubscriptionResponsesClient.WebSocketLease(
             sessionID: sessionID,
             task: task,
-            isCached: true
+            isCached: true,
+            isReused: false
         )
     }
 
