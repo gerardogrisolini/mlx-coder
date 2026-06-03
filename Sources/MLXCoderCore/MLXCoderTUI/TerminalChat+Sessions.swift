@@ -5,22 +5,28 @@
 
 import Foundation
 
+enum TerminalSavedSessionCommandAction: Equatable, Sendable {
+    case list
+    case delete
+    case saveActive
+    case saveNamed(String)
+}
+
 extension TerminalChat {
     public func handleSessionsCommand(_ command: String) async {
         let rawArguments = String(command.dropFirst("/sessions".count))
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard !rawArguments.isEmpty else {
+        switch Self.savedSessionCommandAction(rawArguments: rawArguments) {
+        case .list:
             await handleSavedSessionList()
-            return
-        }
-
-        if rawArguments.lowercased() == "delete" {
+        case .delete:
             await handleSavedSessionDelete()
-            return
+        case .saveActive:
+            await saveActiveSession()
+        case let .saveNamed(name):
+            await saveCurrentSession(named: name)
         }
-
-        await saveCurrentSession(named: rawArguments)
     }
 
     public func handleSavedSessionList() async {
@@ -105,6 +111,17 @@ extension TerminalChat {
         } catch {
             writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
         }
+    }
+
+    public func saveActiveSession() async {
+        guard let name = activeSavedSessionName?.nilIfBlank else {
+            writeFailureMessage(
+                "mlx-coder: no active saved session. Use /sessions <session name> to save this session first.\n"
+            )
+            return
+        }
+
+        await saveCurrentSession(named: name)
     }
 
     public func saveCurrentSession(named rawName: String) async {
@@ -503,7 +520,23 @@ extension TerminalChat {
     }
 
     public static func renderSessionSelectionUsage() -> String {
-        "Usage: /sessions [session name]\n       /sessions delete\n"
+        "Usage: /sessions\n       /sessions <session name>\n       /sessions save\n       /sessions delete\n"
+    }
+
+    static func savedSessionCommandAction(
+        rawArguments: String
+    ) -> TerminalSavedSessionCommandAction {
+        let trimmedArguments = rawArguments.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch trimmedArguments.lowercased() {
+        case "":
+            return .list
+        case "delete":
+            return .delete
+        case "save":
+            return .saveActive
+        default:
+            return .saveNamed(trimmedArguments)
+        }
     }
 
     public static func selectedToolSelectionNames(

@@ -333,6 +333,17 @@ struct AgentConfigurationTests {
     }
 
     @Test
+    func savedSessionCommandTreatsSaveAsActiveSessionUpdate() {
+        #expect(TerminalChat.savedSessionCommandAction(rawArguments: "") == .list)
+        #expect(TerminalChat.savedSessionCommandAction(rawArguments: "delete") == .delete)
+        #expect(TerminalChat.savedSessionCommandAction(rawArguments: " save ") == .saveActive)
+        #expect(
+            TerminalChat.savedSessionCommandAction(rawArguments: "daily checkpoint")
+                == .saveNamed("daily checkpoint")
+        )
+    }
+
+    @Test
     func featureWizardOutputsHumanReadableStatusInsteadOfJSON() {
         let scaffoldOutput = """
         {

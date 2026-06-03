@@ -1,15 +1,26 @@
 # mlx-server
 
-`mlx-server` is a Swift Package with two closely related executables:
+`mlx-server` is a Swift Package with two closely related executables and one important local-first workflow:
 
-- **`mlx-coder`**: an autonomous coding agent for the terminal and ACP-compatible clients.
-- **`mlx-server`**: a local MLX inference server that exposes downloaded MLX models through OpenAI-compatible, Responses-compatible, and Anthropic-compatible HTTP APIs.
+- **`mlx-server --coder`**: the recommended fully local coding-agent mode. It runs the `mlx-coder` agent directly on `MLXServerRuntime`, using the local MLX model catalog without HTTP.
+- **`mlx-coder`**: the standalone autonomous coding agent for the terminal and ACP-compatible clients.
+- **`mlx-server`**: the local MLX inference server that exposes downloaded MLX models through OpenAI-compatible, Responses-compatible, and Anthropic-compatible HTTP APIs.
 
 The project is designed for local-first AI development on Apple Silicon: keep models on your Mac, configure them explicitly, expose them to existing agent clients, and run a coding agent that can work directly inside your projects.
 
 ## Start Here
 
-If your goal is coding assistance, start with **`mlx-coder`**:
+If your goal is **local coding assistance with MLX models**, start with **`mlx-server --coder`**:
+
+```bash
+swift run -c release mlx-server --setup
+swift run -c release mlx-server --setup-models
+swift run -c release mlx-server --coder --cwd /path/to/project
+```
+
+This is the most direct local workflow: one process runs the agent and the MLX runtime together, with no HTTP hop and no external model provider required.
+
+If you want the standalone agent configuration, use **`mlx-coder`**:
 
 ```bash
 swift run -c release mlx-coder --setup
@@ -30,6 +41,26 @@ Detailed guides:
 - [mlx-coder guide](Docs/mlx-coder.md): standalone/ACP agent setup, profiles, tools, skills, sessions, memory, and dynamic features.
 - [mlx-server guide](Docs/mlx-server.md): setup, model catalog, HTTP APIs, metrics, benchmarking, and direct coder mode.
 
+## Why `mlx-server --coder`
+
+`mlx-server --coder` is the bridge between the two parts of the package: it starts the coding agent, but the model backend is the local `mlx-server` runtime instead of a remote provider or an HTTP client.
+
+That means:
+
+- the agent uses the same explicit `~/.mlx-server/models.json` catalog used by the server;
+- model loading, generation defaults, thinking settings, KV cache, and disk cache stay in the server runtime path;
+- there is no HTTP serialization layer between the agent and the model;
+- the TUI still has agent profiles, tools, skills, attachments, saved sessions, memory, `/changes`, `/undo`, sub-agents, and Dynamic Swift Features;
+- `--acp` can expose the same direct local runtime to ACP-compatible apps.
+
+Examples:
+
+```bash
+swift run -c release mlx-server --coder --cwd /path/to/project
+swift run -c release mlx-server --coder --agent Feature --model qwen3-mlx --cwd /path/to/project
+swift run -c release mlx-server --coder --acp --cwd /path/to/project
+```
+
 ## mlx-coder Overview
 
 `mlx-coder` is the agent layer. It provides a terminal coding assistant and an ACP stdio runtime for apps that want to host the UI themselves.
@@ -42,7 +73,7 @@ Use it when you want an agent that can:
 - read, search, edit, and review project files through enabled tools;
 - use prompt skills for repeatable workflows;
 - attach image/video context when supported by the selected model/provider;
-- save and restore project sessions with `/sessions`;
+- save, refresh, and restore project sessions with `/sessions`;
 - track file changes with `/changes` and revert recent agent edits with `/undo`;
 - delegate work to sub-agents;
 - create reusable Dynamic Swift Features through the Builder agent.
@@ -64,7 +95,7 @@ Useful TUI commands:
 /agents      Select an agent profile
 /tools       Select tool groups
 /skills      Select or install prompt skills
-/sessions    Save, load, or delete session snapshots
+/sessions    Save, refresh, load, or delete session snapshots
 /changes     Review the latest tracked file changes
 /undo        Revert the latest tracked agent changes
 /feature     Manage generated Swift features with the Builder agent
@@ -80,13 +111,7 @@ Useful TUI commands:
 - `sessions/`: saved per-project session snapshots.
 - `features/`: generated Swift feature packages.
 
-`mlx-coder` can also run directly on the local MLX runtime managed by `mlx-server`:
-
-```bash
-swift run -c release mlx-server --coder --cwd /path/to/project
-```
-
-In this mode, the agent uses `~/.mlx-server/models.json` and `MLXServerRuntime` directly, without HTTP.
+For a fully local model backend, prefer the `mlx-server --coder` workflow described above.
 
 ## mlx-server Overview
 

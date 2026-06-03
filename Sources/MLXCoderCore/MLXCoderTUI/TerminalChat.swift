@@ -460,10 +460,6 @@ public final class TerminalChat: @unchecked Sendable {
             command: "/exit",
             summary: "close session"
         ),
-        TerminalCommandSuggestion(
-            command: "/quit",
-            summary: "close session"
-        )
     ]
 
     private func submittedLineAction(_ promptInput: String) async -> TerminalSubmittedLineAction {
@@ -476,7 +472,7 @@ public final class TerminalChat: @unchecked Sendable {
         }
 
         switch prompt {
-        case "/exit", "/quit":
+        case "/exit":
             return .exitChat
         case "/help":
             writeSystemMessage(renderHelpTextForCurrentAgent())
@@ -514,7 +510,8 @@ public final class TerminalChat: @unchecked Sendable {
         case let command where command == "/skills" || command.hasPrefix("/skills "):
             await handleSkillsCommand(command)
             return .continueChat
-        case let command where command == "/sessions" || command.hasPrefix("/sessions "):
+        case let command where command == "/sessions" || command.hasPrefix("/sessions ")
+            || command == "/session" || command.hasPrefix("/session "):
             await handleSessionsCommand(command)
             return .continueChat
         case let command where command == "/attach" || command.hasPrefix("/attach "):

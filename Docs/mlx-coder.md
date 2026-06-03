@@ -119,7 +119,8 @@ Inside chat mode, type a prompt and press return. Commands start with `/`:
 - `/agents [list|<agent name>|<number>]`: switch agent profile.
 - `/tools [all|none|tool-name|package-name|tool-number]`: select which tool groups are exposed to the model.
 - `/skills`: select installed prompt skills or install a skill from GitHub/local folder.
-- `/sessions [session name]`: save or restore named session snapshots for the current project.
+- `/sessions [session name]`: list/load sessions, or save a named session snapshot for the current project.
+- `/sessions save`: refresh the currently active saved session. If no saved session is active yet, use `/sessions <session name>` first.
 - `/sessions delete`: delete a saved session snapshot.
 - `/attach <file> [file ...]`: attach image/video files to the next prompt.
 - `/attachments`: list pending attachments.
@@ -131,7 +132,7 @@ Inside chat mode, type a prompt and press return. Commands start with `/`:
 - `/subagents`: show delegated sub-agent status.
 - `/subagents off`: hide automatic sub-agent status updates.
 - `/clear`: reset the conversation.
-- `/exit` or `/quit`: close the session.
+- `/exit`: close the session.
 
 Interactive terminals also support `Ctrl+T` to toggle compact/full tool output.
 
@@ -192,6 +193,12 @@ Save a named session:
 /sessions my-feature
 ```
 
+Refresh the active saved session after more work:
+
+```text
+/sessions save
+```
+
 List and load sessions:
 
 ```text
@@ -206,7 +213,7 @@ Delete a session:
 
 Local MLX sessions save the runtime snapshot. Remote sessions save the local transcript, including tool calls and outputs, so a remote `mlx-server` can reuse disk KV cache when the restored prompt prefix matches.
 
-When `/sessions <name>` saves a session, `mlx-coder` updates one active global resume pointer for that project while leaving pointers for other projects intact.
+When `/sessions <name>` saves a session, `mlx-coder` updates one active global resume pointer for that project while leaving pointers for other projects intact. `/sessions save` rewrites that active saved session; if no saved session is active yet, it asks for an explicit session name instead of creating a session named `save`.
 
 ## Memory and Project Context
 
@@ -316,7 +323,7 @@ swift run -c release mlx-server --coder \
 
 4. Ask the agent to inspect before editing.
 5. Review changes with `/changes diff` and Git.
-6. Save meaningful checkpoints with `/sessions name`.
+6. Save meaningful checkpoints with `/sessions name`, then refresh the active checkpoint with `/sessions save`.
 7. Keep durable project status in project `MEMORY.md` when a session reaches a useful handoff point.
 
 ## Troubleshooting

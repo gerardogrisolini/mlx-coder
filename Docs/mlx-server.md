@@ -2,7 +2,9 @@
 
 `mlx-server` is the local MLX inference service included in this Swift package. It loads explicitly configured MLX models through `mlx-swift-lm` and exposes them through API-compatible HTTP endpoints for OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages clients.
 
-Use this guide when you want to install the server, configure models, run it as an HTTP service, benchmark it, or use the direct `mlx-server --coder` mode.
+It also provides **`mlx-server --coder`**, the recommended fully local coding-agent workflow: the `mlx-coder` agent runs in the same process as `MLXServerRuntime`, using the local MLX model catalog directly without HTTP or an external model provider.
+
+Use this guide when you want to install the server, configure models, run `mlx-server --coder`, serve models over HTTP, or benchmark local MLX inference.
 
 ## Requirements
 
@@ -42,9 +44,54 @@ Then configure models:
 swift run -c release mlx-server --setup-models
 ```
 
+For local coding assistance, you can now start the recommended direct agent workflow:
+
+```bash
+swift run -c release mlx-server --coder --cwd /path/to/project
+```
+
 Model setup searches Hugging Face with the MLX filter, downloads the selected repository, imports context and generation defaults from model metadata, detects thinking support when possible, and writes the model entry to `~/.mlx-server/models.json`.
 
 On the first run, if `models.json` does not exist, setup can also import model snapshots already present in the Hugging Face cache. Imported models still go through the generation parameter prompts before being saved.
+
+## Recommended Local Agent Mode: `mlx-server --coder`
+
+`mlx-server --coder` is the fastest way to use this package as a local coding assistant backed by MLX models. It starts the `mlx-coder` TUI, but the model backend is the local `MLXServerRuntime` instead of a remote provider or the HTTP server.
+
+```bash
+swift run -c release mlx-server --setup
+swift run -c release mlx-server --setup-models
+swift run -c release mlx-server --coder --cwd /path/to/project
+```
+
+Why use this mode:
+
+- It uses the explicit `~/.mlx-server/models.json` catalog and generation defaults.
+- It keeps model loading, thinking configuration, memory KV cache, disk KV cache, and model retention in the same runtime path as the server.
+- It avoids an HTTP serialization layer between agent and model.
+- It still gives you the `mlx-coder` TUI: agent profiles, `/models`, `/agents`, `/tools`, `/skills`, `/sessions`, `/changes`, `/undo`, attachments, sub-agents, and Dynamic Swift Features.
+- It creates a default project `AGENTS.md` in the working directory when one is missing.
+- It can expose the same direct local runtime over ACP with `--acp`.
+
+Useful examples:
+
+```bash
+swift run -c release mlx-server --coder --cwd /path/to/project
+swift run -c release mlx-server --coder --agent Feature --cwd /path/to/project
+swift run -c release mlx-server --coder --model qwen3-mlx --cwd /path/to/project
+swift run -c release mlx-server --coder --agent Feature --model qwen3-mlx --max-output-tokens 4096 --cwd /path/to/project
+swift run -c release mlx-server --coder --acp --cwd /path/to/project
+```
+
+Useful flags:
+
+- `--model <id>` chooses a model from `models.json`.
+- `--agent <name>` chooses an agent profile from `~/.mlx-coder/agents.json`.
+- `--skills <list>` selects initial prompt skills.
+- `--max-output-tokens <count>` overrides model output tokens.
+- `--max-tool-rounds <count>` limits model/tool loop rounds.
+- `--verbose` prints status/tool progress on stderr.
+- `--acp` exposes the direct local runtime over ACP stdio for clients that speak ACP.
 
 ## settings.json
 
@@ -266,21 +313,11 @@ Each turn prints prompt tokens, generation tokens, prefill tok/s, and generation
 
 ## Direct mlx-coder Mode
 
-`mlx-server` can host the same `mlx-coder` runtime directly, using the configured local MLX model catalog without HTTP:
+The recommended local agent workflow is covered in [Recommended Local Agent Mode: `mlx-server --coder`](#recommended-local-agent-mode-mlx-server---coder). In short, `mlx-server` can host the same `mlx-coder` runtime directly, using the configured local MLX model catalog without HTTP:
 
 ```bash
 swift run -c release mlx-server --coder --cwd /path/to/project
 ```
-
-Useful flags:
-
-- `--model <id>` chooses a model from `models.json`.
-- `--agent <name>` chooses an agent profile from `~/.mlx-coder/agents.json`.
-- `--skills <list>` selects initial prompt skills.
-- `--max-output-tokens <count>` overrides model output tokens.
-- `--max-tool-rounds <count>` limits model/tool loop rounds.
-- `--verbose` prints status/tool progress on stderr.
-- `--acp` exposes the direct local runtime over ACP stdio for clients that speak ACP.
 
 Direct mode ensures a project `AGENTS.md` exists in the working directory before starting the TUI.
 
@@ -309,6 +346,8 @@ swift run -c release mlx-server --version
 swift run -c release mlx-server --setup
 swift run -c release mlx-server --setup-models
 swift run -c release mlx-server --setup-agents
+swift run -c release mlx-server --coder --cwd /path/to/project
+swift run -c release mlx-server --coder --agent Feature --model qwen3-mlx --cwd /path/to/project
 swift run -c release mlx-server --reset
 swift run -c release mlx-server --reset-disk-cache
 ```
