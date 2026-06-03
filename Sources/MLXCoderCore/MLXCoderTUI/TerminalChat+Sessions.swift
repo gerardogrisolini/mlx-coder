@@ -152,12 +152,29 @@ extension TerminalChat {
 
         do {
             _ = try MLXTerminalSessionStore.save(savedSession)
+            recordSavedSessionIndex(savedSession)
             activeSavedSessionName = savedSession.name
             writeSystemMessage(
                 "Saved session: \(savedSession.name) (\(savedSession.messageCount) messages).\n"
             )
         } catch {
             writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
+        }
+    }
+
+    public func recordSavedSessionIndex(_ savedSession: MLXTerminalSavedSession) {
+        do {
+            try MLXMemoryService().recordSavedSessionIndexEntry(
+                projectPath: savedSession.workingDirectoryPath,
+                sessionName: savedSession.name,
+                sessionID: savedSession.sessionID,
+                savedAt: savedSession.savedAt
+            )
+        } catch {
+            SwiftMLXLogger.warning(
+                .memory,
+                "failed to update global saved-session memory index for \(savedSession.name): \(error.localizedDescription)"
+            )
         }
     }
 

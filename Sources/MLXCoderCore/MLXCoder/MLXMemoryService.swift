@@ -13,17 +13,19 @@ public final class MLXMemoryService: @unchecked Sendable {
     public static let defaultGlobalMemoryContent: String = """
     # MEMORY.md
 
-    Durable global memory for user-level guidance that should apply across projects.
+    Lightweight global project index for sessions that do not start inside a clear workspace.
 
-    Use this file for:
-    - general preferences
-    - recurring working style
-    - reusable recommendations
-    - cross-project guidance, warnings, or tendencies
+    Use this file only for:
+    - saved-session pointers keyed by project/workspace path
+    - the latest saved session name/id for each project when one should be resumed
+    - a pointer to the project MEMORY.md that should be read next
+    - minimal cross-project routing notes
 
     Do not use this file for:
-    - project-specific implementation history
-    - temporary task notes
+    - user preferences or operating rules
+    - project implementation history
+    - technical decisions, tests, file changes, or task logs
+    - anything already clear from the current working directory
 
     ## Active
 
@@ -33,19 +35,25 @@ public final class MLXMemoryService: @unchecked Sendable {
     public static let defaultProjectMemoryContent: String = """
     # MEMORY.md
 
-    Durable project memory for this workspace.
+    Durable project journal for this workspace.
 
     Use this file for:
-    - architecture decisions
-    - important implementation details
-    - lessons learned while working in this project
-    - significant completed features
-    - constraints, caveats, or project-specific workflows
+    - concise handoff entries for significant completed work
+    - current validated project state
+    - blockers, caveats, or decisions that affect future work
+    - the next logical step for the codebase
+
+    Preferred entry shape:
+    - Timestamp: YYYY-MM-DD HH:mm TimeZone
+    - Summary: short description of what changed
+    - State: current validated state, including important caveats
+    - Next: next logical step
 
     Do not use this file for:
-    - general user preferences
-    - temporary task notes
-    - information that is already obvious from current files
+    - every command or tool call
+    - raw outputs, detailed logs, or large diffs
+    - general user preferences or operating rules
+    - information already obvious from current files
 
     ## Active
 
@@ -71,15 +79,14 @@ public final class MLXMemoryService: @unchecked Sendable {
         return """
         Memory tools:
         Treat MEMORY.md as first-class durable context, but remember that its contents are not preloaded into this prompt.
-        When entering or reopening a project, use `memory.search` or `memory.read` to understand important project context and where previous work should resume.
-        Use `memory.search` with a targeted query before non-trivial project work when prior decisions, repo conventions, durable warnings, or user preferences could affect the task.
-        Use `memory.read` only when you need to inspect current notes; scope can be `global`, `project`, or `all`.
-        Use `memory.write` after learning something stable that should survive future turns.
-        Write to `scope: global` only for general user preferences, tendencies, reusable recommendations, or cross-project guidance.
-        Write to `scope: project` for project-specific architecture decisions, important implementation details, lessons learned, significant completed features, constraints, caveats, or workflows.
-        Write project resume points only when they describe durable context for the next session, such as an incomplete migration, a known blocker, or the next validated step after significant work.
-        Prefer project memory when the note mentions files, modules, tools, APIs, build behavior, setup, or decisions specific to the current workspace.
-        Do not write temporary task state, obvious facts already clear from files, guesses, or one-off observations.
+        When a current working directory or project is clear, use project memory as the codebase journal; read or search it to answer resume questions like "where are we?" or "what should we do today?", then verify the current state with Git, files, builds, tests, or current user messages before acting.
+        Use global memory only as a lightweight project/session index when there is no clear project, such as a generic session asking which project or saved session should be resumed. It may contain one active saved-session pointer per project. Do not consult global memory just to resume a project when the current working directory is already useful.
+        Do not write user preferences, operating rules, project implementation history, technical decisions, tests, file changes, or task logs to global memory; global memory should only point to relevant project/workspace paths, their latest saved session, and where to read next.
+        Saved-session pointers in global memory are maintained programmatically when a session is saved; do not duplicate them with model-authored `memory.write` calls.
+        At the end of a substantial project turn, before the final answer, decide whether the project journal should be updated with `memory.write`.
+        Write one project journal entry only when project state changed, a meaningful decision was made, a significant piece of work completed, a real blocker/caveat emerged, or a clear next step should survive future sessions.
+        A project journal entry should be concise and structured with `Timestamp`, `Summary`, `State`, and `Next`. Include date, time, and timezone in `Timestamp`.
+        Do not write every command or tool call, raw outputs, detailed logs, large diffs, temporary task state, guesses, or facts already obvious from current files.
         Use `memory.archive` when a note is stale, superseded, incorrect, or no longer useful.
         Prefer fresh evidence from files, tools, builds, tests, or current user messages when it conflicts with memory.
         """
@@ -371,6 +378,46 @@ public final class MLXMemoryService: @unchecked Sendable {
     }
 
     @discardableResult
+    public func recordSavedSessionIndexEntry(
+        projectPath: String,
+        sessionName: String,
+        sessionID: String,
+        savedAt: Date,
+        timeZone: TimeZone = .current
+    ) throws -> MLXMemoryEntry {
+        let normalizedProjectPath = URL(fileURLWithPath: projectPath)
+            .standardizedFileURL
+            .path
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedSessionName = sessionName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedSessionID = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !normalizedProjectPath.isEmpty else {
+            throw MLXMemoryServiceError.missingField("projectPath")
+        }
+        guard !normalizedSessionName.isEmpty else {
+            throw MLXMemoryServiceError.missingField("sessionName")
+        }
+        guard !normalizedSessionID.isEmpty else {
+            throw MLXMemoryServiceError.missingField("sessionID")
+        }
+
+        try archiveActiveSavedSessionIndexEntries(forProjectPath: normalizedProjectPath)
+        return try writeEntry(
+            content: """
+            Kind: saved-session
+            Timestamp: \(Self.timestampString(savedAt, timeZone: timeZone))
+            Project: \(normalizedProjectPath)
+            Session: \(normalizedSessionName)
+            Session ID: \(normalizedSessionID)
+            Next: load this saved session, then read the project MEMORY.md.
+            """,
+            scope: .global,
+            workspaceRootURL: nil
+        )
+    }
+
+    @discardableResult
     public func ensureGlobalMemoryFileExists() throws -> URL {
         let fileURL = globalMemoryFileURL().standardizedFileURL
         if fileManager.fileExists(atPath: fileURL.path),
@@ -436,9 +483,30 @@ public final class MLXMemoryService: @unchecked Sendable {
         var entries: [MLXMemoryEntry] = []
         var sectionIsActive = false
         var sectionIsArchived = false
+        var currentEntryLines: [String] = []
+        var currentEntryIsArchived = false
+
+        func flushCurrentEntry() {
+            guard !currentEntryLines.isEmpty else {
+                return
+            }
+            defer {
+                currentEntryLines.removeAll()
+            }
+            guard let entry = Self.entry(
+                fromEntryContent: currentEntryLines.joined(separator: "\n"),
+                scope: document.scope,
+                isArchived: currentEntryIsArchived
+            ) else {
+                return
+            }
+            entries.append(entry)
+        }
+
         for rawLine in content.components(separatedBy: .newlines) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.hasPrefix("## ") {
+                flushCurrentEntry()
                 let sectionTitle = line
                     .dropFirst(3)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -450,38 +518,39 @@ public final class MLXMemoryService: @unchecked Sendable {
             guard sectionIsActive || sectionIsArchived else {
                 continue
             }
-            guard line.hasPrefix("- ") else {
+            if line.hasPrefix("- ") {
+                flushCurrentEntry()
+                currentEntryLines = [String(line.dropFirst(2))]
+                currentEntryIsArchived = sectionIsArchived
                 continue
             }
 
-            guard let entry = Self.entry(
-                fromBulletLine: String(line.dropFirst(2)),
-                scope: document.scope,
-                isArchived: sectionIsArchived
-            ) else {
+            guard !currentEntryLines.isEmpty,
+                  let continuationLine = Self.entryContinuationLine(from: rawLine) else {
                 continue
             }
-            entries.append(entry)
+            currentEntryLines.append(continuationLine)
         }
+        flushCurrentEntry()
         return entries
     }
 
     private static func entry(
-        fromBulletLine line: String,
+        fromEntryContent content: String,
         scope: MLXMemoryScope,
         isArchived: Bool
     ) -> MLXMemoryEntry? {
-        let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedLine.isEmpty else {
+        let trimmedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedContent.isEmpty else {
             return nil
         }
 
         let idPrefix = "[id:"
-        if trimmedLine.lowercased().hasPrefix(idPrefix),
-           let closingBracket = trimmedLine.firstIndex(of: "]") {
-            let rawID = trimmedLine[trimmedLine.index(trimmedLine.startIndex, offsetBy: idPrefix.count)..<closingBracket]
+        if trimmedContent.lowercased().hasPrefix(idPrefix),
+           let closingBracket = trimmedContent.firstIndex(of: "]") {
+            let rawID = trimmedContent[trimmedContent.index(trimmedContent.startIndex, offsetBy: idPrefix.count)..<closingBracket]
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let content = trimmedLine[trimmedLine.index(after: closingBracket)...]
+            let content = trimmedContent[trimmedContent.index(after: closingBracket)...]
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard let id = UUID(uuidString: rawID), !content.isEmpty else {
                 return nil
@@ -495,10 +564,20 @@ public final class MLXMemoryService: @unchecked Sendable {
         }
 
         return MLXMemoryEntry(
-            content: trimmedLine,
+            content: trimmedContent,
             scope: scope,
             isArchived: isArchived
         )
+    }
+
+    private static func entryContinuationLine(from line: String) -> String? {
+        if line.hasPrefix("  ") {
+            return String(line.dropFirst(2))
+        }
+        if line.hasPrefix("\t") {
+            return String(line.dropFirst())
+        }
+        return nil
     }
 
     private func writeEntries(
@@ -548,13 +627,71 @@ public final class MLXMemoryService: @unchecked Sendable {
             return ""
         }
         return entries.map { entry in
-            "- [id: \(entry.id.uuidString.uppercased())] \(normalizedBulletContent(entry.content))"
+            let lines = normalizedBulletContent(entry.content)
+                .components(separatedBy: "\n")
+            let firstLine = lines.first ?? ""
+            let continuation = lines.dropFirst()
+                .map { "  \($0)" }
+                .joined(separator: "\n")
+            let header = "- [id: \(entry.id.uuidString.uppercased())] \(firstLine)"
+            return continuation.isEmpty ? header : "\(header)\n\(continuation)"
         }
         .joined(separator: "\n")
     }
 
     private static func normalizedBulletContent(_ content: String) -> String {
         MLXMemoryEntry.normalizedContent(content)
+    }
+
+    private func archiveActiveSavedSessionIndexEntries(forProjectPath projectPath: String) throws {
+        let entries = readEntries(
+            scope: .global,
+            workspaceRootURL: nil,
+            includeArchived: false,
+            limit: .max
+        )
+        for entry in entries
+            where Self.savedSessionIndexProjectPath(in: entry) == projectPath {
+            _ = try setArchived(
+                true,
+                id: entry.id,
+                scope: .global,
+                workspaceRootURL: nil
+            )
+        }
+    }
+
+    private static func savedSessionIndexProjectPath(in entry: MLXMemoryEntry) -> String? {
+        let lines = entry.content
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard lines.contains(where: {
+            $0.localizedCaseInsensitiveCompare("Kind: saved-session") == .orderedSame
+        }) else {
+            return nil
+        }
+        guard let projectLine = lines.first(where: {
+            $0.lowercased().hasPrefix("project:")
+        }) else {
+            return nil
+        }
+        let path = projectLine
+            .dropFirst("Project:".count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else {
+            return nil
+        }
+        return URL(fileURLWithPath: path)
+            .standardizedFileURL
+            .path
+    }
+
+    private static func timestampString(_ date: Date, timeZone: TimeZone) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return "\(formatter.string(from: date)) \(timeZone.identifier)"
     }
 
     private func searchScore(entry: MLXMemoryEntry, terms: [String]) -> Int {

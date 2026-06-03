@@ -25,7 +25,7 @@ public enum MLXMemoryTool {
         ToolDescriptor(
             name: "memory.read",
             title: "Memory Read",
-            description: "Reads durable notes from global and project MEMORY.md files.",
+            description: "Reads durable entries from global and project MEMORY.md files. Project memory is the codebase journal; global memory is only a lightweight per-project saved-session index for sessions without a clear workspace.",
             inputSchema: """
             {
               "type": "object",
@@ -40,7 +40,7 @@ public enum MLXMemoryTool {
         ToolDescriptor(
             name: "memory.search",
             title: "Memory Search",
-            description: "Searches durable notes from global and project MEMORY.md files.",
+            description: "Searches durable entries from global and project MEMORY.md files. Search project memory for codebase history and resume points; use global memory only to find the relevant project/session pointer when no workspace is clear.",
             inputSchema: """
             {
               "type": "object",
@@ -57,7 +57,7 @@ public enum MLXMemoryTool {
         ToolDescriptor(
             name: "memory.write",
             title: "Memory Write",
-            description: "Appends one durable note to the right MEMORY.md scope. Global is for reusable user-level guidance; project is for architecture decisions, lessons learned, important implementation details, significant completed features, and workspace-specific constraints.",
+            description: "Appends one durable entry to the right MEMORY.md scope. Use project for concise end-of-turn journal entries with Timestamp, Summary, State, and Next. Global saved-session pointers are maintained programmatically per project when sessions are saved.",
             inputSchema: """
             {
               "type": "object",
@@ -66,7 +66,7 @@ public enum MLXMemoryTool {
                 "scope": {
                   "type": "string",
                   "enum": ["global", "project"],
-                  "description": "Use global only for general preferences, tendencies, reusable recommendations, or cross-project guidance. Use project for workspace-specific decisions, learnings, implementation details, completed features, constraints, caveats, or workflows."
+                  "description": "Use project for the codebase journal when the current workspace is clear. Global is only for lightweight project/session routing and saved-session pointers are maintained programmatically."
                 }
               },
               "required": ["content"]
@@ -76,7 +76,7 @@ public enum MLXMemoryTool {
         ToolDescriptor(
             name: "memory.archive",
             title: "Memory Archive",
-            description: "Archives a durable memory note by id so it no longer influences future prompts.",
+            description: "Archives a durable memory or journal entry by id so it no longer influences future resume context.",
             inputSchema: """
             {
               "type": "object",

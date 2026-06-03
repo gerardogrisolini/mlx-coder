@@ -20,7 +20,7 @@ The goal is simple: expose downloaded MLX models as a fast local server without 
 - Records throughput metrics so regressions in tok/s are visible.
 - Provides a terminal chat mode that keeps session context alive and reports tok/s per turn.
 - Provides `mlx-coder` as a separate executable backed by the same package sources, plus a direct `mlx-server --coder` mode that runs it against the local MLX runtime without HTTP or ACP.
-- Saves and restores explicit `mlx-coder` session snapshots with `/sessions`, including local or remote transcripts.
+- Saves and restores explicit `mlx-coder` session snapshots with `/sessions`, including local or remote transcripts, and records per-project resume pointers in global memory.
 
 ## What It Is For
 
@@ -147,6 +147,12 @@ swift run -c release mlx-server --coder --cwd /path/to/project
 In direct mode, `mlx-coder` uses the configured `mlx-server` model catalog and local MLX runtime without going through HTTP or ACP.
 
 Inside the TUI, `/sessions <name>` saves the current conversation as an explicit snapshot under `~/.mlx-coder/sessions/` for the current project. Running `/sessions` without a name lists the saved snapshots for that project and lets you load one to continue the work. Local MLX sessions save the runtime snapshot; remote sessions save the local transcript, including tool calls and tool outputs, so a remote `mlx-server` can reuse its disk KV cache when the restored prompt prefix matches.
+
+`MEMORY.md` is split by responsibility:
+
+- The project `MEMORY.md` in the workspace is the codebase journal. It should contain concise handoff entries with `Timestamp`, `Summary`, `State`, and `Next`, not every command, tool call, raw output, or obvious file fact.
+- The global `~/.mlx-coder/MEMORY.md` is only a lightweight resume index for sessions that do not start inside a clear project. When `/sessions <name>` saves a session, `mlx-coder` updates one active saved-session pointer for that project path, leaving pointers for other projects intact.
+- Operating rules and preferences belong in `AGENTS.md`, not in memory. On resume, the agent should use project memory for history, global memory only to choose the right project/session when needed, and then verify the current state with Git, files, builds, or tests.
 
 ## Runtime
 

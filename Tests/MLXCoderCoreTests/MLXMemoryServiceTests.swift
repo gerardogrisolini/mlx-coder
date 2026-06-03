@@ -6,12 +6,16 @@ import Testing
 struct MLXMemoryServiceTests {
     @Test
     func memoryTemplatesDescribeGlobalAndProjectResponsibilities() {
-        #expect(MLXMemoryService.defaultGlobalMemoryContent.contains("general preferences"))
-        #expect(MLXMemoryService.defaultGlobalMemoryContent.contains("cross-project guidance"))
-        #expect(MLXMemoryService.defaultProjectMemoryContent.contains("architecture decisions"))
-        #expect(MLXMemoryService.defaultProjectMemoryContent.contains("significant completed features"))
-        #expect(MLXMemoryService.toolUsagePromptSection().contains("where previous work should resume"))
-        #expect(MLXMemoryService.toolUsagePromptSection().contains("Write project resume points only"))
+        #expect(MLXMemoryService.defaultGlobalMemoryContent.contains("Lightweight global project index"))
+        #expect(MLXMemoryService.defaultGlobalMemoryContent.contains("saved-session pointers keyed by project"))
+        #expect(MLXMemoryService.defaultGlobalMemoryContent.contains("latest saved session name/id for each project"))
+        #expect(MLXMemoryService.defaultGlobalMemoryContent.contains("user preferences or operating rules"))
+        #expect(MLXMemoryService.defaultProjectMemoryContent.contains("Durable project journal"))
+        #expect(MLXMemoryService.defaultProjectMemoryContent.contains("Timestamp: YYYY-MM-DD HH:mm TimeZone"))
+        #expect(MLXMemoryService.toolUsagePromptSection().contains("project memory as the codebase journal"))
+        #expect(MLXMemoryService.toolUsagePromptSection().contains("global memory only as a lightweight project/session index"))
+        #expect(MLXMemoryService.toolUsagePromptSection().contains("one active saved-session pointer per project"))
+        #expect(MLXMemoryService.toolUsagePromptSection().contains("At the end of a substantial project turn"))
 
         let projectDefault = MLXProjectContextFileService.defaultContent(
             kind: .memory,
@@ -79,12 +83,12 @@ struct MLXMemoryServiceTests {
         let service = MLXMemoryService(globalMemoryDirectoryURL: globalDirectoryURL)
 
         try service.writeEntry(
-            content: "Preference: keep final summaries concise.",
+            content: "Last project: \(workspaceURL.path)",
             scope: .global,
             workspaceRootURL: workspaceURL
         )
         try service.writeEntry(
-            content: "Architecture decision: use direct mlx-coder runtime inside mlx-server.",
+            content: "Summary: use direct mlx-coder runtime inside mlx-server.",
             scope: .project,
             workspaceRootURL: workspaceURL
         )
@@ -95,10 +99,10 @@ struct MLXMemoryServiceTests {
             encoding: .utf8
         )
 
-        #expect(globalContent.contains("Durable global memory"))
-        #expect(globalContent.contains("Preference: keep final summaries concise."))
-        #expect(projectContent.contains("Durable project memory"))
-        #expect(projectContent.contains("Architecture decision: use direct mlx-coder runtime inside mlx-server."))
+        #expect(globalContent.contains("Lightweight global project index"))
+        #expect(globalContent.contains("Last project: \(workspaceURL.path)"))
+        #expect(projectContent.contains("Durable project journal"))
+        #expect(projectContent.contains("Summary: use direct mlx-coder runtime inside mlx-server."))
         #expect(
             service.readEntries(
                 scope: .global,
@@ -113,6 +117,123 @@ struct MLXMemoryServiceTests {
                 limit: 10
             ).count == 1
         )
+    }
+
+    @Test
+    func projectJournalWritesPreserveMultilineEntries() throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-memory-tests-\(UUID().uuidString)", isDirectory: true)
+        let globalDirectoryURL = rootURL.appendingPathComponent("global", isDirectory: true)
+        let workspaceURL = rootURL.appendingPathComponent("workspace", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: rootURL)
+        }
+
+        try FileManager.default.createDirectory(
+            at: workspaceURL,
+            withIntermediateDirectories: true
+        )
+        let service = MLXMemoryService(globalMemoryDirectoryURL: globalDirectoryURL)
+        let journalContent = """
+        Timestamp: 2026-06-03 11:45 Europe/Rome
+        Summary: completed the memory journal framing.
+        State: project journal is the resume source; global memory is only an index.
+        Next: validate the real resume flow from a fresh session.
+        """
+
+        let entry = try service.writeEntry(
+            content: journalContent,
+            scope: .project,
+            workspaceRootURL: workspaceURL
+        )
+        let projectContent = try String(
+            contentsOf: workspaceURL.appendingPathComponent(MLXMemoryService.filename),
+            encoding: .utf8
+        )
+        let readEntry = try #require(
+            service.readEntries(
+                scope: .project,
+                workspaceRootURL: workspaceURL,
+                limit: 10
+            ).first
+        )
+
+        #expect(
+            projectContent.contains(
+                "- [id: \(entry.id.uuidString.uppercased())] Timestamp: 2026-06-03 11:45 Europe/Rome"
+            )
+        )
+        #expect(projectContent.contains("\n  Summary: completed the memory journal framing."))
+        #expect(projectContent.contains("\n  State: project journal is the resume source; global memory is only an index."))
+        #expect(projectContent.contains("\n  Next: validate the real resume flow from a fresh session."))
+        #expect(readEntry.content == journalContent)
+    }
+
+    @Test
+    func globalSavedSessionIndexKeepsLatestSessionPerProject() throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-memory-tests-\(UUID().uuidString)", isDirectory: true)
+        let globalDirectoryURL = rootURL.appendingPathComponent("global", isDirectory: true)
+        let firstProjectURL = rootURL.appendingPathComponent("first", isDirectory: true)
+        let secondProjectURL = rootURL.appendingPathComponent("second", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: rootURL)
+        }
+
+        try FileManager.default.createDirectory(
+            at: firstProjectURL,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: secondProjectURL,
+            withIntermediateDirectories: true
+        )
+
+        let service = MLXMemoryService(globalMemoryDirectoryURL: globalDirectoryURL)
+        try service.recordSavedSessionIndexEntry(
+            projectPath: firstProjectURL.path,
+            sessionName: "first checkpoint",
+            sessionID: "first-session-old",
+            savedAt: Date(timeIntervalSince1970: 100),
+            timeZone: TimeZone(identifier: "Europe/Rome")!
+        )
+        try service.recordSavedSessionIndexEntry(
+            projectPath: secondProjectURL.path,
+            sessionName: "second checkpoint",
+            sessionID: "second-session",
+            savedAt: Date(timeIntervalSince1970: 200),
+            timeZone: TimeZone(identifier: "Europe/Rome")!
+        )
+        try service.recordSavedSessionIndexEntry(
+            projectPath: firstProjectURL.path,
+            sessionName: "first latest",
+            sessionID: "first-session-new",
+            savedAt: Date(timeIntervalSince1970: 300),
+            timeZone: TimeZone(identifier: "Europe/Rome")!
+        )
+
+        let activeEntries = service.readEntries(
+            scope: .global,
+            workspaceRootURL: nil,
+            includeArchived: false,
+            limit: 10
+        )
+        let archivedEntries = service.readEntries(
+            scope: .global,
+            workspaceRootURL: nil,
+            includeArchived: true,
+            limit: 10
+        )
+        .filter(\.isArchived)
+
+        #expect(activeEntries.count == 2)
+        #expect(activeEntries.contains { $0.content.contains("Project: \(firstProjectURL.path)") })
+        #expect(activeEntries.contains { $0.content.contains("Session: first latest") })
+        #expect(activeEntries.contains { $0.content.contains("Project: \(secondProjectURL.path)") })
+        #expect(activeEntries.contains { $0.content.contains("Session: second checkpoint") })
+        #expect(!activeEntries.contains { $0.content.contains("first-session-old") })
+        #expect(archivedEntries.count == 1)
+        #expect(archivedEntries.first?.content.contains("first-session-old") == true)
     }
 
     @Test
@@ -131,12 +252,12 @@ struct MLXMemoryServiceTests {
         )
         let service = MLXMemoryService(globalMemoryDirectoryURL: globalDirectoryURL)
         try service.writeEntry(
-            content: "Architecture note: global reusable preference.",
+            content: "Last project: architecture-lab.",
             scope: .global,
             workspaceRootURL: workspaceURL
         )
         try service.writeEntry(
-            content: "Architecture note: project-specific runtime decision.",
+            content: "Summary: architecture runtime decision.",
             scope: .project,
             workspaceRootURL: workspaceURL
         )

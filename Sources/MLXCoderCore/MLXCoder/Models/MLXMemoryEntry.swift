@@ -43,10 +43,13 @@ public nonisolated struct MLXMemoryEntry: Identifiable, Codable, Hashable, Senda
     }
 
     public static func normalizedContent(_ content: String) -> String {
-        content
+        let normalizedLineEndings = content
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        return normalizedLineEndings
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(
-                of: #"\s+"#,
+                of: #"[ \t]+"#,
                 with: " ",
                 options: .regularExpression
             )
