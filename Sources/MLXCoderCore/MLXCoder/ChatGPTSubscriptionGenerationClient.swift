@@ -606,10 +606,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                 session.continuation = nil
             }
 
-            if let metrics = RemoteGenerationClient.generationMetrics(
-                generationStats,
-                estimateMissingRates: true
-            ) {
+            if let metrics = RemoteGenerationClient.generationMetrics(generationStats) {
                 await RemoteGenerationClient.publishGenerationMetrics(
                     metrics,
                     maxTokens: maxContextWindowTokens,
