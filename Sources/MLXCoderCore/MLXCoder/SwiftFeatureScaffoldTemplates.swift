@@ -262,7 +262,7 @@ extension SwiftFeatureRuntime {
             let text: String?
         }
 
-        private struct InvocationContext {
+        struct InvocationContext {
             let workingDirectory: URL
 
             func resolvePath(_ path: String) -> URL {
