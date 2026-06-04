@@ -42,6 +42,11 @@ struct MLXServerMain {
             return
         }
 
+        if arguments.contains("--prepare-metal") {
+            try MLXMetalLibraryBootstrap.prepareIfNeeded()
+            return
+        }
+
         let didResetDiskCache = MLXServerResetDiskCacheCommand.shouldRun(arguments: arguments)
         let didResetConfiguration = MLXServerResetConfigurationCommand.shouldRun(arguments: arguments)
         if didResetDiskCache {

@@ -16,7 +16,12 @@ enum MLXMetalLibraryBootstrap {
         let executableDirectory = try executableDirectory()
         let outputURL = executableDirectory.appendingPathComponent("mlx.metallib")
         let manifestURL = executableDirectory.appendingPathComponent("mlx.metallib.manifest.json")
-        let source = try findMetalKernelSource()
+        guard let source = try? findMetalKernelSource() else {
+            if FileManager.default.fileExists(atPath: outputURL.path) {
+                return
+            }
+            throw MLXMetalLibraryBootstrapError.missingMetalKernelDirectory
+        }
         let manifest = try MLXMetalLibraryManifest(sourceFiles: source.metalFiles)
 
         if FileManager.default.fileExists(atPath: outputURL.path) {
@@ -100,8 +105,10 @@ enum MLXMetalLibraryBootstrap {
         let currentDirectory = URL(fileURLWithPath: fileManager.currentDirectoryPath)
         let executableDirectory = try executableDirectory()
 
-        let roots = ancestorURLs(startingAt: currentDirectory)
-            + ancestorURLs(startingAt: executableDirectory)
+        let executableRoots = ancestorURLs(startingAt: executableDirectory)
+        let roots = executableDirectory.pathComponents.contains(".build")
+            ? ancestorURLs(startingAt: currentDirectory) + executableRoots
+            : executableRoots
 
         for root in roots {
             let sourceRootURL = root
@@ -224,15 +231,24 @@ enum MLXMetalLibraryBootstrap {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
         process.arguments = arguments
 
-        let pipe = Pipe()
-        process.standardError = pipe
-        process.standardOutput = pipe
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-server-xcrun-\(UUID().uuidString).log")
+        FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+        let outputHandle = try FileHandle(forWritingTo: outputURL)
+        defer {
+            try? outputHandle.close()
+            try? FileManager.default.removeItem(at: outputURL)
+        }
+
+        process.standardError = outputHandle
+        process.standardOutput = outputHandle
 
         try process.run()
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
-            let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
+            try? outputHandle.synchronize()
+            let output = try? String(contentsOf: outputURL, encoding: .utf8)
             throw MLXMetalLibraryBootstrapError.xcrunFailed(arguments.joined(separator: " "), output ?? "")
         }
     }

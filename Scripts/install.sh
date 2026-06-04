@@ -62,6 +62,13 @@ sudo cp "${TMPDIR}/mlx-server" "${INSTALL_DIR}/mlx-server"
 sudo cp "${TMPDIR}/mlx-coder" "${INSTALL_DIR}/mlx-coder"
 sudo chmod +x "${INSTALL_DIR}/mlx-server" "${INSTALL_DIR}/mlx-coder"
 
+if [ -f "${TMPDIR}/mlx.metallib" ]; then
+    sudo cp "${TMPDIR}/mlx.metallib" "${INSTALL_DIR}/mlx.metallib"
+fi
+if [ -f "${TMPDIR}/mlx.metallib.manifest.json" ]; then
+    sudo cp "${TMPDIR}/mlx.metallib.manifest.json" "${INSTALL_DIR}/mlx.metallib.manifest.json"
+fi
+
 # Install feature binaries
 if [ -d "${TMPDIR}/features" ]; then
     for feature in "${TMPDIR}/features/"*; do
