@@ -48,7 +48,7 @@ jobs:
           shasum -a 256 mlx-server-${{ github.ref_name }}-macos-arm64.tar.gz \
             > mlx-server-${{ github.ref_name }}-macos-arm64.tar.gz.sha256
 
-            - name: Create release and upload assets
+      - name: Create release and upload assets
         uses: softprops/action-gh-release@v2
         with:
           draft: false
@@ -56,3 +56,19 @@ jobs:
           files: |
             dist/mlx-server-${{ github.ref_name }}-macos-arm64.tar.gz
             dist/mlx-server-${{ github.ref_name }}-macos-arm64.tar.gz.sha256
+
+      - name: Notify Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          PAYLOAD=$(printf '{"event_type":"release","client_payload":{"version":"%s"}}' "$VERSION")
+
+          curl --fail --silent --show-error --location \
+            -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/gerardogrisolini/homebrew-tap/dispatches \
+            -d "$PAYLOAD"
