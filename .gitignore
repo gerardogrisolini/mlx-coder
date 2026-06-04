@@ -63,3 +63,4 @@ fastlane/test_output
 .swiftpm
 Package.resolved
 AGENTS.md
+MEMORY.md

@@ -10,6 +10,25 @@ The project is designed for local-first AI development on Apple Silicon: keep mo
 
 ## Start Here
 
+### Prebuilt Binary (recommended)
+
+Install the latest release with a single command:
+
+```bash
+curl -sL https://raw.githubusercontent.com/gerardogrisolini/mlx-server/main/Scripts/install.sh | bash
+```
+
+Or download a specific release from [GitHub Releases](https://github.com/gerardogrisolini/mlx-server/releases) and extract manually:
+
+```bash
+tar xzf mlx-server-v0.1.0-macos-arm64.tar.gz
+sudo cp mlx-server mlx-coder /usr/local/bin/
+```
+
+Requires macOS 26 (Tahoe) on Apple Silicon.
+
+### Build from Source
+
 If your goal is **local coding assistance with MLX models**, start with **`mlx-server --coder`**:
 
 ```bash
