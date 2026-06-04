@@ -38,7 +38,7 @@ extension MCPHTTPTransportClient {
         let initializeParams = MCPInitializeParams(
             protocolVersion: preferredProtocolVersion,
             capabilities: MCPClientCapabilities(),
-            clientInfo: MCPClientInfo(name: "mlx-coder", version: "0.1")
+            clientInfo: MCPClientInfo(name: "mlx-coder", version: agentVersion)
         )
 
         _ = try await request(

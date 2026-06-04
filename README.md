@@ -10,9 +10,34 @@ The project is designed for local-first AI development on Apple Silicon: keep mo
 
 ## Start Here
 
-### Prebuilt Binary (recommended)
+### Homebrew (recommended)
 
-Install the latest release with a single command:
+Install the latest release through the Homebrew tap:
+
+```bash
+brew tap gerardogrisolini/tap
+brew install mlx-server
+```
+
+Then set up configuration and models:
+
+```bash
+mlx-server --setup
+mlx-server --setup-models
+mlx-server --coder --cwd /path/to/project
+```
+
+Upgrade with:
+
+```bash
+brew upgrade mlx-server
+```
+
+Requires macOS 26 (Tahoe) on Apple Silicon.
+
+### Manual Prebuilt Binary
+
+If you do not want to use Homebrew, install the latest release with the installer script:
 
 ```bash
 curl -sL https://raw.githubusercontent.com/gerardogrisolini/mlx-server/main/Scripts/install.sh | bash
@@ -21,11 +46,9 @@ curl -sL https://raw.githubusercontent.com/gerardogrisolini/mlx-server/main/Scri
 Or download a specific release from [GitHub Releases](https://github.com/gerardogrisolini/mlx-server/releases) and extract manually:
 
 ```bash
-tar xzf mlx-server-v0.1.0-macos-arm64.tar.gz
+tar xzf mlx-server-v0.1.1-macos-arm64.tar.gz
 sudo cp mlx-server mlx-coder /usr/local/bin/
 ```
-
-Requires macOS 26 (Tahoe) on Apple Silicon.
 
 ### Build from Source
 

@@ -775,7 +775,7 @@ private extension MLXServerAgentIntegrationService {
         let manifest = AionUIExtensionManifest(
             name: "aionext-mlx-server",
             displayName: "MLX Server",
-            version: "0.1.0",
+            version: MLXServerCore.version,
             description: "Integrates mlx-coder and mlx-server-coder as ACP adapters in Aion UI.",
             author: "MLX Server",
             engine: AionUIExtensionEngine(aionui: "^2.0.0"),
@@ -825,7 +825,7 @@ private extension MLXServerAgentIntegrationService {
         updatedStates.extensions["aionext-mlx-server"] = AionUIExtensionState(
             installed: true,
             enabled: true,
-            lastVersion: "0.1.0"
+            lastVersion: MLXServerCore.version
         )
         try writeJSON(updatedStates, to: stateURL)
     }
@@ -2523,7 +2523,7 @@ private struct AionUIExtensionState: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         installed = (try? container.decode(Bool.self, forKey: .installed)) ?? true
         enabled = (try? container.decode(Bool.self, forKey: .enabled)) ?? true
-        lastVersion = (try? container.decode(String.self, forKey: .lastVersion)) ?? "0.1.0"
+        lastVersion = (try? container.decode(String.self, forKey: .lastVersion)) ?? MLXServerCore.version
     }
 
     enum CodingKeys: String, CodingKey {

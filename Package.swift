@@ -67,8 +67,13 @@ let products: [Product] = [
 
 let targets: [Target] = [
     .target(
+        name: "MLXPackageMetadata",
+        dependencies: []
+    ),
+    .target(
         name: "MLXServerCore",
         dependencies: [
+            "MLXPackageMetadata",
             .product(name: "HuggingFace", package: "swift-huggingface"),
             .product(name: "MLX", package: "mlx-swift"),
             .product(name: "MLXHuggingFace", package: "mlx-swift-lm"),
@@ -94,7 +99,8 @@ let targets: [Target] = [
             .product(name: "Crypto", package: "swift-crypto"),
             .product(name: "Markdown", package: "swift-markdown"),
             "MLXFeatureKit",
-            "MLXLocalToolsSupport"
+            "MLXLocalToolsSupport",
+            "MLXPackageMetadata"
         ],
         swiftSettings: [
             .define("SWIFTPM_NON_SANDBOX_TUI")

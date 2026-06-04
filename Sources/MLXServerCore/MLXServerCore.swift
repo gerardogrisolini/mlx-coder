@@ -4,9 +4,14 @@
 //
 
 import Foundation
+import MLXPackageMetadata
 
 public enum MLXServerCore {
-    public static let serviceName = "mlx-server"
+    public static let serviceName = MLXPackageMetadata.serverExecutableName
+    public static let version = MLXPackageMetadata.version
+    public static let versionDescription = MLXPackageMetadata.versionDescription(
+        for: serviceName
+    )
 }
 
 public struct MLXServerConfiguration: Equatable, Sendable {

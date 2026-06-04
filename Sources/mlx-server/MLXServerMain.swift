@@ -38,7 +38,7 @@ struct MLXServerMain {
         }
 
         if arguments.contains("--version") {
-            print(MLXServerCore.serviceName)
+            print(MLXServerCore.versionDescription)
             return
         }
 

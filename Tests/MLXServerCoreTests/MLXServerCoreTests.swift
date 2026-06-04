@@ -9,6 +9,13 @@ import Foundation
 import MLXLMCommon
 
 @Test
+func exposesSharedVersionDescription() {
+    #expect(MLXServerCore.serviceName == "mlx-server")
+    #expect(MLXServerCore.version == "0.1.1")
+    #expect(MLXServerCore.versionDescription == "mlx-server 0.1.1")
+}
+
+@Test
 func validatesDefaultConfiguration() throws {
     let configuration = try MLXServerConfiguration().validated()
 

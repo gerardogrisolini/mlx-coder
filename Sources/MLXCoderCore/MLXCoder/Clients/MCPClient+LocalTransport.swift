@@ -77,7 +77,7 @@ extension MCPClient {
         let initializeParams = MCPInitializeParams(
             protocolVersion: configuration.preferredProtocolVersion,
             capabilities: MCPClientCapabilities(),
-            clientInfo: MCPClientInfo(name: "mlx-coder", version: "0.1")
+            clientInfo: MCPClientInfo(name: "mlx-coder", version: agentVersion)
         )
 
         if configuration.usesMCPBridgeExecutable {

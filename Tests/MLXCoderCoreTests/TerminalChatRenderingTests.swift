@@ -4,6 +4,11 @@ import Testing
 @Suite
 struct TerminalChatRenderingTests {
     @Test
+    func exposesSharedAgentVersion() {
+        #expect(agentVersion == "0.1.1")
+    }
+
+    @Test
     func removingLeadingLineBreaksPreservesContent() {
         #expect(TerminalChat.removingLeadingLineBreaks("\n\nCiao") == "Ciao")
         #expect(TerminalChat.removingLeadingLineBreaks("\r\nCiao") == "Ciao")
