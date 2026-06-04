@@ -46,13 +46,6 @@ extension DirectToolExecutor {
                 toolCall: toolCall
             )
         }
-        if let deniedOutput = await deniedSwiftFeatureToolOutputIfNeeded(
-            sessionID: sessionID,
-            toolCall: toolCall,
-            workingDirectory: workingDirectory
-        ) {
-            return deniedOutput
-        }
         if let output = try await swiftFeatureRuntime.executeIfAvailable(
             toolCall: toolCall,
             workingDirectory: workingDirectory

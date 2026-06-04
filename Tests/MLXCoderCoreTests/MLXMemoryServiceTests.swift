@@ -170,6 +170,61 @@ struct MLXMemoryServiceTests {
     }
 
     @Test
+    func memoryWriteAddsProjectTimestampWhenMissing() throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-memory-tests-\(UUID().uuidString)", isDirectory: true)
+        let globalDirectoryURL = rootURL.appendingPathComponent("global", isDirectory: true)
+        let workspaceURL = rootURL.appendingPathComponent("workspace", isDirectory: true)
+        let timeZone = TimeZone(identifier: "Europe/Rome")!
+        let date = DateComponents(
+            calendar: Calendar(identifier: .gregorian),
+            timeZone: timeZone,
+            year: 2026,
+            month: 6,
+            day: 4,
+            hour: 15,
+            minute: 35
+        ).date!
+        defer {
+            try? FileManager.default.removeItem(at: rootURL)
+        }
+
+        try FileManager.default.createDirectory(
+            at: workspaceURL,
+            withIntermediateDirectories: true
+        )
+        let service = MLXMemoryService(globalMemoryDirectoryURL: globalDirectoryURL)
+        _ = try MLXMemoryTool.execute(
+            ToolRequest(
+                name: "memory.write",
+                arguments: [
+                    "content": .string("""
+                    Summary: fixed the release install path.
+                    State: Homebrew formula points at the published asset.
+                    Next: verify install from a fresh tap.
+                    """)
+                ]
+            ),
+            context: MLXMemoryToolContext(
+                workingDirectory: workspaceURL,
+                currentDate: date,
+                currentTimeZone: timeZone
+            ),
+            memoryService: service
+        )
+        let entry = try #require(
+            service.readEntries(
+                scope: .project,
+                workspaceRootURL: workspaceURL,
+                limit: 10
+            ).first
+        )
+
+        #expect(entry.content.hasPrefix("Timestamp: 2026-06-04 15:35 Europe/Rome"))
+        #expect(entry.content.contains("Summary: fixed the release install path."))
+    }
+
+    @Test
     func globalSavedSessionIndexKeepsLatestSessionPerProject() throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("mlx-memory-tests-\(UUID().uuidString)", isDirectory: true)

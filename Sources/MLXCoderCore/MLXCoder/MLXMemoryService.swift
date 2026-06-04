@@ -85,7 +85,7 @@ public final class MLXMemoryService: @unchecked Sendable {
         Saved-session pointers in global memory are maintained programmatically when a session is saved; do not duplicate them with model-authored `memory.write` calls.
         At the end of a substantial project turn, before the final answer, decide whether the project journal should be updated with `memory.write`.
         Write one project journal entry only when project state changed, a meaningful decision was made, a significant piece of work completed, a real blocker/caveat emerged, or a clear next step should survive future sessions.
-        A project journal entry should be concise and structured with `Timestamp`, `Summary`, `State`, and `Next`. Include date, time, and timezone in `Timestamp`.
+        A project journal entry should be concise and structured with `Summary`, `State`, and `Next`; `memory.write` adds `Timestamp` automatically when missing.
         Do not write every command or tool call, raw outputs, detailed logs, large diffs, temporary task state, guesses, or facts already obvious from current files.
         Use `memory.archive` when a note is stale, superseded, incorrect, or no longer useful.
         Prefer fresh evidence from files, tools, builds, tests, or current user messages when it conflicts with memory.
@@ -686,7 +686,7 @@ public final class MLXMemoryService: @unchecked Sendable {
             .path
     }
 
-    private static func timestampString(_ date: Date, timeZone: TimeZone) -> String {
+    public static func timestampString(_ date: Date, timeZone: TimeZone) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = timeZone

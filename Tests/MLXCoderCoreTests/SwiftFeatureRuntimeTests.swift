@@ -858,6 +858,17 @@ struct SwiftFeatureRuntimeTests {
     }
 
     @Test
+    func defaultGitFeatureStatusIncludesPushTool() {
+        let gitStatus = SwiftFeatureRuntime.defaultFeatureStatuses(
+            includeTools: true,
+            includeDisabled: true
+        ).first { $0.id == "mlx-git-tools" }
+
+        #expect(gitStatus?.tools.contains("git.commit") == true)
+        #expect(gitStatus?.tools.contains("git.push") == true)
+    }
+
+    @Test
     func bundledExecutableCandidatesIncludeSourcePackageBuildProductsFromOtherWorkingDirectory() throws {
         let outsideWorkingDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("mlx-feature-cwd-\(UUID().uuidString)", isDirectory: true)
@@ -1185,7 +1196,7 @@ struct SwiftFeatureRuntimeTests {
     }
 
     @Test
-    func directToolExecutorAuthorizesDynamicGitMutationsBeforeFeatureExecution() async throws {
+    func directToolExecutorDoesNotAuthorizeDynamicGitToolsBeforeFeatureExecution() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("mlx-swift-feature-git-auth-\(UUID().uuidString)", isDirectory: true)
         defer {
@@ -1214,7 +1225,7 @@ struct SwiftFeatureRuntimeTests {
                     tools: [
                         ToolDescriptor(
                             name: "git.commit",
-                            description: "Should require kernel authorization",
+                            description: "Should execute through the feature runtime",
                             inputSchema: #"{"type":"object","properties":{"message":{"type":"string"}},"required":["message"]}"#
                         )
                     ]
@@ -1224,9 +1235,8 @@ struct SwiftFeatureRuntimeTests {
         let executor = DirectToolExecutor(
             outputLimit: 24_000,
             authorizationHandler: { request in
-                request.toolName == "git.commit" && request.kind == "git.mutation"
-                    ? false
-                    : true
+                Issue.record("Unexpected authorization request: \(request.toolName) / \(request.kind)")
+                return false
             },
             swiftFeatureRuntime: runtime,
             subAgentBackendFactory: { TestAgentRuntimeBackend() }
@@ -1247,8 +1257,8 @@ struct SwiftFeatureRuntimeTests {
             allowedToolNames: ["git.commit"]
         )
 
-        #expect(result.output.contains("Git command cancelled."))
-        #expect(!result.output.contains("feature-git-commit"))
+        #expect(result.output.contains("feature-git-commit"))
+        #expect(!result.output.contains("Git command cancelled."))
     }
 
     @Test

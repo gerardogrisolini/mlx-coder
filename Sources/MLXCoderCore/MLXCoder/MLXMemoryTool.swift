@@ -10,13 +10,19 @@ import Foundation
 public struct MLXMemoryToolContext: Sendable {
     public let workspaceContext: XcodeWorkspaceContext?
     public let workingDirectory: URL?
+    public let currentDate: Date
+    public let currentTimeZone: TimeZone
 
     public init(
         workspaceContext: XcodeWorkspaceContext? = nil,
-        workingDirectory: URL? = nil
+        workingDirectory: URL? = nil,
+        currentDate: Date = Date(),
+        currentTimeZone: TimeZone = .current
     ) {
         self.workspaceContext = workspaceContext
         self.workingDirectory = workingDirectory
+        self.currentDate = currentDate
+        self.currentTimeZone = currentTimeZone
     }
 }
 
@@ -57,7 +63,7 @@ public enum MLXMemoryTool {
         ToolDescriptor(
             name: "memory.write",
             title: "Memory Write",
-            description: "Appends one durable entry to the right MEMORY.md scope. Use project for concise end-of-turn journal entries with Timestamp, Summary, State, and Next. Global saved-session pointers are maintained programmatically per project when sessions are saved.",
+            description: "Appends one durable entry to the right MEMORY.md scope. Use project for concise end-of-turn journal entries with Timestamp, Summary, State, and Next. If a project entry omits Timestamp, the tool adds the current local timestamp. Global saved-session pointers are maintained programmatically per project when sessions are saved.",
             inputSchema: """
             {
               "type": "object",
@@ -233,16 +239,21 @@ public enum MLXMemoryTool {
 
         let scope = parsedWriteScope(from: arguments)
             ?? defaultWriteScope(context: context)
+        let contentToWrite = contentWithTimestampIfNeeded(
+            content,
+            scope: scope,
+            context: context
+        )
         let entry: MLXMemoryEntry
         if let workspaceContext = context.workspaceContext {
             entry = try memoryService.writeEntry(
-                content: content,
+                content: contentToWrite,
                 scope: scope,
                 workspaceContext: workspaceContext
             )
         } else {
             entry = try memoryService.writeEntry(
-                content: content,
+                content: contentToWrite,
                 scope: scope,
                 workingDirectory: context.workingDirectory
             )
@@ -303,6 +314,32 @@ public enum MLXMemoryTool {
             ?? arguments["text"]?.stringValue
             ?? arguments["note"]?.stringValue
         return MLXMemoryEntry.normalizedContent(content ?? "").isEmpty ? nil : content
+    }
+
+    private static func contentWithTimestampIfNeeded(
+        _ content: String,
+        scope: MLXMemoryScope,
+        context: MLXMemoryToolContext
+    ) -> String {
+        guard scope == .project,
+              !contentContainsTimestamp(content) else {
+            return content
+        }
+
+        return """
+        Timestamp: \(MLXMemoryService.timestampString(context.currentDate, timeZone: context.currentTimeZone))
+        \(content)
+        """
+    }
+
+    private static func contentContainsTimestamp(_ content: String) -> Bool {
+        content
+            .components(separatedBy: .newlines)
+            .contains { line in
+                line.trimmingCharacters(in: .whitespaces)
+                    .lowercased()
+                    .hasPrefix("timestamp:")
+            }
     }
 
     private static func parsedScope(from arguments: [String: JSONValue]) -> MLXMemoryScope? {

@@ -325,6 +325,58 @@ struct GitCommitTool: MLXFeatureTool {
     }
 }
 
+struct GitPushTool: MLXFeatureTool {
+    struct Input: Decodable, Sendable, GitWorkingDirectoryInput {
+        let path: String?
+        let workingDirectory: String?
+        let cwd: String?
+        let remote: String?
+        let branch: String?
+        let refspec: String?
+        let setUpstream: Bool?
+        let set_upstream: Bool?
+        let forceWithLease: Bool?
+        let force_with_lease: Bool?
+        let tags: Bool?
+        let dryRun: Bool?
+        let dry_run: Bool?
+    }
+
+    static let name = "git.push"
+    static let description = "Pushes commits to a remote. Supports remote, branch/refspec, setUpstream, forceWithLease, tags, and dryRun."
+    static let inputSchema = #"{"type":"object","properties":{"workingDirectory":{"type":"string"},"cwd":{"type":"string"},"path":{"type":"string"},"remote":{"type":"string"},"branch":{"type":"string"},"refspec":{"type":"string"},"setUpstream":{"type":"boolean"},"set_upstream":{"type":"boolean"},"forceWithLease":{"type":"boolean"},"force_with_lease":{"type":"boolean"},"tags":{"type":"boolean"},"dryRun":{"type":"boolean"},"dry_run":{"type":"boolean"}}}"#
+
+    func run(_ input: Input, context: MLXFeatureContext) async throws -> String {
+        let setUpstream = input.setUpstream == true || input.set_upstream == true
+        let remote = input.remote?.nilIfBlank
+        let branchOrRefspec = firstNonBlank(input.branch, input.refspec)
+        if setUpstream && (remote == nil || branchOrRefspec == nil) {
+            throw GitToolsFeatureError.missingArgument("remote and branch")
+        }
+
+        var args = ["push"]
+        if input.dryRun == true || input.dry_run == true {
+            args.append("--dry-run")
+        }
+        if setUpstream {
+            args.append("--set-upstream")
+        }
+        if input.forceWithLease == true || input.force_with_lease == true {
+            args.append("--force-with-lease")
+        }
+        if input.tags == true {
+            args.append("--tags")
+        }
+        if let remote {
+            args.append(remote)
+        }
+        if let branchOrRefspec {
+            args.append(branchOrRefspec)
+        }
+        return try await GitToolsSupport.runGit(args, input: input, context: context)
+    }
+}
+
 struct GitStashTool: MLXFeatureTool {
     struct Input: Decodable, Sendable, GitWorkingDirectoryInput {
         let path: String?
@@ -390,6 +442,7 @@ struct GitToolsFeatureMain {
             AnyMLXFeatureTool(GitAddTool()),
             AnyMLXFeatureTool(GitRestoreTool()),
             AnyMLXFeatureTool(GitCommitTool()),
+            AnyMLXFeatureTool(GitPushTool()),
             AnyMLXFeatureTool(GitStashTool()),
             AnyMLXFeatureTool(GitSwitchTool())
         ])

@@ -26,6 +26,7 @@ struct DirectToolExecutorLocalIOTests {
         #expect(selectableToolNames.contains("text.wc"))
         #expect(selectableToolNames.contains("web.search"))
         #expect(selectableToolNames.contains("git.status"))
+        #expect(selectableToolNames.contains("git.push"))
     }
 }
 

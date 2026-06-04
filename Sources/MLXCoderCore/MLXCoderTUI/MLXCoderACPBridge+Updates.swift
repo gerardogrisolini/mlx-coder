@@ -161,7 +161,7 @@ extension MLXCoderACPBridge {
             return "delete"
         case "local.move":
             return "move"
-        case "local.exec", "git.add", "git.restore", "git.commit", "git.stash", "git.switch":
+        case "local.exec", "git.add", "git.restore", "git.commit", "git.push", "git.stash", "git.switch":
             return "execute"
         case "agent.list", "agent.get", "agent.wait":
             return "read"

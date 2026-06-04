@@ -23,7 +23,7 @@ public actor LocalExecPermissionAuthorizer {
     public init() {}
 
     public func authorize(_ request: AgentToolAuthorizationRequest) async -> Bool {
-        guard request.toolName == "local.exec" || request.kind == "git.mutation" else {
+        guard request.toolName == "local.exec" else {
             return true
         }
 
