@@ -231,17 +231,21 @@ public enum MLXServerAgentIntegrationService {
             throw MLXServerAgentIntegrationError.aionUINotInstalled
         }
 
-        let resolvedServerURL = executableURL(
+        let resolvedServerCommand = aionUIExecutableCommand(
             named: "mlx-server",
             preferredURL: serverExecutableURL,
             relativeTo: serverExecutableURL?.deletingLastPathComponent(),
             fileManager: fileManager
         )
-        let resolvedCoderURL = executableURL(
+        let serverSourcePackageRootURL = resolvedServerCommand.flatMap {
+            sourcePackageRoot(for: $0.resolvedURL, fileManager: fileManager)
+        }
+        let resolvedCoderCommand = aionUIExecutableCommand(
             named: "mlx-coder",
             preferredURL: coderExecutableURL,
-            relativeTo: resolvedServerURL?.deletingLastPathComponent()
+            relativeTo: resolvedServerCommand?.resolvedURL.deletingLastPathComponent()
                 ?? serverExecutableURL?.deletingLastPathComponent(),
+            sourcePackageRootURL: serverSourcePackageRootURL,
             fileManager: fileManager
         )
         var customAgents: [AionUICustomAgentDefinition] = []
@@ -253,12 +257,13 @@ public enum MLXServerAgentIntegrationService {
         )
         let serverCoderModelIDs = aionUIServerCoderModelIDs(fileManager: fileManager)
 
-        if let resolvedCoderURL {
+        if let resolvedCoderCommand {
+            let args = resolvedCoderCommand.argsPrefix + ["--acp"]
             customAgents.append(
                 AionUICustomAgentDefinition(
                     name: "mlx-coder",
-                    command: resolvedCoderURL.path,
-                    args: ["--acp"],
+                    command: resolvedCoderCommand.command,
+                    args: args,
                     models: coderModelIDs
                 )
             )
@@ -267,8 +272,8 @@ public enum MLXServerAgentIntegrationService {
                     id: "mlx-coder",
                     name: "mlx-coder",
                     description: "mlx-coder ACP adapter.",
-                    command: resolvedCoderURL.path,
-                    args: ["--acp"],
+                    command: resolvedCoderCommand.command,
+                    args: args,
                     models: coderModelIDs
                 )
             )
@@ -276,12 +281,13 @@ public enum MLXServerAgentIntegrationService {
             skippedCustomAgents.append("mlx-coder (mlx-coder executable not found)")
         }
 
-        if let resolvedServerURL {
+        if let resolvedServerCommand {
+            let args = resolvedServerCommand.argsPrefix + ["--coder", "--acp"]
             customAgents.append(
                 AionUICustomAgentDefinition(
                     name: "mlx-server-coder",
-                    command: resolvedServerURL.path,
-                    args: ["--coder", "--acp"],
+                    command: resolvedServerCommand.command,
+                    args: args,
                     models: serverCoderModelIDs
                 )
             )
@@ -290,8 +296,8 @@ public enum MLXServerAgentIntegrationService {
                     id: "mlx-server-coder",
                     name: "mlx-server-coder",
                     description: "mlx-server-coder ACP adapter.",
-                    command: resolvedServerURL.path,
-                    args: ["--coder", "--acp"],
+                    command: resolvedServerCommand.command,
+                    args: args,
                     models: serverCoderModelIDs
                 )
             )
@@ -1912,46 +1918,6 @@ private extension MLXServerAgentIntegrationService {
         }
     }
 
-    static func executableURL(
-        named name: String,
-        preferredURL: URL?,
-        relativeTo directoryURL: URL?,
-        fileManager: FileManager
-    ) -> URL? {
-        let preferredExecutableURL = preferredURL?.lastPathComponent == name
-            ? preferredURL
-            : nil
-        let candidates = [
-            preferredExecutableURL,
-            directoryURL?.appendingPathComponent(name)
-        ]
-        for candidate in candidates.compactMap({ $0?.standardizedFileURL }) {
-            if fileManager.isExecutableFile(atPath: candidate.path) {
-                return candidate
-            }
-        }
-        return executableURLFromPath(named: name, fileManager: fileManager)
-    }
-
-    static func executableURLFromPath(
-        named name: String,
-        fileManager: FileManager
-    ) -> URL? {
-        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
-        for directory in path.split(separator: ":").map(String.init) {
-            guard !directory.isEmpty else {
-                continue
-            }
-            let url = URL(fileURLWithPath: directory, isDirectory: true)
-                .appendingPathComponent(name)
-                .standardizedFileURL
-            if fileManager.isExecutableFile(atPath: url.path) {
-                return url
-            }
-        }
-        return nil
-    }
-
     static func normalizedProviderBaseURL(_ baseURL: String) -> String {
         let withoutTrailingSlash = baseURL
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2167,6 +2133,157 @@ public enum MLXServerAgentIntegrationError: LocalizedError, Sendable, Equatable 
             return message
         }
     }
+}
+
+extension MLXServerAgentIntegrationService {
+    static func executableURL(
+        named name: String,
+        preferredURL: URL?,
+        relativeTo directoryURL: URL?,
+        fileManager: FileManager
+    ) -> URL? {
+        let preferredExecutableURL = preferredURL?.lastPathComponent == name
+            ? preferredURL
+            : nil
+        let candidates = [
+            preferredExecutableURL,
+            directoryURL?.appendingPathComponent(name)
+        ]
+        for candidate in candidates.compactMap({ $0?.standardizedFileURL }) {
+            if fileManager.isExecutableFile(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return executableURLFromPath(named: name, fileManager: fileManager)
+    }
+
+    static func aionUIExecutableCommand(
+        named name: String,
+        preferredURL: URL?,
+        relativeTo directoryURL: URL?,
+        sourcePackageRootURL: URL? = nil,
+        fileManager: FileManager
+    ) -> AionUIExecutableCommand? {
+        if preferredURL == nil,
+           let sourcePackageRootURL,
+           fileManager.fileExists(
+               atPath: sourcePackageRootURL.appendingPathComponent("Package.swift").path
+           ) {
+            return AionUIExecutableCommand(
+                command: swiftExecutableCommand(fileManager: fileManager),
+                argsPrefix: ["run", "--package-path", sourcePackageRootURL.path, name],
+                resolvedURL: sourcePackageRootURL.appendingPathComponent(".build", isDirectory: true)
+            )
+        }
+
+        guard let resolvedURL = executableURL(
+            named: name,
+            preferredURL: preferredURL,
+            relativeTo: directoryURL,
+            fileManager: fileManager
+        ) else {
+            return nil
+        }
+
+        if let packageRootURL = sourcePackageRoot(
+            for: resolvedURL,
+            fileManager: fileManager
+        ) {
+            return AionUIExecutableCommand(
+                command: swiftExecutableCommand(fileManager: fileManager),
+                argsPrefix: ["run", "--package-path", packageRootURL.path, name],
+                resolvedURL: resolvedURL
+            )
+        }
+
+        return AionUIExecutableCommand(
+            command: stableExecutablePath(
+                named: name,
+                resolvedURL: resolvedURL,
+                fileManager: fileManager
+            ),
+            argsPrefix: [],
+            resolvedURL: resolvedURL
+        )
+    }
+
+    static func sourcePackageRoot(
+        for executableURL: URL,
+        fileManager: FileManager
+    ) -> URL? {
+        let standardizedURL = executableURL.standardizedFileURL
+        guard standardizedURL.pathComponents.contains(".build") else {
+            return nil
+        }
+
+        var currentURL = standardizedURL.deletingLastPathComponent()
+        while true {
+            let packageURL = currentURL.appendingPathComponent("Package.swift")
+            if fileManager.fileExists(atPath: packageURL.path) {
+                return currentURL
+            }
+            let parentURL = currentURL.deletingLastPathComponent()
+            if parentURL.path == currentURL.path {
+                return nil
+            }
+            currentURL = parentURL
+        }
+    }
+
+    static func swiftExecutableCommand(fileManager: FileManager) -> String {
+        for path in ["/usr/bin/swift", "/opt/homebrew/bin/swift", "/usr/local/bin/swift"] {
+            if fileManager.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+        return "swift"
+    }
+
+    static func stableExecutablePath(
+        named name: String,
+        resolvedURL: URL,
+        fileManager: FileManager
+    ) -> String {
+        for directoryPath in ["/opt/homebrew/bin", "/usr/local/bin"] {
+            let candidateURL = URL(fileURLWithPath: directoryPath, isDirectory: true)
+                .appendingPathComponent(name)
+            if fileManager.isExecutableFile(atPath: candidateURL.path),
+               sameExecutable(candidateURL, resolvedURL) {
+                return candidateURL.path
+            }
+        }
+        return resolvedURL.path
+    }
+
+    static func sameExecutable(_ lhs: URL, _ rhs: URL) -> Bool {
+        lhs.resolvingSymlinksInPath().standardizedFileURL.path
+            == rhs.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    static func executableURLFromPath(
+        named name: String,
+        fileManager: FileManager
+    ) -> URL? {
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        for directory in path.split(separator: ":").map(String.init) {
+            guard !directory.isEmpty else {
+                continue
+            }
+            let url = URL(fileURLWithPath: directory, isDirectory: true)
+                .appendingPathComponent(name)
+                .standardizedFileURL
+            if fileManager.isExecutableFile(atPath: url.path) {
+                return url
+            }
+        }
+        return nil
+    }
+}
+
+struct AionUIExecutableCommand: Sendable, Equatable {
+    var command: String
+    var argsPrefix: [String]
+    var resolvedURL: URL
 }
 
 private struct AionUICustomAgentRegistrationResult: Sendable, Equatable {

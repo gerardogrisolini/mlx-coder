@@ -306,9 +306,90 @@ func xcodeAgentIntegrationsUseDedicatedConfigurationFiles() throws {
     #expect(!status.xcodeClaudeCodeEnabled)
 }
 
+@Test
+func aionUIExecutableCommandUsesSwiftRunForSourceBuild() throws {
+    let rootURL = temporaryHomeDirectory()
+    defer {
+        try? FileManager.default.removeItem(at: rootURL)
+    }
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    try "// swift-tools-version: 6.3\n".write(
+        to: rootURL.appendingPathComponent("Package.swift"),
+        atomically: true,
+        encoding: .utf8
+    )
+    let executableURL = rootURL
+        .appendingPathComponent(".build", isDirectory: true)
+        .appendingPathComponent("arm64-apple-macosx", isDirectory: true)
+        .appendingPathComponent("debug", isDirectory: true)
+        .appendingPathComponent("mlx-server")
+    try writeExecutable(at: executableURL)
+
+    let command = try #require(
+        MLXServerAgentIntegrationService.aionUIExecutableCommand(
+            named: "mlx-server",
+            preferredURL: executableURL,
+            relativeTo: nil,
+            fileManager: .default
+        )
+    )
+
+    #expect(command.command == MLXServerAgentIntegrationService.swiftExecutableCommand(fileManager: .default))
+    #expect(command.argsPrefix == ["run", "--package-path", rootURL.path, "mlx-server"])
+    #expect(command.resolvedURL == executableURL.standardizedFileURL)
+
+    let coderCommand = try #require(
+        MLXServerAgentIntegrationService.aionUIExecutableCommand(
+            named: "mlx-coder",
+            preferredURL: nil,
+            relativeTo: executableURL.deletingLastPathComponent(),
+            sourcePackageRootURL: rootURL,
+            fileManager: .default
+        )
+    )
+    #expect(coderCommand.command == command.command)
+    #expect(coderCommand.argsPrefix == ["run", "--package-path", rootURL.path, "mlx-coder"])
+}
+
+@Test
+func aionUIExecutableCommandUsesManualInstallPathOutsideSourceBuild() throws {
+    let rootURL = temporaryHomeDirectory()
+    defer {
+        try? FileManager.default.removeItem(at: rootURL)
+    }
+    let executableURL = rootURL
+        .appendingPathComponent("bin", isDirectory: true)
+        .appendingPathComponent("mlx-coder")
+    try writeExecutable(at: executableURL)
+
+    let command = try #require(
+        MLXServerAgentIntegrationService.aionUIExecutableCommand(
+            named: "mlx-coder",
+            preferredURL: executableURL,
+            relativeTo: nil,
+            fileManager: .default
+        )
+    )
+
+    #expect(command.command == executableURL.standardizedFileURL.path)
+    #expect(command.argsPrefix.isEmpty)
+}
+
 private func temporaryHomeDirectory() -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("mlx-server-agent-tests-\(UUID().uuidString)", isDirectory: true)
+}
+
+private func writeExecutable(at url: URL) throws {
+    try FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try "#!/bin/sh\n".write(to: url, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o755],
+        ofItemAtPath: url.path
+    )
 }
 
 private func codexCatalogURL(
