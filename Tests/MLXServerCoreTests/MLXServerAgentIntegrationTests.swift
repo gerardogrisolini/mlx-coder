@@ -448,3 +448,102 @@ private struct TestCodexTruncationPolicy: Decodable {
 private struct TestClaudeSettings: Decodable {
     var env: [String: String]
 }
+
+@Test
+func aionUIModelConfigOptionsIncludeThinkingMetadata() throws {
+    let json = try MLXServerAgentIntegrationService.aionUIModelConfigOptionsJSON(
+        models: ["chatgpt:gpt-5", "mlx-community/model"],
+        thinkingOptions: ["off", "medium", "xhigh"],
+        defaultThinking: "medium"
+    )
+
+    let data = try #require(json.data(using: .utf8))
+    let decoded = try JSONDecoder().decode(TestAionUIAgentConfigOptions.self, from: data)
+    let thinking = try #require(decoded.configOptions.first { $0.id == "thinking" })
+
+    #expect(thinking.name == "Thinking")
+    #expect(thinking.category == "model")
+    #expect(thinking.type == "select")
+    #expect(thinking.currentValue == "medium")
+    #expect(thinking.options.map(\.value) == ["off", "medium", "xhigh"])
+    #expect(thinking.options.map(\.name) == ["Off", "Medium", "XHigh"])
+}
+
+@Test
+func aionUICoderThinkingMetadataReadsSettingsManifest() throws {
+    let home = temporaryHomeDirectory()
+    defer {
+        try? FileManager.default.removeItem(at: home)
+    }
+    let settingsURL = home
+        .appendingPathComponent(".mlx-coder", isDirectory: true)
+        .appendingPathComponent("settings.json")
+    try FileManager.default.createDirectory(
+        at: settingsURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try """
+    {
+      "version": 1,
+      "models": [
+        {
+          "id": "first-model",
+          "kind": "remoteAPI",
+          "modelID": "provider/first",
+          "thinking": {
+            "options": ["off", "medium"],
+            "default": "medium"
+          }
+        },
+        {
+          "id": "second-model",
+          "kind": "remoteAPI",
+          "modelID": "provider/second",
+          "thinking": {
+            "options": ["medium", "high"]
+          }
+        }
+      ]
+    }
+    """.write(to: settingsURL, atomically: true, encoding: .utf8)
+
+    let metadata = MLXServerAgentIntegrationService.aionUICoderThinkingOptions(
+        homeDirectory: home
+    )
+
+    #expect(metadata.options == ["off", "medium", "high"])
+    #expect(metadata.defaultSelection == "medium")
+}
+
+private struct TestAionUIAgentConfigOptions: Decodable {
+    var configOptions: [TestAionUIAgentConfigOption]
+
+    enum CodingKeys: String, CodingKey {
+        case configOptions = "config_options"
+    }
+}
+
+private struct TestAionUIAgentConfigOption: Decodable {
+    var id: String
+    var name: String
+    var category: String
+    var type: String
+    var currentValue: String
+    var options: [TestAionUIAgentConfigOptionValue]
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case category
+        case type
+        case currentValue = "current_value"
+        case options
+    }
+}
+
+
+private struct TestAionUIAgentConfigOptionValue: Decodable {
+    var value: String
+    var name: String
+    var description: String
+}

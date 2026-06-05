@@ -256,3 +256,124 @@ struct ACPCompatibilityTests {
         #expect(attachments.first?.data == Data([1, 2, 3]))
     }
 }
+
+private extension ACPCompatibilityTests {
+    @Test
+    func configOptionsIncludeThinkingForThinkingModels() async throws {
+        let bridge = try makeBridge(
+            models: [
+                AgentSettingsModelManifest(
+                    id: "thinking-model",
+                    kind: .remoteAPI,
+                    title: "Thinking Model",
+                    modelID: "local/thinking-model",
+                    thinkingOptions: [.off, .medium, .high],
+                    defaultThinkingSelection: .medium
+                )
+            ]
+        )
+
+                        let values = await bridge.testThinkingOptionValues(for: "thinking-model")
+
+        #expect(values.currentValue == "medium")
+        #expect(values.optionValues == ["off", "medium", "high"])
+    }
+
+    @Test
+    func configOptionsOmitThinkingForModelsWithoutThinking() async throws {
+        let bridge = try makeBridge(
+            models: [
+                AgentSettingsModelManifest(
+                    id: "plain-model",
+                    kind: .remoteAPI,
+                    modelID: "local/plain-model"
+                )
+            ]
+        )
+
+                        let hasThinking = await bridge.testHasThinkingOption(for: "plain-model")
+
+        #expect(!hasThinking)
+    }
+
+    @Test
+    func sessionLifecycleResultUsesSessionThinkingSelection() async throws {
+        let bridge = try makeBridge(
+            models: [
+                AgentSettingsModelManifest(
+                    id: "thinking-model",
+                    kind: .remoteAPI,
+                    modelID: "local/thinking-model",
+                    thinkingOptions: [.off, .medium, .high],
+                    defaultThinkingSelection: .medium
+                )
+            ]
+        )
+        let configuration = AgentCoreSessionConfiguration(
+            sessionID: "session-thinking",
+            modelID: "thinking-model",
+                                    bearerToken: nil,
+            workingDirectory: FileManager.default.temporaryDirectory,
+            systemPrompt: nil,
+            cacheKey: nil,
+            history: [],
+            thinkingSelection: .high,
+            preserveThinking: false
+        )
+                        await bridge.installTestSession(configuration)
+
+                        let currentValue = await bridge.testLifecycleThinkingCurrentValue(
+            sessionID: "session-thinking"
+        )
+
+        #expect(currentValue == "high")
+    }
+
+    func makeBridge(
+        models: [AgentSettingsModelManifest]
+    ) throws -> MLXCoderACPBridge {
+        let configuration = try AgentConfiguration(
+            hostedModelID: models.first?.id ?? "model",
+            availableModels: models,
+            runMode: .acp,
+            workingDirectory: FileManager.default.temporaryDirectory
+        )
+        return MLXCoderACPBridge(configuration: configuration, writer: ACPWriter())
+    }
+}
+
+private extension MLXCoderACPBridge {
+    func installTestSession(_ configuration: AgentCoreSessionConfiguration) {
+        sessions[configuration.sessionID] = sessionState(configuration: configuration)
+    }
+
+    func testThinkingOptionValues(
+        for modelID: String
+    ) -> (currentValue: String?, optionValues: [String]?) {
+        guard let thinking = configOptions(for: modelID).first(where: {
+            $0["id"] as? String == "thinking"
+        }) else {
+            return (nil, nil)
+        }
+        let optionValues = (thinking["options"] as? [[String: Any]])?.compactMap { option in
+            option["value"] as? String
+        }
+        return (thinking["currentValue"] as? String, optionValues)
+    }
+
+    func testHasThinkingOption(for modelID: String) -> Bool {
+        configOptions(for: modelID).contains { option in
+            option["id"] as? String == "thinking"
+        }
+    }
+
+    func testLifecycleThinkingCurrentValue(sessionID: String) -> String? {
+        let result = sessionLifecycleResult(sessionID: sessionID)
+        let options = result["configOptions"] as? [[String: Any]]
+        let thinking = options?.first { option in
+            option["id"] as? String == "thinking"
+        }
+        return thinking?["currentValue"] as? String
+    }
+}
+

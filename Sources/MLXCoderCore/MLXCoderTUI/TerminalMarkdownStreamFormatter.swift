@@ -11,6 +11,7 @@ public struct TerminalMarkdownStreamFormatter {
     private static let dim = "\u{1B}[90m"
     private static let code = "\u{1B}[38;5;222m"
     private static let maxBufferedLineLength = 240
+    private static let maxMarkdownBufferedLineLength = 2_000
 
     private let isEnabled: Bool
     private var pendingLine = ""
@@ -36,8 +37,13 @@ public struct TerminalMarkdownStreamFormatter {
         }
 
         if pendingLine.count > Self.maxBufferedLineLength {
-            rendered += renderCompleteLine(pendingLine, appendsNewline: false)
-            pendingLine = ""
+            if shouldFlushPendingLineForStreaming(pendingLine) {
+                rendered += pendingLine
+                pendingLine = ""
+            } else if pendingLine.count > Self.maxMarkdownBufferedLineLength {
+                rendered += renderCompleteLine(pendingLine, appendsNewline: false)
+                pendingLine = ""
+            }
         }
 
         return rendered
@@ -82,10 +88,63 @@ public struct TerminalMarkdownStreamFormatter {
             return "\(TerminalCodeBlockRenderer.renderLine(line, language: codeFenceLanguage))\(newline)"
         }
 
+        guard mayContainMarkdown(in: line) else {
+            return "\(line)\(newline)"
+        }
+
         let parsed = leadingIndent(in: line)
         var renderer = TerminalSwiftMarkdownRenderer()
         let document = Document(parsing: parsed.body)
         return "\(parsed.indent)\(renderer.visit(document))\(newline)"
+    }
+
+    private func shouldFlushPendingLineForStreaming(_ line: String) -> Bool {
+        !isInCodeFence && !mayContainMarkdown(in: line)
+    }
+
+    private func mayContainMarkdown(in line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else {
+            return false
+        }
+
+        if trimmed.hasPrefix("#")
+            || trimmed.hasPrefix(">")
+            || trimmed.hasPrefix("```")
+            || trimmed.hasPrefix("---")
+            || trimmed.hasPrefix("***")
+            || trimmed.hasPrefix("___")
+            || trimmed.hasPrefix("- ")
+            || trimmed.hasPrefix("* ")
+            || trimmed.hasPrefix("+ ") {
+            return true
+        }
+
+        if isOrderedListMarker(in: trimmed) {
+            return true
+        }
+
+        return trimmed.contains("`")
+            || trimmed.contains("**")
+            || trimmed.contains("__")
+            || trimmed.contains("~~")
+            || trimmed.contains("](")
+    }
+
+    private func isOrderedListMarker(in line: String) -> Bool {
+        var index = line.startIndex
+        var sawDigit = false
+        while index < line.endIndex, line[index].isNumber {
+            sawDigit = true
+            index = line.index(after: index)
+        }
+        guard sawDigit,
+              index < line.endIndex,
+              line[index] == "." else {
+            return false
+        }
+        let afterDot = line.index(after: index)
+        return afterDot < line.endIndex && line[afterDot].isWhitespace
     }
 
     private func leadingIndent(in line: String) -> (indent: String, body: String) {

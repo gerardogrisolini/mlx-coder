@@ -58,6 +58,7 @@ public final class TerminalChat: @unchecked Sendable {
     public var thoughtMarkdownFormatter = TerminalMarkdownStreamFormatter(
         isEnabled: AgentOutput.standardErrorIsTerminal
     )
+
     public let statusBar: TerminalStatusBar
 
     public init(

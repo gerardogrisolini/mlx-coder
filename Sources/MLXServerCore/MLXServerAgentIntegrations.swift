@@ -255,7 +255,12 @@ public enum MLXServerAgentIntegrationService {
             homeDirectory: homeDirectory,
             fileManager: fileManager
         )
+        let coderThinking = aionUICoderThinkingMetadata(
+            homeDirectory: homeDirectory,
+            fileManager: fileManager
+        )
         let serverCoderModelIDs = aionUIServerCoderModelIDs(fileManager: fileManager)
+        let serverCoderThinking = aionUIServerCoderThinkingMetadata(fileManager: fileManager)
 
         if let resolvedCoderCommand {
             let args = resolvedCoderCommand.argsPrefix + ["--acp"]
@@ -264,7 +269,9 @@ public enum MLXServerAgentIntegrationService {
                     name: "mlx-coder",
                     command: resolvedCoderCommand.command,
                     args: args,
-                    models: coderModelIDs
+                    models: coderModelIDs,
+                    thinkingOptions: coderThinking.options,
+                    defaultThinking: coderThinking.defaultSelection
                 )
             )
             extensionAdapters.append(
@@ -274,7 +281,9 @@ public enum MLXServerAgentIntegrationService {
                     description: "mlx-coder ACP adapter.",
                     command: resolvedCoderCommand.command,
                     args: args,
-                    models: coderModelIDs
+                    models: coderModelIDs,
+                    thinkingOptions: coderThinking.options,
+                    defaultThinking: coderThinking.defaultSelection
                 )
             )
         } else {
@@ -288,7 +297,9 @@ public enum MLXServerAgentIntegrationService {
                     name: "mlx-server-coder",
                     command: resolvedServerCommand.command,
                     args: args,
-                    models: serverCoderModelIDs
+                    models: serverCoderModelIDs,
+                    thinkingOptions: serverCoderThinking.options,
+                    defaultThinking: serverCoderThinking.defaultSelection
                 )
             )
             extensionAdapters.append(
@@ -298,7 +309,9 @@ public enum MLXServerAgentIntegrationService {
                     description: "mlx-server-coder ACP adapter.",
                     command: resolvedServerCommand.command,
                     args: args,
-                    models: serverCoderModelIDs
+                    models: serverCoderModelIDs,
+                    thinkingOptions: serverCoderThinking.options,
+                    defaultThinking: serverCoderThinking.defaultSelection
                 )
             )
         } else {
@@ -731,6 +744,48 @@ private extension MLXServerAgentIntegrationService {
         return uniqueAionUIModelIDs(catalog.models.map { Optional($0.id) })
     }
 
+    static func aionUICoderThinkingMetadata(
+        homeDirectory: URL,
+        fileManager: FileManager
+    ) -> AionUIThinkingMetadata {
+        let settingsURL = mlxCoderSettingsURL(homeDirectory: homeDirectory)
+        guard fileManager.fileExists(atPath: settingsURL.path),
+              let data = try? Data(contentsOf: settingsURL),
+              let manifest = try? JSONDecoder().decode(
+                  AionUICoderSettingsManifest.self,
+                  from: data
+              ) else {
+            return AionUIThinkingMetadata()
+        }
+        return AionUIThinkingMetadata(
+            options: uniqueAionUIModelIDs(manifest.models.flatMap { model in
+                model.thinking?.options ?? []
+            }),
+            defaultSelection: manifest.models.compactMap { model in
+                model.thinking?.defaultSelection?.trimmedNonEmpty
+            }.first
+        )
+    }
+
+    static func aionUIServerCoderThinkingMetadata(
+        fileManager: FileManager
+    ) -> AionUIThinkingMetadata {
+        guard let manifest = try? MLXServerModelsManifestStore.loadRequired(
+            fileManager: fileManager
+        ),
+        let catalog = try? MLXServerModelCatalog(manifest: manifest) else {
+            return AionUIThinkingMetadata()
+        }
+        let thinkingModels = catalog.models.map(\.thinking).map { $0.validated() }
+        return AionUIThinkingMetadata(
+            options: uniqueAionUIModelIDs(thinkingModels.flatMap { thinking in
+                thinking.supportsThinking ? thinking.availableSelections.map(\.rawValue) : []
+            }),
+            defaultSelection: thinkingModels.first(where: \.supportsThinking)?
+                .defaultSelection.rawValue
+        )
+    }
+
     static func mlxCoderSettingsURL(homeDirectory: URL) -> URL {
         if let rawSupportDirectory = ProcessInfo
             .processInfo
@@ -900,6 +955,8 @@ private extension MLXServerAgentIntegrationService {
                 try persistAionUICustomAgentModelMetadata(
                     agentID: updatedAgent.id,
                     models: customAgent.models,
+                    thinkingOptions: customAgent.thinkingOptions,
+                    defaultThinking: customAgent.defaultThinking,
                     homeDirectory: homeDirectory,
                     fileManager: fileManager
                 )
@@ -913,6 +970,8 @@ private extension MLXServerAgentIntegrationService {
                 try persistAionUICustomAgentModelMetadata(
                     agentID: createdAgent.id,
                     models: customAgent.models,
+                    thinkingOptions: customAgent.thinkingOptions,
+                    defaultThinking: customAgent.defaultThinking,
                     homeDirectory: homeDirectory,
                     fileManager: fileManager
                 )
@@ -950,6 +1009,8 @@ private extension MLXServerAgentIntegrationService {
     static func persistAionUICustomAgentModelMetadata(
         agentID: String,
         models: [String],
+        thinkingOptions: [String],
+        defaultThinking: String?,
         homeDirectory: URL,
         fileManager: FileManager
     ) throws {
@@ -958,7 +1019,11 @@ private extension MLXServerAgentIntegrationService {
             return
         }
         let configOptions = AionUIAgentConfigOptions(
-            configOptions: aionUIModelConfigOptions(models: models)
+            configOptions: aionUIModelConfigOptions(
+                models: models,
+                thinkingOptions: thinkingOptions,
+                defaultThinking: defaultThinking
+            )
         )
         let configOptionsJSON = try compactJSONString(configOptions)
         let availableModelsJSON = try compactJSONString(
@@ -978,11 +1043,15 @@ private extension MLXServerAgentIntegrationService {
         )
     }
 
-    static func aionUIModelConfigOptions(models: [String]) -> [AionUIAgentConfigOption] {
+    static func aionUIModelConfigOptions(
+        models: [String],
+        thinkingOptions: [String] = [],
+        defaultThinking: String? = nil
+    ) -> [AionUIAgentConfigOption] {
         guard let currentValue = models.first else {
             return []
         }
-        return [
+        var options = [
             AionUIAgentConfigOption(
                 id: "model",
                 name: "Model",
@@ -998,6 +1067,25 @@ private extension MLXServerAgentIntegrationService {
                 }
             )
         ]
+        if !thinkingOptions.isEmpty {
+            options.append(
+                AionUIAgentConfigOption(
+                    id: "thinking",
+                    name: "Thinking",
+                    category: "model",
+                    type: "select",
+                    currentValue: defaultThinking ?? thinkingOptions.first ?? "",
+                    options: thinkingOptions.map { thinking in
+                        AionUIAgentConfigOptionValue(
+                            value: thinking,
+                            name: aionUIThinkingDisplayName(thinking),
+                            description: "Thinking: \(aionUIThinkingDisplayName(thinking))"
+                        )
+                    }
+                )
+            )
+        }
+        return options
     }
 
     static func aionUIAvailableModels(models: [String]) -> AionUIAgentAvailableModels {
@@ -1024,6 +1112,19 @@ private extension MLXServerAgentIntegrationService {
             return aionUIModelDisplayName(String(suffix))
         }
         return trimmed.split(separator: "/").last.map(String.init) ?? trimmed
+    }
+
+    static func aionUIThinkingDisplayName(_ selection: String) -> String {
+        switch selection.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "off": "Off"
+        case "enabled": "On"
+        case "minimal": "Minimal"
+        case "low": "Low"
+        case "medium": "Medium"
+        case "high": "High"
+        case "xhigh": "XHigh"
+        default: selection
+        }
     }
 
     static func compactJSONString(_ value: some Encodable) throws -> String {
@@ -2297,11 +2398,18 @@ private struct AionUIChannelConfigurationResult: Sendable, Equatable {
     var preparedChannelSessions: [String] = []
 }
 
+private struct AionUIThinkingMetadata: Sendable, Equatable {
+    var options: [String] = []
+    var defaultSelection: String? = nil
+}
+
 private struct AionUICustomAgentDefinition: Sendable, Equatable {
     var name: String
     var command: String
     var args: [String]
     var models: [String] = []
+    var thinkingOptions: [String] = []
+    var defaultThinking: String?
 }
 
 private struct AionUIACPAdapterDefinition: Sendable, Equatable {
@@ -2311,6 +2419,8 @@ private struct AionUIACPAdapterDefinition: Sendable, Equatable {
     var command: String
     var args: [String]
     var models: [String] = []
+    var thinkingOptions: [String] = []
+    var defaultThinking: String?
 }
 
 private struct AionUIAgentConfigOptions: Encodable {
@@ -2382,11 +2492,35 @@ private struct AionUICoderSettingsModel: Decodable {
     var id: String?
     var llmID: String?
     var modelID: String?
+    var thinking: AionUICoderSettingsThinking?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case llmID
+        case modelID
+        case thinking
+    }
 
     var selectionID: String? {
         id?.trimmedNonEmpty
             ?? llmID?.trimmedNonEmpty
             ?? modelID?.trimmedNonEmpty
+    }
+}
+
+private struct AionUICoderSettingsThinking: Decodable {
+    var options: [String]
+    var defaultSelection: String?
+
+    enum CodingKeys: String, CodingKey {
+        case options
+        case defaultSelection = "default"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        options = try container.decodeIfPresent([String].self, forKey: .options) ?? []
+        defaultSelection = try container.decodeIfPresent(String.self, forKey: .defaultSelection)
     }
 }
 
@@ -2802,5 +2936,34 @@ private extension String {
     var trimmedNonEmpty: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+extension MLXServerAgentIntegrationService {
+    static func aionUIModelConfigOptionsJSON(
+        models: [String],
+        thinkingOptions: [String] = [],
+        defaultThinking: String? = nil
+    ) throws -> String {
+        try compactJSONString(
+            AionUIAgentConfigOptions(
+                configOptions: aionUIModelConfigOptions(
+                    models: models,
+                    thinkingOptions: thinkingOptions,
+                    defaultThinking: defaultThinking
+                )
+            )
+        )
+    }
+
+    static func aionUICoderThinkingOptions(
+        homeDirectory: URL,
+        fileManager: FileManager = .default
+    ) -> (options: [String], defaultSelection: String?) {
+        let metadata = aionUICoderThinkingMetadata(
+            homeDirectory: homeDirectory,
+            fileManager: fileManager
+        )
+        return (metadata.options, metadata.defaultSelection)
     }
 }

@@ -160,6 +160,19 @@ public struct AgentCoreSessionConfiguration: Sendable {
     }
 
     public func withModelID(_ modelID: String?) -> AgentCoreSessionConfiguration {
+        copy(modelID: modelID, thinkingSelection: thinkingSelection)
+    }
+
+    public func withThinkingSelection(
+        _ thinkingSelection: AgentThinkingSelection?
+    ) -> AgentCoreSessionConfiguration {
+        copy(modelID: modelID, thinkingSelection: thinkingSelection)
+    }
+
+    private func copy(
+        modelID: String?,
+        thinkingSelection: AgentThinkingSelection?
+    ) -> AgentCoreSessionConfiguration {
         AgentCoreSessionConfiguration(
             sessionID: sessionID,
             modelID: modelID,

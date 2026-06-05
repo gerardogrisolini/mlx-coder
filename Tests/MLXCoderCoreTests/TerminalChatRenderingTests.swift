@@ -5,7 +5,7 @@ import Testing
 struct TerminalChatRenderingTests {
     @Test
     func exposesSharedAgentVersion() {
-        #expect(agentVersion == "0.1.5")
+                        #expect(agentVersion == "0.1.7")
     }
 
     @Test
@@ -73,6 +73,35 @@ struct TerminalChatRenderingTests {
         #expect(!TerminalChat.fitInline("Commands: /help, /models, /agents", width: 18).contains("..."))
     }
 
+                @Test
+    func markdownFormatterStylesHeadingsAndInlineCode() {
+        var formatter = TerminalMarkdownStreamFormatter(isEnabled: true)
+
+        let rendered = formatter.consume("## Titolo con `codice`\n")
+
+        #expect(rendered.contains("\u{1B}[1;38;5;81mTitolo con"))
+        #expect(rendered.contains("\u{1B}[38;5;222mcodice\u{1B}[0m"))
+        #expect(rendered.hasSuffix("\n"))
+    }
+
+    @Test
+    func markdownFormatterStreamsLongPlainLinesWithoutParsing() {
+        var formatter = TerminalMarkdownStreamFormatter(isEnabled: true)
+        let plain = String(repeating: "a", count: 241)
+
+        #expect(formatter.consume(plain) == plain)
+        #expect(formatter.finish() == "")
+    }
+
+    @Test
+    func markdownFormatterKeepsPotentialMarkdownBufferedUntilNewline() {
+        var formatter = TerminalMarkdownStreamFormatter(isEnabled: true)
+        let partial = "## " + String(repeating: "a", count: 241)
+
+        #expect(formatter.consume(partial) == "")
+        #expect(formatter.consume("\n").contains("\u{1B}[1;38;5;81m"))
+    }
+
     @Test
     func failureMessageColoringWrapsNonBlankLines() {
         let rendered = TerminalChat.failureMessageColorApplied(
@@ -85,7 +114,7 @@ struct TerminalChatRenderingTests {
         #expect(rendered.hasSuffix("\n"))
     }
 
-        @Test
+            @Test
     func compactEditToolLinesIncludeFileTarget() {
         let toolCall = DirectAgentToolCall(
             id: "call_1",
@@ -116,7 +145,7 @@ struct TerminalChatRenderingTests {
         #expect(!rendered.contains("  ✅"))
     }
 
-        @Test
+            @Test
     func detailedReplaceCompletionShowsSnippetsAsCodeLines() {
         let toolCall = DirectAgentToolCall(
             id: "call_1",

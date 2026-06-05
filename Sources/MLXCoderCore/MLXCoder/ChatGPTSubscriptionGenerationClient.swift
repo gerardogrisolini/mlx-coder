@@ -495,6 +495,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                     latestResponseID = responseID
                 }
 
+                var didParseReasoningDeltaFromResponsesEvent = false
                 for event in RemoteGenerationClient.parseResponsesStreamEvent(object) {
                     switch event {
                     case let .content(delta):
@@ -509,6 +510,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                         guard !delta.isEmpty else {
                             continue
                         }
+                        didParseReasoningDeltaFromResponsesEvent = true
                         markFirstDelta()
                         responseReasoningText.append(delta)
                         await onEvent(.thought(delta))
@@ -554,7 +556,8 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                      "response_reasoning_delta",
                      "response_reasoning_summary_delta",
                      "response_reasoning_raw_content_delta":
-                    if let delta = Self.responseReasoningDelta(from: object),
+                    if !didParseReasoningDeltaFromResponsesEvent,
+                       let delta = Self.responseReasoningDelta(from: object),
                        !delta.isEmpty {
                         markFirstDelta()
                         responseReasoningText.append(delta)

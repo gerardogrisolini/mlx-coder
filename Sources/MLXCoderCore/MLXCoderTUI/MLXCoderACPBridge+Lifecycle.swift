@@ -32,6 +32,8 @@ extension MLXCoderACPBridge {
                     "resume": [:]
                 ]
             ],
+            "configOptions": configOptions(for: configuration.effectiveModelID),
+            "models": modelState(for: configuration.effectiveModelID),
             "agentInfo": [
                 "name": "mlx-coder",
                 "title": "mlx-coder",
@@ -148,24 +150,46 @@ extension MLXCoderACPBridge {
         guard let value = Self.configOptionValue(from: params) else {
             throw ACPError.invalidParams("Missing config option value.")
         }
-        guard configID == "model" else {
+        guard configID == "model" || configID == "thinking" else {
             throw ACPError.invalidParams("Unsupported config option: \(configID)")
         }
-        let availableModels = modelConfigOptions()
-        guard availableModels.contains(where: { option in
-            (option["value"] as? String) == value
-        }) else {
-            throw ACPError.invalidParams("Unsupported model: \(value)")
-        }
 
-        let updatedConfiguration = session.configuration.withModelID(value)
+        let updatedConfiguration: AgentCoreSessionConfiguration
+        switch configID {
+        case "model":
+            let availableModels = modelConfigOptions()
+            guard availableModels.contains(where: { option in
+                (option["value"] as? String) == value
+            }) else {
+                throw ACPError.invalidParams("Unsupported model: \(value)")
+            }
+            let model = modelManifest(for: value)
+            updatedConfiguration = session.configuration
+                .withModelID(value)
+                .withThinkingSelection(model?.thinkingSelection(
+                    for: session.configuration.thinkingSelection
+                ))
+        case "thinking":
+            guard let model = modelManifest(for: session.configuration.modelID),
+                  let requestedSelection = AgentThinkingSelection(rawValue: value),
+                  let thinkingSelection = model.thinkingSelection(for: requestedSelection),
+                  thinkingSelection == requestedSelection else {
+                throw ACPError.invalidParams("Unsupported thinking option: \(value)")
+            }
+            updatedConfiguration = session.configuration.withThinkingSelection(thinkingSelection)
+        default:
+            throw ACPError.invalidParams("Unsupported config option: \(configID)")
+        }
         sessions[sessionID] = sessionState(configuration: updatedConfiguration)
         try await sessionRunner.createSession(configuration: updatedConfiguration)
         await persistSessionSnapshotIfAvailable(sessionID: sessionID)
         await writer.sendResultIfRequest(
             id: id,
             result: JSONValue.acpValue(from: [
-                "configOptions": configOptions(for: updatedConfiguration.modelID)
+                "configOptions": configOptions(
+                    for: updatedConfiguration.modelID,
+                    thinkingSelection: updatedConfiguration.thinkingSelection
+                )
             ])
         )
     }
@@ -187,7 +211,12 @@ extension MLXCoderACPBridge {
             throw ACPError.invalidParams("Unsupported model: \(modelID)")
         }
 
-        let updatedConfiguration = session.configuration.withModelID(modelID)
+        let model = modelManifest(for: modelID)
+        let updatedConfiguration = session.configuration
+            .withModelID(modelID)
+            .withThinkingSelection(model?.thinkingSelection(
+                for: session.configuration.thinkingSelection
+            ))
         sessions[sessionID] = sessionState(configuration: updatedConfiguration)
         try await sessionRunner.createSession(configuration: updatedConfiguration)
         await persistSessionSnapshotIfAvailable(sessionID: sessionID)
@@ -317,7 +346,8 @@ extension MLXCoderACPBridge {
     }
 
     public func sessionLifecycleResult(sessionID: String) -> [String: Any] {
-        let modelID = sessions[sessionID]?.configuration.modelID
+        let sessionConfiguration = sessions[sessionID]?.configuration
+        let modelID = sessionConfiguration?.modelID
             ?? configuration.effectiveModelID
         return [
             "sessionId": sessionID,
@@ -336,12 +366,18 @@ extension MLXCoderACPBridge {
                 ],
                 "currentModeId": "default"
             ],
-            "configOptions": configOptions(for: modelID),
+            "configOptions": configOptions(
+                for: modelID,
+                thinkingSelection: sessionConfiguration?.thinkingSelection
+            ),
             "models": modelState(for: modelID)
         ]
     }
 
-    public func configOptions(for modelID: String?) -> [[String: Any]] {
+    public func configOptions(
+        for modelID: String?,
+        thinkingSelection: AgentThinkingSelection? = nil
+    ) -> [[String: Any]] {
         let modelOptions = modelConfigOptions()
         guard !modelOptions.isEmpty else {
             return []
@@ -350,7 +386,7 @@ extension MLXCoderACPBridge {
             ?? configuration.effectiveModelID?.nilIfBlank
             ?? (modelOptions.first?["value"] as? String)
             ?? ""
-        return [
+        var options: [[String: Any]] = [
             [
                 "id": "model",
                 "name": "Model",
@@ -360,16 +396,53 @@ extension MLXCoderACPBridge {
                 "options": modelOptions
             ]
         ]
+
+        if let model = modelManifest(for: selectedModelID), model.supportsThinking {
+            let selectedThinking = model.thinkingSelection(for: thinkingSelection)
+            options.append([
+                "id": "thinking",
+                "name": "Thinking",
+                "category": "model",
+                "type": "select",
+                "currentValue": selectedThinking?.rawValue ?? "",
+                "options": thinkingConfigOptions(for: model)
+            ])
+        }
+        return options
     }
 
     public func modelConfigOptions() -> [[String: Any]] {
-        let models = configuration.hostedModels ?? AgentSettingsStore.availableModels()
-        return models.map { model in
+        availableModelManifests().map { model in
             [
                 "value": model.id,
                 "name": model.displayTitle,
                 "description": model.modelID
             ]
+        }
+    }
+
+    public func thinkingConfigOptions(
+        for model: AgentSettingsModelManifest
+    ) -> [[String: Any]] {
+        model.availableThinkingSelections.map { selection in
+            [
+                "value": selection.rawValue,
+                "name": selection.displayTitle,
+                "description": selection.menuTitle
+            ]
+        }
+    }
+
+    public func availableModelManifests() -> [AgentSettingsModelManifest] {
+        configuration.hostedModels ?? AgentSettingsStore.availableModels()
+    }
+
+    public func modelManifest(for modelID: String?) -> AgentSettingsModelManifest? {
+        guard let modelID = modelID?.nilIfBlank else {
+            return nil
+        }
+        return availableModelManifests().first { model in
+            model.matches(modelID)
         }
     }
 
