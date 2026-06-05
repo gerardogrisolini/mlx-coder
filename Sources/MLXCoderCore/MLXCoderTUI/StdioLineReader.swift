@@ -103,7 +103,7 @@ public final class TerminalRawInput: @unchecked Sendable {
     private let lock = NSLock()
     private var originalAttributes: termios?
     private var didRequestEnhancedKeyboardProtocol = false
-
+    private var didRequestBracketedPaste = false
     public init() {
         if let inputFileDescriptor = Self.openPreferredInputFileDescriptor() {
             let controlFileDescriptor = Self.openTerminalControlFileDescriptor(
@@ -310,6 +310,7 @@ public final class TerminalRawInput: @unchecked Sendable {
 
         originalAttributes = attributes
         requestEnhancedKeyboardProtocolLocked()
+        enableBracketedPasteLocked()
         return true
     }
 
@@ -330,6 +331,7 @@ public final class TerminalRawInput: @unchecked Sendable {
         guard var attributes = originalAttributes else {
             return
         }
+        disableBracketedPasteLocked()
         restoreEnhancedKeyboardProtocolLocked()
         _ = Self.withSIGTTOUIgnored {
             tcsetattr(fileDescriptor, TCSANOW, &attributes)
@@ -367,6 +369,22 @@ public final class TerminalRawInput: @unchecked Sendable {
         }
         writeToTerminal("\u{1B}[<u\u{1B}[>4;0m")
         didRequestEnhancedKeyboardProtocol = false
+    }
+
+    private func enableBracketedPasteLocked() {
+        guard !didRequestBracketedPaste else {
+            return
+        }
+        writeToTerminal("\u{1B}[?2004h")
+        didRequestBracketedPaste = true
+    }
+
+    private func disableBracketedPasteLocked() {
+        guard didRequestBracketedPaste else {
+            return
+        }
+        writeToTerminal("\u{1B}[?2004l")
+        didRequestBracketedPaste = false
     }
 
     private static func rawTerminalAttributes(from attributes: termios) -> termios {
@@ -485,6 +503,7 @@ public struct TerminalCommandSuggestion: Sendable {
 public final class TerminalInteractiveLineReader: @unchecked Sendable {
     private enum Key {
         case character(String)
+        case paste(String)
         case enter
         case newline
         case tab
@@ -541,7 +560,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
                 }
 
                 switch key {
-                case let .character(text):
+                case let .character(text), let .paste(text):
                     let characters = Array(text)
                     guard !characters.isEmpty else {
                         continue
@@ -777,7 +796,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
         onEvent: @escaping @Sendable (TerminalPromptInputEvent) -> Void
     ) {
         switch key {
-        case let .character(text):
+        case let .character(text), let .paste(text):
             let characters = Array(text)
             guard !characters.isEmpty else {
                 return
@@ -1305,6 +1324,10 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
         let numericPrefix = components.first
 
         switch numericPrefix {
+        case "200":
+            return .paste(readBracketedPaste())
+        case "201":
+            return .unknown
         case "1", "7":
             return .home
         case "3":
@@ -1328,6 +1351,29 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
             return key
         }
         return .unknown
+    }
+
+    private func readBracketedPaste() -> String {
+        let endSequence: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]
+        var bytes: [UInt8] = []
+
+        while true {
+            guard let byte = readByte() else {
+                return Self.normalizedPastedText(bytes: bytes)
+            }
+            bytes.append(byte)
+            if bytes.suffix(endSequence.count) == endSequence {
+                bytes.removeLast(endSequence.count)
+                return Self.normalizedPastedText(bytes: bytes)
+            }
+        }
+    }
+
+    static func normalizedPastedText(bytes: [UInt8]) -> String {
+        let text = String(decoding: bytes, as: UTF8.self)
+        return text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
     }
 
     private func optionReturnKey(

@@ -5,10 +5,8 @@ import Testing
 struct TerminalChatRenderingTests {
     @Test
     func exposesSharedAgentVersion() {
-        #expect(agentVersion == "0.1.4")
+        #expect(agentVersion == "0.1.5")
     }
-
-        
 
     @Test
     func removingLeadingLineBreaksPreservesContent() {
@@ -64,6 +62,15 @@ struct TerminalChatRenderingTests {
 
         #expect(rendered.hasPrefix("\u{1B}[38;5;179mTool details: full\u{1B}[0m\n"))
         #expect(rendered.hasSuffix("\n"))
+    }
+
+    @Test
+    func startupInlineTextWrapsWithoutEllipsis() {
+        #expect(TerminalChat.wrapInline("Commands: /help, /models, /agents", width: 18) == [
+            "Commands: /help,",
+            "/models, /agents"
+        ])
+        #expect(!TerminalChat.fitInline("Commands: /help, /models, /agents", width: 18).contains("..."))
     }
 
     @Test

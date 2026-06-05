@@ -142,7 +142,7 @@ extension TerminalChat {
         "Usage: /skills [all|none|skill-name|skill-number|install <github-url|local-path>|<github-url|local-path>]\n"
     }
 
-        public static func renderStartupBox(lines: [String]) -> String {
+    public static func renderStartupBox(lines: [String]) -> String {
         let columns = terminalColumnCount()
         let bannerLines = mlxCoderHeaderLines
         let horizontalInset = terminalBoxHorizontalInset(columns: columns)
@@ -157,13 +157,14 @@ extension TerminalChat {
         for line in lines {
             let splitLines = line.components(separatedBy: .newlines)
             for splitLine in splitLines {
-                let fittedLine = fitInline(splitLine, width: contentWidth)
-                output.append("\(linePrefix)\(orange)\(fittedLine)\(reset)")
+                let wrappedLines = wrapInline(splitLine, width: contentWidth)
+                for wrappedLine in wrappedLines {
+                    output.append("\(linePrefix)\(orange)\(wrappedLine)\(reset)")
+                }
             }
         }
         return output.joined(separator: "\n")
     }
-
 
     public static var mlxCoderHeaderLines: [String] {
         [
@@ -192,11 +193,7 @@ extension TerminalChat {
         return trimmedValue.isEmpty ? nil : trimmedValue
     }
 
-        
-
-
     public static func terminalColumnCount() -> Int {
-
         var size = winsize()
         if ioctl(AgentOutput.standardError.fileDescriptor, TIOCGWINSZ, &size) == 0,
            size.ws_col > 0 {
@@ -217,13 +214,38 @@ extension TerminalChat {
     }
 
     public static func fitInline(_ text: String, width: Int) -> String {
+        wrapInline(text, width: width).joined(separator: "\n")
+    }
+
+    public static func wrapInline(_ text: String, width: Int) -> [String] {
         let singleLine = text
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard width > 3, singleLine.count > width else {
-            return singleLine
+        guard width > 0, singleLine.count > width else {
+            return [singleLine]
         }
-        return String(singleLine.prefix(width - 3)) + "..."
+
+        var lines: [String] = []
+        var remaining = singleLine[...]
+        while remaining.count > width {
+            let wrapEnd = remaining.index(remaining.startIndex, offsetBy: width)
+            let candidate = remaining[..<wrapEnd]
+            let breakIndex = candidate.lastIndex(where: { $0.isWhitespace })
+            let lineEnd = breakIndex ?? wrapEnd
+            let line = remaining[..<lineEnd]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !line.isEmpty {
+                lines.append(String(line))
+            }
+            remaining = remaining[lineEnd...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)[...]
+        }
+
+        let finalLine = remaining.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !finalLine.isEmpty || lines.isEmpty {
+            lines.append(finalLine)
+        }
+        return lines
     }
 
     public static func fitBannerLine(_ text: String, width: Int) -> String {

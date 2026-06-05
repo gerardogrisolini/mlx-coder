@@ -59,4 +59,14 @@ struct TerminalInteractiveLineReaderTests {
             ).map(\.index) == [0, 1, 2, 3]
         )
     }
+
+    @Test
+    func pastedTextNormalizesCarriageReturnsToNewlines() {
+        let bytes = Array("first\r\nsecond\rthird".utf8)
+
+        #expect(
+            TerminalInteractiveLineReader.normalizedPastedText(bytes: bytes) == "first\nsecond\nthird"
+        )
+    }
+
 }
