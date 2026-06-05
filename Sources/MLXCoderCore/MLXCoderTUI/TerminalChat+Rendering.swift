@@ -142,32 +142,28 @@ extension TerminalChat {
         "Usage: /skills [all|none|skill-name|skill-number|install <github-url|local-path>|<github-url|local-path>]\n"
     }
 
-    public static func renderStartupBox(lines: [String]) -> String {
+        public static func renderStartupBox(lines: [String]) -> String {
         let columns = terminalColumnCount()
         let bannerLines = mlxCoderHeaderLines
         let horizontalInset = terminalBoxHorizontalInset(columns: columns)
-        let boxWidth = max(24, columns - horizontalInset * 2)
-        let contentWidth = max(20, boxWidth - 4)
-        let horizontalRule = String(repeating: "─", count: max(0, boxWidth - 2))
+        let contentWidth = max(20, columns - horizontalInset * 2)
         let linePrefix = String(repeating: " ", count: horizontalInset)
         let orange = "\u{1B}[38;5;208m"
         let reset = "\u{1B}[0m"
 
         var output = bannerLines.map { line in
-            let fittedLine = padded(fitBannerLine(line, width: boxWidth), width: boxWidth)
-            return fittedLine
+            "\(linePrefix)\(orange)\(fitBannerLine(line, width: contentWidth))\(reset)"
         }
-        output.append("\(linePrefix)\(orange)┌\(horizontalRule)┐\(reset)")
         for line in lines {
             let splitLines = line.components(separatedBy: .newlines)
             for splitLine in splitLines {
-                let fittedLine = padded(fitInline(splitLine, width: contentWidth), width: contentWidth)
-                output.append("\(linePrefix)\(orange)│\(reset) \(fittedLine) \(orange)│\(reset)")
+                let fittedLine = fitInline(splitLine, width: contentWidth)
+                output.append("\(linePrefix)\(orange)\(fittedLine)\(reset)")
             }
         }
-        output.append("\(linePrefix)\(orange)└\(horizontalRule)┘\(reset)")
         return output.joined(separator: "\n")
     }
+
 
     public static var mlxCoderHeaderLines: [String] {
         [
@@ -197,7 +193,11 @@ extension TerminalChat {
         return trimmedValue.isEmpty ? nil : trimmedValue
     }
 
+        
+
+
     public static func terminalColumnCount() -> Int {
+
         var size = winsize()
         if ioctl(AgentOutput.standardError.fileDescriptor, TIOCGWINSZ, &size) == 0,
            size.ws_col > 0 {

@@ -28,7 +28,9 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
     private let configuration: AgentRuntimeConfiguration
     private let runtime: MLXServerRuntime
     private let model: MLXServerModelDescriptor
+    private let kvCacheSettings: MLXServerKVCacheSettings
     private let toolExecutor: DirectToolExecutor
+
     private var sessions: [String: SessionState] = [:]
     private var didEmitLoadedModel = false
 
@@ -36,11 +38,13 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         configuration: AgentRuntimeConfiguration,
         runtime: MLXServerRuntime,
         model: MLXServerModelDescriptor,
+        kvCacheSettings: MLXServerKVCacheSettings,
         mcpRuntime: DirectMCPToolRuntime
     ) {
         self.configuration = configuration
         self.runtime = runtime
         self.model = model
+        self.kvCacheSettings = kvCacheSettings
         self.toolExecutor = DirectToolExecutor(
             outputLimit: 24_000,
             authorizationHandler: configuration.toolAuthorizationHandler,
@@ -50,6 +54,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
                     configuration: configuration,
                     runtime: runtime,
                     model: model,
+                    kvCacheSettings: kvCacheSettings,
                     mcpRuntime: mcpRuntime
                 )
             }
@@ -338,8 +343,10 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
     private func generationParameters() -> GenerateParameters {
         let overrides = configuration.generationParameterOverrides.normalized()
         var parameters = model.generationDefaults.generateParameters(
-            maxTokens: configuration.maxOutputTokens ?? overrides.maxTokens
+            maxTokens: configuration.maxOutputTokens ?? overrides.maxTokens,
+            kvCacheSettings: kvCacheSettings
         )
+
         if let minP = overrides.minP {
             parameters.minP = Float(minP)
         }

@@ -31,11 +31,12 @@ public final class TerminalStatusBar: @unchecked Sendable {
     private var spinnerTimer: DispatchSourceTimer?
     private var resizeSignalSource: DispatchSourceSignal?
     private var resizeGeneration = 0
+    private var isResizePending = false
     private var inputPanelState: InputPanelState?
     private var latestModelID: String?
     private var latestMetrics: DirectAgentGenerationMetrics?
     private var latestContextWindow: DirectAgentContextWindowStatus?
-    private static let spinnerFrames = ["-", "\\", "|", "/"]
+        private static let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
     private static let inputPanelChromeRows = 3
     private static let minimumScrollableRows = 2
     private static let standaloneStatusRows = 3
@@ -260,10 +261,21 @@ public final class TerminalStatusBar: @unchecked Sendable {
             return true
         }
 
-        clearLocked(row: row)
+        let oldColumns = columns
+        let oldReservedRows = reservedBottomRowsLocked()
         row = geometry.rows
         columns = geometry.columns
-        redrawTerminalLocked(moveCursorToPrompt: true)
+        let newReservedRows = reservedBottomRowsLocked()
+        let oldRowWrapFactor = max(1, (oldColumns + geometry.columns - 1) / geometry.columns)
+        let rowsToClear = min(
+            row,
+            max(newReservedRows, oldReservedRows * oldRowWrapFactor) + 2
+        )
+        clearReservedRowsLocked(
+            count: rowsToClear,
+            bottomRow: row
+        )
+        writeScrollRegionLocked(moveCursorToPrompt: true)
         return true
     }
 
@@ -277,13 +289,8 @@ public final class TerminalStatusBar: @unchecked Sendable {
         writeLocked(sequence)
     }
 
-    private func redrawTerminalLocked(moveCursorToPrompt: Bool) {
-        writeLocked("\u{1B}[r\u{1B}[2J\u{1B}[H")
-        writeScrollRegionLocked(moveCursorToPrompt: moveCursorToPrompt)
-    }
-
     private func renderLocked() {
-        guard row > 0, columns > 0 else {
+        guard row > 0, columns > 0, !isResizePending else {
             return
         }
 
@@ -492,21 +499,23 @@ public final class TerminalStatusBar: @unchecked Sendable {
         let generationRateText = latestMetrics?.completionTokensPerSecond.map(Self.rateText) ?? "--"
         let durationText = latestMetrics?.responseDurationSeconds.map(Self.durationText) ?? "--"
 
-        var fragments: [String] = []
+                        var fragments: [String] = []
+        if let latestModelID {
+            fragments.append(Self.modelDisplayName(latestModelID))
+        }
         if isProcessing {
-            fragments.append("working \(Self.spinnerFrames[spinnerIndex % Self.spinnerFrames.count])")
+                        fragments.append(Self.spinnerFrames[spinnerIndex % Self.spinnerFrames.count])
         }
         fragments.append(contentsOf: [
             "ctx \(tokenWindowText)",
-            "pre \(prefillText)",
-            "pro \(promptRateText) tok/s",
+            "time \(durationText)",
             "gen \(generationRateText) tok/s",
-            "time \(durationText)"
+            "pre \(prefillText)",
+            "pro \(promptRateText) tok/s"
         ])
-        if let latestModelID {
-            fragments.insert(Self.modelDisplayName(latestModelID), at: 0)
-        }
         return fragments.joined(separator: " | ")
+
+
     }
 
     private static func modelDisplayName(_ modelID: String) -> String {
@@ -823,6 +832,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
             return
         }
         resizeGeneration += 1
+        isResizePending = true
         let generation = resizeGeneration
         lock.unlock()
 
@@ -840,9 +850,13 @@ public final class TerminalStatusBar: @unchecked Sendable {
         guard isStarted, generation == resizeGeneration else {
             return
         }
+        defer {
+            isResizePending = false
+        }
         guard refreshTerminalGeometryLocked() else {
             return
         }
+        isResizePending = false
         renderLocked()
     }
 

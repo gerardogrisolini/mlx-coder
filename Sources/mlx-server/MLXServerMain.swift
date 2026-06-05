@@ -164,6 +164,7 @@ struct MLXServerMain {
                 configuration: configuration,
                 runtime: runtime,
                 model: model,
+                kvCacheSettings: settings.kvCache,
                 mcpRuntime: mcpRuntime
             )
         }
