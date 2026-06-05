@@ -29,7 +29,10 @@ extension DirectToolExecutor {
         ) {
             return output
         }
-        if await mcpRuntime.canExecute(toolName: toolCall.name) {
+                if await mcpRuntime.canExecute(
+            toolName: toolCall.name,
+            allowedToolNames: allowedToolNames
+        ) {
             return try await mcpRuntime.execute(toolCall: toolCall)
         }
         if let toolExecutor = toolProviderRegistry.executor(for: toolCall.name) {

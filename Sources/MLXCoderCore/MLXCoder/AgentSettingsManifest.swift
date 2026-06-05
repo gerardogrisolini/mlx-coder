@@ -13,7 +13,9 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
         case providers
         case models
         case selected
-        case remoteAPIKeysByProviderID
+                case remoteAPIKeysByProviderID
+        case localExecAllowedCommands
+
     }
 
     public static let currentVersion = 6
@@ -24,7 +26,9 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
     public let models: [AgentSettingsModelManifest]
     public let selectedModelID: String?
     public let selectedThinkingSelection: AgentThinkingSelection?
-    public let remoteAPIKeysByProviderID: [String: String]
+        public let remoteAPIKeysByProviderID: [String: String]
+    public let localExecAllowedCommands: [String]
+
 
     public init(
         version: Int = Self.currentVersion,
@@ -32,7 +36,8 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
         models: [AgentSettingsModelManifest],
         selectedModelID: String? = nil,
         selectedThinkingSelection: AgentThinkingSelection? = nil,
-        remoteAPIKeysByProviderID: [String: String] = [:]
+                remoteAPIKeysByProviderID: [String: String] = [:],
+        localExecAllowedCommands: [String] = []
     ) {
         let normalizedProviders = Self.normalizedProviders(
             providers,
@@ -53,9 +58,12 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
             selectedModelID: self.selectedModelID,
             models: normalizedModels
         )
-        self.remoteAPIKeysByProviderID = Self.normalizedRemoteAPIKeys(
+                self.remoteAPIKeysByProviderID = Self.normalizedRemoteAPIKeys(
             remoteAPIKeysByProviderID,
             models: normalizedModels
+        )
+        self.localExecAllowedCommands = Self.normalizedLocalExecAllowedCommands(
+            localExecAllowedCommands
         )
     }
 
@@ -77,9 +85,13 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
             selectedModelID: selected?.modelID,
             selectedThinkingSelection: selected?.thinking,
             remoteAPIKeysByProviderID: try container.decodeIfPresent(
-                [String: String].self,
+                                [String: String].self,
                 forKey: .remoteAPIKeysByProviderID
-            ) ?? [:]
+            ) ?? [:],
+            localExecAllowedCommands: try container.decodeIfPresent(
+                [String].self,
+                forKey: .localExecAllowedCommands
+            ) ?? []
         )
     }
 
@@ -97,8 +109,11 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
         if !selection.isEmpty {
             try container.encode(selection, forKey: .selected)
         }
-        if !remoteAPIKeysByProviderID.isEmpty {
+                if !remoteAPIKeysByProviderID.isEmpty {
             try container.encode(remoteAPIKeysByProviderID, forKey: .remoteAPIKeysByProviderID)
+        }
+        if !localExecAllowedCommands.isEmpty {
+            try container.encode(localExecAllowedCommands, forKey: .localExecAllowedCommands)
         }
     }
 
@@ -108,6 +123,22 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
             && selectedModelID == nil
             && selectedThinkingSelection == nil
             && remoteAPIKeysByProviderID.isEmpty
+            && localExecAllowedCommands.isEmpty
+    }
+
+    private static func normalizedLocalExecAllowedCommands(_ commands: [String]) -> [String] {
+        var seen = Set<String>()
+        return commands.compactMap { command in
+            let normalized = command.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalized.isEmpty else {
+                return nil
+            }
+            let key = normalized.lowercased()
+            guard seen.insert(key).inserted else {
+                return nil
+            }
+            return normalized
+        }
     }
 
     private static func normalizedModels(

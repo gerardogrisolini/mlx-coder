@@ -167,9 +167,8 @@ extension TerminalChat {
 
     public static var mlxCoderHeaderLines: [String] {
         [
-            "                                       ",
             " █ █  █   █ █    ██   ██   ██   ██  ███",
-            " ███  █    █  █ █    █  █  █ █  █   ██ ",
+            " ███  █    █    █    █  █  █ █  █   ██ ",
             " █ █  ██  █ █    ██   ██   ██   ██  █ █",
             "                                       "
         ]
@@ -665,7 +664,7 @@ extension TerminalChat {
         isAtStartOfChatLine = terminator.hasSuffix("\n")
     }
 
-    private static func compactToolLines(
+        static func compactToolLines(
         for toolCall: DirectAgentToolCall,
         statusIcon: String,
         contentInsetWidth: Int = 0
@@ -754,12 +753,19 @@ extension TerminalChat {
         let reset = "\u{1B}[0m"
         let prefix = consumeToolLeadingLineBreakRequirement() ? "\n" : ""
         let lineInset = chatLineInsetPrefix
-        let text = lines
-            .map { "\(lineInset)\(Self.toolANSIColor)\($0)\(reset)" }
+                let text = lines
+            .map { "\(lineInset)\(Self.renderDetailedToolLine($0))\(reset)" }
             .joined(separator: "\n")
         AgentOutput.standardError.writeString("\(prefix)\(text)\n")
         assistantContentNeedsLineBreakBeforeTool = false
         isAtStartOfChatLine = true
+    }
+
+        private static func renderDetailedToolLine(_ line: String) -> String {
+        if line.hasPrefix("  ") || line.hasPrefix("    ") {
+            return TerminalCodeBlockRenderer.renderLine(line, language: nil)
+        }
+        return "\(toolANSIColor)\(line)"
     }
 
     private func consumeToolLeadingLineBreakRequirement() -> Bool {

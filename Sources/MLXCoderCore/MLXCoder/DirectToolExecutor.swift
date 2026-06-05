@@ -167,9 +167,10 @@ public actor DirectToolExecutor {
         _ descriptors: [DirectToolDescriptor],
         allowedToolNames: Set<String>?
     ) -> [DirectToolDescriptor] {
-        guard let allowedToolNames else {
-            return descriptors
+                guard let allowedToolNames else {
+            return descriptors.filter { !DirectMCPToolRuntime.isXcodeToolName($0.name) }
         }
+
 
         guard !allowedToolNames.isEmpty else {
             return []
@@ -184,9 +185,10 @@ public actor DirectToolExecutor {
         _ toolName: String,
         allowedToolNames: Set<String>?
     ) -> Bool {
-        guard let allowedToolNames else {
-            return true
+                guard let allowedToolNames else {
+            return !DirectMCPToolRuntime.isXcodeToolName(toolName)
         }
+
 
         guard !allowedToolNames.isEmpty else {
             return false

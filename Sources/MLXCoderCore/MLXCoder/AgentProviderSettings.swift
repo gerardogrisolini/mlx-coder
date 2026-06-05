@@ -444,7 +444,8 @@ public enum AgentSettingsStore {
                 models: manifest.models,
                 selectedModelID: model.id,
                 selectedThinkingSelection: resolvedThinkingSelection,
-                remoteAPIKeysByProviderID: manifest.remoteAPIKeysByProviderID
+                                remoteAPIKeysByProviderID: manifest.remoteAPIKeysByProviderID,
+                localExecAllowedCommands: manifest.localExecAllowedCommands
             )
         )
     }

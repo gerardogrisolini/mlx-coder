@@ -489,33 +489,34 @@ public final class TerminalStatusBar: @unchecked Sendable {
     private func statusTextLocked() -> String {
         let tokensUsed = latestContextWindow?.usedTokens
             ?? latestMetrics?.totalTokenCount
-        let tokenWindowText = Self.tokenWindowText(
-            usedTokens: latestContextWindow?.usedTokens,
-            metricUsedTokens: tokensUsed,
-            maxTokens: latestContextWindow?.maxTokens
-        )
-        let prefillText = latestMetrics?.promptTokenCount.map(Self.tokenCountText) ?? "--"
-        let promptRateText = latestMetrics?.promptTokensPerSecond.map(Self.rateText) ?? "--"
-        let generationRateText = latestMetrics?.completionTokensPerSecond.map(Self.rateText) ?? "--"
-        let durationText = latestMetrics?.responseDurationSeconds.map(Self.durationText) ?? "--"
-
-                        var fragments: [String] = []
+        var fragments: [String] = []
         if let latestModelID {
             fragments.append(Self.modelDisplayName(latestModelID))
         }
         if isProcessing {
-                        fragments.append(Self.spinnerFrames[spinnerIndex % Self.spinnerFrames.count])
+            fragments.append(Self.spinnerFrames[spinnerIndex % Self.spinnerFrames.count])
         }
-        fragments.append(contentsOf: [
-            "ctx \(tokenWindowText)",
-            "time \(durationText)",
-            "gen \(generationRateText) tok/s",
-            "pre \(prefillText)",
-            "pro \(promptRateText) tok/s"
-        ])
+                if tokensUsed != nil || latestContextWindow?.maxTokens != nil {
+            let contextText = Self.tokenWindowText(
+                usedTokens: latestContextWindow?.usedTokens,
+                metricUsedTokens: tokensUsed,
+                maxTokens: latestContextWindow?.maxTokens
+            )
+            fragments.append("ctx \(contextText)")
+        }
+        if let duration = latestMetrics?.responseDurationSeconds {
+            fragments.append("time \(Self.durationText(duration))")
+        }
+        if let generationRate = latestMetrics?.completionTokensPerSecond {
+            fragments.append("gen \(Self.rateText(generationRate)) tok/s")
+        }
+        if let prefillTokens = latestMetrics?.promptTokenCount {
+            fragments.append("pre \(Self.tokenCountText(prefillTokens))")
+        }
+        if let promptRate = latestMetrics?.promptTokensPerSecond {
+            fragments.append("pro \(Self.rateText(promptRate)) tok/s")
+        }
         return fragments.joined(separator: " | ")
-
-
     }
 
     private static func modelDisplayName(_ modelID: String) -> String {

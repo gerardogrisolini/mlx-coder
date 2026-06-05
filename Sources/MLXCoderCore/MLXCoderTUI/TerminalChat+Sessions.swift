@@ -360,16 +360,22 @@ extension TerminalChat {
         }
     }
 
-    private static func directToolCall(
+        static func directToolCall(
         from toolCall: AgentRuntimeToolCall
     ) -> DirectAgentToolCall {
         DirectAgentToolCall(
             id: toolCall.id ?? "restored-tool-\(UUID().uuidString.lowercased())",
             name: toolCall.name,
-            argumentsObject: [:],
+            argumentsObject: toolArgumentsObject(from: toolCall.argumentsJSON),
             argumentsJSON: toolCall.argumentsJSON
         )
     }
+
+    private static func toolArgumentsObject(from argumentsJSON: String) -> [String: Any] {
+        DirectToolExecutor.toolArguments(from: argumentsJSON)
+            .mapValues(\.jsonObject)
+    }
+
 
     private static func toolResult(
         for toolCall: AgentRuntimeToolCall,

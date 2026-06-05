@@ -160,13 +160,16 @@ public actor DirectMCPToolRuntime {
             .flatMap(\.descriptors)
     }
 
-    public func canExecute(toolName: String) async -> Bool {
-        await discoverIfNeeded(allowedToolNames: [toolName])
+        public func canExecute(
+        toolName: String,
+        allowedToolNames: Set<String>? = nil
+    ) async -> Bool {
+        let discoveryToolNames = allowedToolNames ?? [toolName]
+        await discoverIfNeeded(allowedToolNames: discoveryToolNames)
         return serverAndToolName(for: toolName) != nil
     }
 
-    public func execute(toolCall: DirectAgentToolCall) async throws -> String {
-        await discoverIfNeeded(allowedToolNames: [toolCall.name])
+        public func execute(toolCall: DirectAgentToolCall) async throws -> String {
         guard let (server, rawToolName) = serverAndToolName(for: toolCall.name) else {
             throw DirectMCPToolRuntimeError.unknownTool(toolCall.name)
         }

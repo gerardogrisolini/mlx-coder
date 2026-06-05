@@ -355,8 +355,11 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         return modelLLMID
     }
 
-    public func activeToolDescriptors() async -> [DirectToolDescriptor] {
-        await toolExecutor.descriptors()
+        public func activeToolDescriptors() async -> [DirectToolDescriptor] {
+        guard let session = sessions.values.first else {
+            return await toolExecutor.descriptors(allowedToolNames: [])
+        }
+        return await toolExecutor.descriptors(allowedToolNames: session.allowedToolNames)
     }
 
     public func subAgentSnapshots() async -> [DirectSubAgentRuntime.AgentSnapshot] {

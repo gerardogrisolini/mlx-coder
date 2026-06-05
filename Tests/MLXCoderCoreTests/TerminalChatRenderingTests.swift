@@ -78,6 +78,25 @@ struct TerminalChatRenderingTests {
         #expect(rendered.hasSuffix("\n"))
     }
 
+        @Test
+    func compactEditToolLinesIncludeFileTarget() {
+        let toolCall = DirectAgentToolCall(
+            id: "call_1",
+            name: "local.editFile",
+            argumentsObject: [
+                "file_path": "Sources/App.swift",
+                "oldString": "old",
+                "newString": "new"
+            ],
+            argumentsJSON: #"{"file_path":"Sources/App.swift","oldString":"old","newString":"new"}"#
+        )
+
+        let lines = TerminalChat.compactToolLines(for: toolCall, statusIcon: "⏳")
+
+        #expect(lines.contains("⚙️  Edit:"))
+        #expect(lines.contains { $0.contains("Sources/App.swift") })
+    }
+
     @Test
     func compactToolStatusIconStaysImmediatelyAfterText() {
         let rendered = TerminalChat.compactToolStatusLine(
@@ -88,6 +107,30 @@ struct TerminalChatRenderingTests {
 
         #expect(rendered.hasSuffix(" ✅"))
         #expect(!rendered.contains("  ✅"))
+    }
+
+        @Test
+    func detailedReplaceCompletionShowsSnippetsAsCodeLines() {
+        let toolCall = DirectAgentToolCall(
+            id: "call_1",
+            name: "local.editFile",
+            argumentsObject: [
+                "path": "Sources/App.swift",
+                "oldString": "let oldValue = 1",
+                "newString": "let newValue = 2"
+            ],
+            argumentsJSON: #"{"path":"Sources/App.swift","oldString":"let oldValue = 1","newString":"let newValue = 2"}"#
+        )
+
+        let lines = TerminalChat.detailedToolCallCompletedLines(
+            for: toolCall,
+            result: DirectAgentToolResult(output: "", summary: "ok")
+        )
+
+        #expect(lines.contains("old:"))
+        #expect(lines.contains("  let oldValue = 1"))
+        #expect(lines.contains("new:"))
+        #expect(lines.contains("  let newValue = 2"))
     }
 
     @Test

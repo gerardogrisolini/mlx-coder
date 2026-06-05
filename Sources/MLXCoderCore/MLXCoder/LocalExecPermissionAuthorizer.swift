@@ -18,7 +18,8 @@ public actor LocalExecPermissionAuthorizer {
         case deny
     }
 
-    private var alwaysAllowedKeys = Set<String>()
+        private var alwaysAllowedKeys = Set<String>()
+    private var didLoadPersistedAllowedCommands = false
 
     public init() {}
 
@@ -30,6 +31,7 @@ public actor LocalExecPermissionAuthorizer {
         #if !os(macOS)
         return true
         #else
+                        loadPersistedAllowedCommandsIfNeeded()
         let cacheKey = permissionCacheKey(for: request)
         if alwaysAllowedKeys.contains(cacheKey) {
             return true
@@ -42,8 +44,9 @@ public actor LocalExecPermissionAuthorizer {
         switch decision {
         case .allowOnce:
             return true
-        case .allowAlways:
+                case .allowAlways:
             alwaysAllowedKeys.insert(cacheKey)
+            persistAllowedCommand(for: request)
             return true
         case .deny:
             return false
@@ -51,14 +54,113 @@ public actor LocalExecPermissionAuthorizer {
         #endif
     }
 
+        static func commandPermissionIdentity(for command: String) -> String? {
+        guard let words = shellWords(command), let executable = words.first else {
+            return nil
+        }
+        return executable
+    }
+
+
+
+    private static func shellWords(_ command: String) -> [String]? {
+        let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedCommand.isEmpty,
+              !trimmedCommand.contains(where: { "\n;&|><`()$".contains($0) }) else {
+            return nil
+        }
+
+        var words: [String] = []
+        var current = ""
+        var quote: Character?
+        var isEscaped = false
+        for character in trimmedCommand {
+            if isEscaped {
+                current.append(character)
+                isEscaped = false
+                continue
+            }
+            if character == "\\" {
+                isEscaped = true
+                continue
+            }
+            if let activeQuote = quote {
+                if character == activeQuote {
+                    quote = nil
+                } else {
+                    current.append(character)
+                }
+                continue
+            }
+            if character == "'" || character == "\"" {
+                quote = character
+                continue
+            }
+            if character.isWhitespace {
+                if !current.isEmpty {
+                    words.append(current)
+                    current = ""
+                }
+                continue
+            }
+            current.append(character)
+        }
+        guard quote == nil, !isEscaped else {
+            return nil
+        }
+        if !current.isEmpty {
+            words.append(current)
+        }
+        return words
+    }
+
+
     private func permissionCacheKey(for request: AgentToolAuthorizationRequest) -> String {
-        [
-            request.sessionID ?? "",
+                        [
             request.toolName,
-            request.workingDirectory,
-            request.command
+            Self.commandPermissionIdentity(for: request.command) ?? request.command
         ].joined(separator: "\u{1f}")
     }
+
+        private func loadPersistedAllowedCommandsIfNeeded() {
+        guard !didLoadPersistedAllowedCommands else {
+            return
+        }
+        didLoadPersistedAllowedCommands = true
+        guard let manifest = AgentSettingsManifestStore.load() else {
+            return
+        }
+                alwaysAllowedKeys.formUnion(manifest.localExecAllowedCommands.map { "local.exec\u{1f}\($0)" })
+    }
+
+    private func persistAllowedCommand(for request: AgentToolAuthorizationRequest) {
+        guard let commandIdentity = Self.commandPermissionIdentity(for: request.command) else {
+            return
+        }
+                let manifest = AgentSettingsManifestStore.load()
+            ?? AgentSettingsManifest(models: [])
+        guard !manifest.localExecAllowedCommands.contains(where: {
+            $0.caseInsensitiveCompare(commandIdentity) == .orderedSame
+        }) else {
+            return
+        }
+        do {
+            try AgentSettingsManifestStore.save(
+                AgentSettingsManifest(
+                    providers: manifest.providers,
+                    models: manifest.models,
+                    selectedModelID: manifest.selectedModelID,
+                    selectedThinkingSelection: manifest.selectedThinkingSelection,
+                    remoteAPIKeysByProviderID: manifest.remoteAPIKeysByProviderID,
+                    localExecAllowedCommands: manifest.localExecAllowedCommands + [commandIdentity]
+                )
+            )
+        } catch {
+            return
+        }
+    }
+
+    
 
     private func presentDialog(
         for request: AgentToolAuthorizationRequest

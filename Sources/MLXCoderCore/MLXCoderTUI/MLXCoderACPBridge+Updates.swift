@@ -155,7 +155,7 @@ extension MLXCoderACPBridge {
             return "read"
         case "search.grep", "search.glob":
             return "search"
-        case "local.writeFile", "local.replace", "local.append", "local.mkdir":
+                case "local.writeFile", "local.replace", "local.append", "local.mkdir", "local.editFile", "local.multiEdit":
             return "edit"
         case "local.delete":
             return "delete"
