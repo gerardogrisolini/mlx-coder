@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Build release
         run: |
@@ -65,7 +65,7 @@ jobs:
             > mlx-server-${{ github.ref_name }}-macos-arm64.tar.gz.sha256
 
       - name: Create release and upload assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: false
           generate_release_notes: true
@@ -79,7 +79,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
-            echo "::warning::HOMEBREW_TAP_TOKEN is not configured; homebrew-tap will update from its scheduled workflow."
+            echo "::warning title=Missing HOMEBREW_TAP_TOKEN secret::Configure HOMEBREW_TAP_TOKEN under Settings > Secrets and variables > Actions > Secrets, not Variables; homebrew-tap will update from its scheduled workflow."
             exit 0
           fi
 
