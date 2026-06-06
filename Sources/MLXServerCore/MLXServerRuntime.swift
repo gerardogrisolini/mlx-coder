@@ -1313,8 +1313,6 @@ extension MLXServerDiskKVCacheIdentity {
         self.init(
             modelID: key.modelID,
             runtimeKind: key.runtimeKind,
-            chatKeySignature: key.signature,
-            transcriptSignature: tokenIdentity.tokenDigest,
             cacheLayoutSignature: PromptPrefixSignature.cacheLayout(parameters),
             promptTokenDigest: tokenIdentity.tokenDigest,
             promptTokenCount: tokenIdentity.tokenCount,
@@ -1394,10 +1392,7 @@ public enum MLXServerChatSessionTranscriptText {
     public static func visibleAssistantContent(from generatedText: String, startsInThinking: Bool) -> String {
         var text = generatedText
 
-        if startsInThinking {
-            guard let closeRange = text.range(of: closeTag) else {
-                return ""
-            }
+        if startsInThinking, let closeRange = text.range(of: closeTag) {
             text.removeSubrange(text.startIndex..<closeRange.upperBound)
         } else if let closeRange = text.range(of: closeTag),
                   shouldDiscardPrefixThroughCloseTag(in: text, closeRange: closeRange) {
@@ -1434,10 +1429,10 @@ public enum MLXServerChatSessionTranscriptText {
 
         if startsInThinking {
             if let closeRange = text.range(of: closeTag) {
-                reasoning += text[..<closeRange.lowerBound]
+                reasoning += strippingLeadingOpenTag(
+                    String(text[..<closeRange.lowerBound])
+                )
                 text.removeSubrange(text.startIndex..<closeRange.upperBound)
-            } else {
-                return text
             }
         }
 
@@ -1457,6 +1452,17 @@ public enum MLXServerChatSessionTranscriptText {
         }
 
         return reasoning
+    }
+
+    private static func strippingLeadingOpenTag(_ text: String) -> String {
+        let trimmedPrefix = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedPrefix.hasPrefix(openTag),
+              let openRange = text.range(of: openTag) else {
+            return text
+        }
+        var text = text
+        text.removeSubrange(text.startIndex..<openRange.upperBound)
+        return text
     }
 
     private static func shouldDiscardPrefixThroughCloseTag(

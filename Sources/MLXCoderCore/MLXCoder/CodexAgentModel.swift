@@ -76,7 +76,6 @@ public nonisolated enum CodexAgentModel {
     }
 
     public static let llmID = "chatgpt"
-    public static let legacyLLMID = "codex"
     public static let defaultModelID = "gpt-5.5"
     public static var defaultLLMID: String {
         selectionID(forModelID: defaultModelID)
@@ -136,7 +135,6 @@ public nonisolated enum CodexAgentModel {
         }
 
         return isSubscriptionPrefix(normalizedValue, prefix: llmID)
-            || isSubscriptionPrefix(normalizedValue, prefix: legacyLLMID)
     }
 
     public static func canonicalLLMID(_ value: String?) -> String {
@@ -161,14 +159,12 @@ public nonisolated enum CodexAgentModel {
         }
 
         let lowercasedValue = trimmedValue.lowercased()
-        if lowercasedValue == llmID || lowercasedValue == legacyLLMID {
+        if lowercasedValue == llmID {
             return defaultModelID
         }
-        for prefix in [llmID, legacyLLMID] {
-            for separator in [":", "/"] where lowercasedValue.hasPrefix(prefix + separator) {
-                let rawModelID = String(trimmedValue.dropFirst(prefix.count + separator.count))
-                return normalizedModelID(rawModelID)
-            }
+        for separator in [":", "/"] where lowercasedValue.hasPrefix(llmID + separator) {
+            let rawModelID = String(trimmedValue.dropFirst(llmID.count + separator.count))
+            return normalizedModelID(rawModelID)
         }
         return normalizedModelID(trimmedValue)
     }

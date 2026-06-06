@@ -172,12 +172,10 @@ extension TerminalChat {
             return "Focused bug fixes with minimal code changes"
         case AgentProfileStore.builderAgentID.uuidString.lowercased():
             return "Create, build, and manage Swift feature tools"
-        case AgentProfileStore.featureAgentID.uuidString.lowercased():
-            return "Build complete product features with normal coding tools"
+        case AgentProfileStore.minimalAgentID.uuidString.lowercased():
+            return "Minimal tools and concise replies"
         case AgentProfileStore.reviewAgentID.uuidString.lowercased():
             return "Code review only: findings first, no edits unless asked"
-        case AgentProfileStore.researchAgentID.uuidString.lowercased():
-            return "Research, source inspection, web lookup, and synthesis"
         case AgentProfileStore.refactorAgentID.uuidString.lowercased():
             return "Behavior-preserving cleanup and targeted refactors"
         default:

@@ -69,14 +69,19 @@ public enum MLXServerModelSetupRunner {
             defaultValue: manifest.models.isEmpty
         )
         if shouldConfigureRemoteModel {
-            repeat {
-                let configuredModel = try await configureRemoteModel()
+            while true {
+                guard let configuredModel = try await configureRemoteModel() else {
+                    break
+                }
                 upsert(record: configuredModel.record, in: &manifest)
                 try updateDefaultModel(
                     afterAdding: configuredModel.record,
                     in: &manifest
                 )
-            } while try promptYesNo("Add another model?", defaultValue: false)
+                guard try promptYesNo("Add another model?", defaultValue: false) else {
+                    break
+                }
+            }
         }
 
         try selectDefaultModelIfRequested(in: &manifest)
@@ -205,42 +210,34 @@ public enum MLXServerModelSetupRunner {
         cache: HubCache = MLXServerHuggingFaceCacheAccessStore.cache,
         fileManager: FileManager = .default
     ) throws {
-        guard let repoID = Repo.ID(rawValue: model.repositoryID) else {
-            FileHandle.standardError.writeString(
-                "Skipped cache removal for invalid repository id: \(model.repositoryID)\n"
-            )
-            return
-        }
-
-        let urls = cachedModelRemovalURLs(repoID: repoID, cache: cache)
-        var removedAny = false
-        for url in urls {
-            guard fileManager.fileExists(atPath: url.path) else {
-                continue
-            }
-            try fileManager.removeItem(at: url)
-            removedAny = true
-        }
-
-        if removedAny {
-            FileHandle.standardError.writeString("Removed cached files for \(model.repositoryID)\n")
-        } else {
-            FileHandle.standardError.writeString("No cached files found for \(model.repositoryID)\n")
-        }
+        try removeCachedRepository(
+            repositoryID: model.repositoryID,
+            cache: cache,
+            fileManager: fileManager
+        )
     }
 
-    private static func cachedModelRemovalURLs(
-        repoID: Repo.ID,
-        cache: HubCache
-    ) -> [URL] {
-        let repositoryURL = cache.repoDirectory(repo: repoID, kind: .model)
-        let metadataURL = cache.metadataDirectory(repo: repoID, kind: .model)
-        return [
-            repositoryURL,
-            metadataURL,
-            cache.lockPath(for: repositoryURL),
-            cache.lockPath(for: metadataURL)
-        ]
+    private static func removeCachedRepository(
+        repositoryID: String,
+        cache: HubCache = MLXServerHuggingFaceCacheAccessStore.cache,
+        fileManager: FileManager = .default
+    ) throws {
+        let removalResult = try MLXServerHuggingFaceCacheRemoval.remove(
+            repositoryID: repositoryID,
+            cache: cache,
+            fileManager: fileManager
+        )
+
+        switch removalResult {
+        case .invalidRepositoryID:
+            FileHandle.standardError.writeString(
+                "Skipped cache removal for invalid repository id: \(repositoryID)\n"
+            )
+        case .removed:
+            FileHandle.standardError.writeString("Removed cached files for \(repositoryID)\n")
+        case .notFound:
+            FileHandle.standardError.writeString("No cached files found for \(repositoryID)\n")
+        }
     }
 
     private static func importCachedModelsIfRequested(into manifest: inout MLXServerModelsManifest) throws {
@@ -280,6 +277,7 @@ public enum MLXServerModelSetupRunner {
             "Import them into models.json?",
             defaultValue: true
         ) else {
+            try deleteRejectedCachedModelsIfRequested(importableCandidates)
             return
         }
 
@@ -288,6 +286,7 @@ public enum MLXServerModelSetupRunner {
                 "Import \(candidate.repositoryID)?",
                 defaultValue: true
             ) else {
+                try deleteRejectedCachedModelIfRequested(candidate)
                 continue
             }
             let configuredModel = try configureCachedModel(candidate)
@@ -299,9 +298,32 @@ public enum MLXServerModelSetupRunner {
         }
     }
 
-    private static func configureRemoteModel() async throws -> ConfiguredModelRecord {
+    private static func deleteRejectedCachedModelIfRequested(
+        _ candidate: MLXServerCachedModelCandidate
+    ) throws {
+        guard try promptYesNo(
+            "Delete \(candidate.repositoryID) [\(candidate.revision)] from the Hugging Face cache?",
+            defaultValue: false
+        ) else {
+            return
+        }
+
+        try removeCachedRepository(repositoryID: candidate.repositoryID)
+    }
+
+    private static func deleteRejectedCachedModelsIfRequested(
+        _ candidates: [MLXServerCachedModelCandidate]
+    ) throws {
+        for candidate in candidates {
+            try deleteRejectedCachedModelIfRequested(candidate)
+        }
+    }
+
+    private static func configureRemoteModel() async throws -> ConfiguredModelRecord? {
         let client = MLXServerHuggingFaceCacheAccessStore.hubClient()
-        let selectedModel = try await selectHuggingFaceModel(client: client)
+        guard let selectedModel = try await selectHuggingFaceModel(client: client) else {
+            return nil
+        }
         let repositoryID = selectedModel.id.rawValue
         let revision = selectedModel.sha ?? "main"
 
@@ -629,8 +651,8 @@ public enum MLXServerModelSetupRunner {
         return parts.joined(separator: ", ")
     }
 
-    private static func selectHuggingFaceModel(client: HubClient) async throws -> Model {
-        while true {
+    private static func selectHuggingFaceModel(client: HubClient) async throws -> Model? {
+        searchLoop: while true {
             let query = try promptString(
                 "Hugging Face MLX search",
                 defaultValue: nil,
@@ -665,12 +687,30 @@ public enum MLXServerModelSetupRunner {
                 )
             }
 
-            let selection = try promptInt(
-                "Select model",
-                defaultValue: 1,
-                allowedRange: 1...models.count
-            )
-            return models[selection - 1]
+            while true {
+                let answer = try promptString(
+                    "Select model (number, s to search again, c to continue without download)",
+                    defaultValue: "1",
+                    allowEmpty: false
+                )
+                guard let selection = MLXServerModelSetupInputParser.parseSearchSelection(
+                    answer,
+                    defaultSelection: 1,
+                    allowedRange: 1...models.count
+                ) else {
+                    FileHandle.standardError.writeString("Invalid model selection.\n")
+                    continue
+                }
+
+                switch selection {
+                case let .model(selection):
+                    return models[selection - 1]
+                case .searchAgain:
+                    continue searchLoop
+                case .continueWithoutDownload:
+                    return nil
+                }
+            }
         }
     }
 
@@ -1102,6 +1142,125 @@ enum MLXServerModelSetupError: LocalizedError {
         case .inputClosed:
             return "Input closed during mlx-server model setup."
         }
+    }
+}
+
+enum MLXServerModelSearchSelection: Equatable {
+    case model(Int)
+    case searchAgain
+    case continueWithoutDownload
+}
+
+enum MLXServerModelSetupInputParser {
+    static func parseSearchSelection(
+        _ value: String,
+        defaultSelection: Int,
+        allowedRange: ClosedRange<Int>
+    ) -> MLXServerModelSearchSelection? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = normalizedSearchCommand(trimmed)
+        if searchAgainCommands.contains(normalized) {
+            return .searchAgain
+        }
+        if continueWithoutDownloadCommands.contains(normalized) {
+            return .continueWithoutDownload
+        }
+
+        let selectionText = trimmed.isEmpty ? String(defaultSelection) : trimmed
+        guard let selection = Int(selectionText),
+              allowedRange.contains(selection) else {
+            return nil
+        }
+        return .model(selection)
+    }
+
+    private static let searchAgainCommands = Set([
+        "s",
+        "search",
+        "search again",
+        "again",
+        "r",
+        "retry",
+        "cerca",
+        "cerca ancora",
+        "ricerca"
+    ])
+
+    private static let continueWithoutDownloadCommands = Set([
+        "c",
+        "continue",
+        "continue without download",
+        "skip",
+        "skip download",
+        "no download",
+        "without download",
+        "continua",
+        "continua senza scaricare",
+        "senza scaricare",
+        "salta",
+        "non scaricare"
+    ])
+
+    private static func normalizedSearchCommand(_ value: String) -> String {
+        value
+            .lowercased()
+            .replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+    }
+}
+
+enum MLXServerHuggingFaceCacheRemovalResult: Equatable {
+    case removed
+    case notFound
+    case invalidRepositoryID
+}
+
+enum MLXServerHuggingFaceCacheRemoval {
+    static func remove(
+        repositoryID: String,
+        cache: HubCache,
+        fileManager: FileManager = .default
+    ) throws -> MLXServerHuggingFaceCacheRemovalResult {
+        guard let repoID = Repo.ID(rawValue: repositoryID) else {
+            return .invalidRepositoryID
+        }
+
+        let urls = removalURLs(repoID: repoID, cache: cache)
+        var removedAny = false
+        for url in urls {
+            guard fileManager.fileExists(atPath: url.path) else {
+                continue
+            }
+            try fileManager.removeItem(at: url)
+            removedAny = true
+        }
+        return removedAny ? .removed : .notFound
+    }
+
+    static func removalURLs(
+        repositoryID: String,
+        cache: HubCache
+    ) -> [URL]? {
+        guard let repoID = Repo.ID(rawValue: repositoryID) else {
+            return nil
+        }
+        return removalURLs(repoID: repoID, cache: cache)
+    }
+
+    private static func removalURLs(
+        repoID: Repo.ID,
+        cache: HubCache
+    ) -> [URL] {
+        let repositoryURL = cache.repoDirectory(repo: repoID, kind: .model)
+        let metadataURL = cache.metadataDirectory(repo: repoID, kind: .model)
+        return [
+            repositoryURL,
+            metadataURL,
+            cache.lockPath(for: repositoryURL),
+            cache.lockPath(for: metadataURL)
+        ]
     }
 }
 

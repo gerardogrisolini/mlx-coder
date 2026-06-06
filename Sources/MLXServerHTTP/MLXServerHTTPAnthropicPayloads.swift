@@ -336,6 +336,11 @@ struct AnthropicThinkingSplitter {
         emitsThinking: Bool,
         startsInThinking: Bool
     ) -> [AnthropicContentFragment] {
+        if startsInThinking,
+           text.range(of: Self.closeTag) == nil {
+            return text.isEmpty ? [] : [.init(kind: .text, text: text)]
+        }
+
         var splitter = AnthropicThinkingSplitter(
             emitsThinking: emitsThinking,
             startsInThinking: startsInThinking

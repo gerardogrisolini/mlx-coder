@@ -265,14 +265,6 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
             }
 
             if streamResult.toolCalls.isEmpty {
-                guard Self.shouldStopGenerationLoop(afterDirectAnswer: accumulatedText) else {
-                    if round == configuration.maxToolRounds - 1 {
-                        sessions[sessionID] = session
-                        throw RemoteGenerationClientError.tooManyToolRounds(configuration.maxToolRounds)
-                    }
-                    continue
-                }
-
                 if !configuration.appMode,
                    let summary = Self.generationSummary(
                        generationStats,
@@ -339,14 +331,6 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
         from result: AgentConversationCompactionResult
     ) -> String {
         "Compacted conversation history from \(result.originalEstimatedTokenCount) to \(result.estimatedTokenCount) estimated tokens."
-    }
-
-    public static func shouldStopGenerationLoop(afterDirectAnswer text: String) -> Bool {
-        guard let finalCharacter = text.lastSignificantGenerationCharacter else {
-            return false
-        }
-
-        return finalCharacter == "?" || finalCharacter.isEmojiSymbol
     }
 
     public static func agentRuntimeMessages(
@@ -459,28 +443,5 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
             contentsOf: conversationMessages.suffix(compactionResult.keptRecentMessageCount)
         )
         return compactedMessages
-    }
-}
-
-private extension String {
-    var lastSignificantGenerationCharacter: Character? {
-        reversed().first { !$0.isGenerationTrailer }
-    }
-}
-
-private extension Character {
-    var isGenerationTrailer: Bool {
-        unicodeScalars.allSatisfy { scalar in
-            scalar.properties.isWhitespace
-                || scalar.properties.generalCategory == .format
-                || scalar.properties.generalCategory == .control
-        }
-    }
-
-    var isEmojiSymbol: Bool {
-        unicodeScalars.contains { scalar in
-            scalar.properties.isEmoji
-                && scalar.properties.generalCategory == .otherSymbol
-        }
     }
 }

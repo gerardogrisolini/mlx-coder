@@ -90,6 +90,8 @@ public enum MLXServerAgentIntegrationService {
     public static let codexCLIProfileName = "mlx-server"
     public static let codexAppProfileName = "mlx-server-codex-app"
     public static let codexModelCatalogFilename = "mlx-server-codex-models.json"
+    static let aionUIHealthCheckTimeout: TimeInterval = 2
+    static let aionUIAPIRequestTimeout: TimeInterval = 30
 
     public static func status(
         homeDirectory: URL = defaultHomeDirectory(),
@@ -237,15 +239,11 @@ public enum MLXServerAgentIntegrationService {
             relativeTo: serverExecutableURL?.deletingLastPathComponent(),
             fileManager: fileManager
         )
-        let serverSourcePackageRootURL = resolvedServerCommand.flatMap {
-            sourcePackageRoot(for: $0.resolvedURL, fileManager: fileManager)
-        }
         let resolvedCoderCommand = aionUIExecutableCommand(
             named: "mlx-coder",
             preferredURL: coderExecutableURL,
             relativeTo: resolvedServerCommand?.resolvedURL.deletingLastPathComponent()
                 ?? serverExecutableURL?.deletingLastPathComponent(),
-            sourcePackageRootURL: serverSourcePackageRootURL,
             fileManager: fileManager
         )
         var customAgents: [AionUICustomAgentDefinition] = []
@@ -1845,7 +1843,7 @@ private extension MLXServerAgentIntegrationService {
         url.appendPathComponent("health")
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.timeoutInterval = 2
+        request.timeoutInterval = aionUIHealthCheckTimeout
         switch performAionUIRequest(request) {
         case .success(let value):
             return (200..<300).contains(value.response.statusCode)
@@ -1932,7 +1930,7 @@ private extension MLXServerAgentIntegrationService {
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        request.timeoutInterval = 2
+        request.timeoutInterval = aionUIAPIRequestTimeout
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONEncoder().encode(body)
@@ -1976,7 +1974,8 @@ private extension MLXServerAgentIntegrationService {
             semaphore.signal()
         }
         task.resume()
-        if semaphore.wait(timeout: .now() + 2) == .timedOut {
+        let timeout = max(request.timeoutInterval, aionUIHealthCheckTimeout)
+        if semaphore.wait(timeout: .now() + timeout) == .timedOut {
             task.cancel()
             return .failure(
                 MLXServerAgentIntegrationError.aionUIAPIRequestFailed(
@@ -2262,21 +2261,8 @@ extension MLXServerAgentIntegrationService {
         named name: String,
         preferredURL: URL?,
         relativeTo directoryURL: URL?,
-        sourcePackageRootURL: URL? = nil,
         fileManager: FileManager
     ) -> AionUIExecutableCommand? {
-        if preferredURL == nil,
-           let sourcePackageRootURL,
-           fileManager.fileExists(
-               atPath: sourcePackageRootURL.appendingPathComponent("Package.swift").path
-           ) {
-            return AionUIExecutableCommand(
-                command: swiftExecutableCommand(fileManager: fileManager),
-                argsPrefix: ["run", "--package-path", sourcePackageRootURL.path, name],
-                resolvedURL: sourcePackageRootURL.appendingPathComponent(".build", isDirectory: true)
-            )
-        }
-
         guard let resolvedURL = executableURL(
             named: name,
             preferredURL: preferredURL,
@@ -2284,17 +2270,6 @@ extension MLXServerAgentIntegrationService {
             fileManager: fileManager
         ) else {
             return nil
-        }
-
-        if let packageRootURL = sourcePackageRoot(
-            for: resolvedURL,
-            fileManager: fileManager
-        ) {
-            return AionUIExecutableCommand(
-                command: swiftExecutableCommand(fileManager: fileManager),
-                argsPrefix: ["run", "--package-path", packageRootURL.path, name],
-                resolvedURL: resolvedURL
-            )
         }
 
         return AionUIExecutableCommand(
@@ -2306,38 +2281,6 @@ extension MLXServerAgentIntegrationService {
             argsPrefix: [],
             resolvedURL: resolvedURL
         )
-    }
-
-    static func sourcePackageRoot(
-        for executableURL: URL,
-        fileManager: FileManager
-    ) -> URL? {
-        let standardizedURL = executableURL.standardizedFileURL
-        guard standardizedURL.pathComponents.contains(".build") else {
-            return nil
-        }
-
-        var currentURL = standardizedURL.deletingLastPathComponent()
-        while true {
-            let packageURL = currentURL.appendingPathComponent("Package.swift")
-            if fileManager.fileExists(atPath: packageURL.path) {
-                return currentURL
-            }
-            let parentURL = currentURL.deletingLastPathComponent()
-            if parentURL.path == currentURL.path {
-                return nil
-            }
-            currentURL = parentURL
-        }
-    }
-
-    static func swiftExecutableCommand(fileManager: FileManager) -> String {
-        for path in ["/usr/bin/swift", "/opt/homebrew/bin/swift", "/usr/local/bin/swift"] {
-            if fileManager.isExecutableFile(atPath: path) {
-                return path
-            }
-        }
-        return "swift"
     }
 
     static func stableExecutablePath(

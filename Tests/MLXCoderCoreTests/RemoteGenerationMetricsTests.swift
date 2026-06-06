@@ -62,4 +62,5 @@ struct RemoteGenerationMetricsTests {
         #expect(metrics?.completionTokensPerSecond == nil)
         #expect(metrics?.responseDurationSeconds == 6)
     }
+
 }

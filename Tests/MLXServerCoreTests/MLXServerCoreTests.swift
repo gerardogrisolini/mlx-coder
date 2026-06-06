@@ -11,8 +11,8 @@ import MLXLMCommon
 @Test
 func exposesSharedVersionDescription() {
     #expect(MLXServerCore.serviceName == "mlx-server")
-            #expect(MLXServerCore.version == "0.1.7")
-    #expect(MLXServerCore.versionDescription == "mlx-server 0.1.7")
+            #expect(MLXServerCore.version == "0.1.8")
+    #expect(MLXServerCore.versionDescription == "mlx-server 0.1.8")
 }
 
 @Test
@@ -36,6 +36,60 @@ func startsRuntimeWithNoLoadedModels() async {
     let loadedModelIDs = await runtime.loadedModelIDs
 
     #expect(loadedModelIDs.isEmpty)
+}
+
+@Test
+func transcriptKeepsDirectAnswerVisibleWhenThinkingWasRequested() {
+    let text = "Ciao, risposta diretta."
+
+    #expect(
+        MLXServerChatSessionTranscriptText.visibleAssistantContent(
+            from: text,
+            startsInThinking: true
+        ) == text
+    )
+    #expect(
+        MLXServerChatSessionTranscriptText.reasoningContent(
+            from: text,
+            startsInThinking: true
+        ).isEmpty
+    )
+}
+
+@Test
+func transcriptStillSeparatesExplicitThinkingBlock() {
+    let text = "<think>Analisi.</think>Risposta."
+
+    #expect(
+        MLXServerChatSessionTranscriptText.visibleAssistantContent(
+            from: text,
+            startsInThinking: false
+        ) == "Risposta."
+    )
+    #expect(
+        MLXServerChatSessionTranscriptText.reasoningContent(
+            from: text,
+            startsInThinking: false
+        ) == "Analisi."
+    )
+}
+
+@Test
+func transcriptSeparatesImplicitThinkingBlockClosedByEndTag() {
+    let text = "Analisi implicita.</think>Risposta."
+
+    #expect(
+        MLXServerChatSessionTranscriptText.visibleAssistantContent(
+            from: text,
+            startsInThinking: true
+        ) == "Risposta."
+    )
+    #expect(
+        MLXServerChatSessionTranscriptText.reasoningContent(
+            from: text,
+            startsInThinking: true
+        ) == "Analisi implicita."
+    )
 }
 
 @Test
@@ -75,33 +129,30 @@ func diskKVCacheRejectsUnreasonableLimit() {
 }
 
 @Test
-func diskKVCachePromptTokenIdentityWinsOverChatSignature() {
+func diskKVCachePromptTokenIdentityUsesDigestAndCount() {
     let firstIdentity = MLXServerDiskKVCacheIdentity(
         modelID: "mlx-community/test-a",
         runtimeKind: .llm,
-        chatKeySignature: "chat-a",
-        transcriptSignature: "transcript-a",
         cacheLayoutSignature: "standard",
         promptTokenDigest: "same-rendered-prompt",
-        promptTokenCount: 42
+        promptTokenCount: 42,
+        promptTokenIDs: []
     )
     let secondIdentity = MLXServerDiskKVCacheIdentity(
         modelID: "mlx-community/test-a",
         runtimeKind: .llm,
-        chatKeySignature: "chat-b",
-        transcriptSignature: "transcript-b",
         cacheLayoutSignature: "standard",
         promptTokenDigest: "same-rendered-prompt",
-        promptTokenCount: 42
+        promptTokenCount: 42,
+        promptTokenIDs: []
     )
     let thirdIdentity = MLXServerDiskKVCacheIdentity(
         modelID: "mlx-community/test-a",
         runtimeKind: .llm,
-        chatKeySignature: "chat-b",
-        transcriptSignature: "transcript-b",
         cacheLayoutSignature: "standard",
         promptTokenDigest: "same-rendered-prompt",
-        promptTokenCount: 43
+        promptTokenCount: 43,
+        promptTokenIDs: []
     )
 
     #expect(firstIdentity.entryKey == secondIdentity.entryKey)
@@ -164,7 +215,7 @@ func savesAndLoadsServerSettingsJSON() throws {
 }
 
 @Test
-func serverSettingsLoadsOlderJSONWithoutHuggingFaceCache() throws {
+func serverSettingsRejectsJSONWithoutCurrentSchema() {
     let data = Data(
         """
         {
@@ -179,12 +230,9 @@ func serverSettingsLoadsOlderJSONWithoutHuggingFaceCache() throws {
         """.utf8
     )
 
-    let settings = try JSONDecoder().decode(MLXServerSettings.self, from: data).validated()
-
-    #expect(settings.huggingFaceCache.directoryPath == nil)
-    #expect(settings.huggingFaceCache.bookmark == nil)
-    #expect(settings.kvCache.mode == .standard)
-    #expect(settings.webServerThreadCount == MLXServerSettings.defaultWebServerThreadCount)
+    #expect(throws: DecodingError.self) {
+        try JSONDecoder().decode(MLXServerSettings.self, from: data)
+    }
 }
 
 @Test
@@ -242,16 +290,18 @@ func diskKVCacheEvictsLeastRecentlyUsedEntries() throws {
     let firstIdentity = MLXServerDiskKVCacheIdentity(
         modelID: "mlx-community/test-a",
         runtimeKind: .llm,
-        chatKeySignature: "chat",
-        transcriptSignature: "first",
-        cacheLayoutSignature: "standard"
+        cacheLayoutSignature: "standard",
+        promptTokenDigest: "first",
+        promptTokenCount: 2,
+        promptTokenIDs: [1, 2]
     )
     let secondIdentity = MLXServerDiskKVCacheIdentity(
         modelID: "mlx-community/test-a",
         runtimeKind: .llm,
-        chatKeySignature: "chat",
-        transcriptSignature: "second",
-        cacheLayoutSignature: "standard"
+        cacheLayoutSignature: "standard",
+        promptTokenDigest: "second",
+        promptTokenCount: 2,
+        promptTokenIDs: [3, 4]
     )
 
     let firstTarget = try #require(try store.preparePersistenceTarget(for: firstIdentity))

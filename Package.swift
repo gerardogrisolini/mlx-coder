@@ -168,6 +168,13 @@ let targets: [Target] = [
         name: "MLXCoderCoreTests",
         dependencies: ["MLXCoderCore"]
     ),
+    .testTarget(
+        name: "MLXCoderSetupTests",
+        dependencies: [
+            "MLXCoderCore",
+            "MLXCoderSetup"
+        ]
+    ),
     .executableTarget(
         name: "mlx-search-tools-feature",
         dependencies: [

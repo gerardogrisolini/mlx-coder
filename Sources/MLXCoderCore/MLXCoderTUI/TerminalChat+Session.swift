@@ -73,7 +73,7 @@ extension TerminalChat {
             }
             _ = statusBar.update(
                 contextWindow: DirectAgentContextWindowStatus(
-                    usedTokens: 0,
+                    usedTokens: nil,
                     maxTokens: maxTokens,
                     modelID: hostedModel.modelID,
                     isApproximate: true
@@ -98,7 +98,7 @@ extension TerminalChat {
 
         _ = statusBar.update(
             contextWindow: DirectAgentContextWindowStatus(
-                usedTokens: 0,
+                usedTokens: nil,
                 maxTokens: maxTokens,
                 modelID: selection.modelID,
                 isApproximate: true

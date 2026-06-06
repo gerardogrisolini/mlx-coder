@@ -378,11 +378,10 @@ struct MLXMemoryServiceTests {
 
         #expect(names == Set([
             "Default",
+            "Minimal",
             "Bugfix",
             "Builder",
-            "Feature",
             "Review",
-            "Research",
             "Refactor"
         ]))
         #expect(Set(profiles.map(\.id)).count == profiles.count)

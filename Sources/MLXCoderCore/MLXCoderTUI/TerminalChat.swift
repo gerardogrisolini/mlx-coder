@@ -318,9 +318,13 @@ public final class TerminalChat: @unchecked Sendable {
             case let .input(inputEvent):
                 switch inputEvent {
                 case let .submitted(line):
-                    if isGenerating {
-                        queuedPrompts.append(line)
-                        interactiveReader.setQueuedPromptCount(queuedPrompts.count)
+                                                                                                    if isGenerating {
+                        if Self.isSubAgentsCommand(line) {
+                            _ = await handleSubmittedPanelLine(line)
+                        } else {
+                            queuedPrompts.append(line)
+                            interactiveReader.setQueuedPromptCount(queuedPrompts.count)
+                        }
                         continue
                     }
 
@@ -348,10 +352,17 @@ public final class TerminalChat: @unchecked Sendable {
         await stopPanelInput()
     }
 
-    private static func shouldSuspendPanelInput(for line: String) -> Bool {
+            private static func shouldSuspendPanelInput(for line: String) -> Bool {
         let prompt = line.trimmingCharacters(in: .whitespacesAndNewlines)
         return prompt.hasPrefix("/")
     }
+
+    private static func isSubAgentsCommand(_ line: String) -> Bool {
+        let prompt = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        return prompt == "/subagents" || prompt.hasPrefix("/subagents ")
+    }
+
+    
 
     private func renderHelpTextForCurrentAgent() -> String {
         var lines = [
@@ -692,6 +703,9 @@ public final class TerminalChat: @unchecked Sendable {
                         self.finishThoughtOutputIfNeeded()
                         self.finishAssistantContentFormatting()
                         self.writeToolCallStarted(toolCall)
+                        await self.publishSubAgentOverviewIfVisible(
+                            relatedToolName: toolCall.name
+                        )
                     case let .toolCallCompleted(toolCall, result):
                         await transcriptTurn.appendToolCallCompleted(toolCall, result: result)
                         self.finishThoughtOutputIfNeeded()
@@ -708,7 +722,9 @@ public final class TerminalChat: @unchecked Sendable {
                     }
                 }
             )
-            activeSessionTranscript.append(contentsOf: await transcriptTurn.messages())
+            activeSessionTranscript.append(
+                contentsOf: await transcriptTurn.messages(finalResponseText: response.text)
+            )
             await publishFileChangeSummaryIfNeeded(from: fileChanges)
             await publishSubAgentOverviewIfVisible()
             return response
@@ -841,9 +857,24 @@ private actor TerminalSessionTranscriptTurn {
         )
     }
 
-    func messages() -> [AgentRuntimeMessage] {
+    func messages(finalResponseText: String? = nil) -> [AgentRuntimeMessage] {
+        if let finalResponseText,
+           shouldPromoteReasoningToContent(finalResponseText) {
+            assistantContent = finalResponseText
+            reasoningContent = ""
+        }
         flushAssistantMessage()
         return transcriptMessages
+    }
+
+    private func shouldPromoteReasoningToContent(_ finalResponseText: String) -> Bool {
+        let finalText = finalResponseText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !finalText.isEmpty,
+              assistantContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !reasoningContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        return true
     }
 
     private func flushAssistantMessage() {

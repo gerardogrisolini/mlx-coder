@@ -9,9 +9,13 @@ struct MLXAgentsContextServiceTests {
         let content = MLXAgentsContextService.defaultGlobalAgentsContent
 
         #expect(content.contains("do what the user asked"))
+        #expect(content.contains("on the user's machine"))
+        #expect(!content.contains("on the user's Mac"))
         #expect(content.contains("do not invent extra requirements"))
         #expect(content.contains("Briefly explain the intent behind non-obvious or risky actions"))
-        #expect(content.contains("Ask a focused question when ambiguity would materially change the result"))
+        #expect(content.contains("Before starting file modifications, briefly explain the intended changes"))
+        #expect(content.contains("Do not modify files until the user confirms"))
+        #expect(content.contains("Ask focused questions when they help"))
     }
 
     @Test

@@ -16,4 +16,27 @@ struct LocalExecPermissionAuthorizerTests {
         #expect(LocalExecPermissionAuthorizer.commandPermissionIdentity(for: "ls -la > out.txt") == nil)
         #expect(LocalExecPermissionAuthorizer.commandPermissionIdentity(for: "pwd && rm -rf tmp") == nil)
     }
+
+    @Test
+    func persistedCommandPermissionIdentityFallsBackToFullCommand() {
+        #expect(LocalExecPermissionAuthorizer.persistedCommandPermissionIdentity(for: "swift test --filter MLXCoderCoreTests") == "swift")
+        #expect(LocalExecPermissionAuthorizer.persistedCommandPermissionIdentity(for: "pwd && echo ok") == "pwd && echo ok")
+        #expect(LocalExecPermissionAuthorizer.persistedCommandPermissionIdentity(for: "\n  echo ok > out.txt  \n") == "echo ok > out.txt")
+    }
+
+    @Test
+    func persistedAllowedCommandsMatchSimpleAndComposedCommands() {
+        let manifest = AgentSettingsManifest(
+            models: [],
+            localExecAllowedCommands: [
+                "swift",
+                "pwd && echo ok"
+            ]
+        )
+
+        #expect(LocalExecPermissionAuthorizer.isCommandPersistentlyAllowed("swift test --filter MLXCoderCoreTests", manifest: manifest))
+        #expect(LocalExecPermissionAuthorizer.isCommandPersistentlyAllowed("pwd && echo ok", manifest: manifest))
+        #expect(LocalExecPermissionAuthorizer.isCommandPersistentlyAllowed("  pwd && echo ok  ", manifest: manifest))
+        #expect(!LocalExecPermissionAuthorizer.isCommandPersistentlyAllowed("pwd && echo no", manifest: manifest))
+    }
 }

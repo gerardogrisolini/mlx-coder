@@ -18,7 +18,7 @@ public actor LocalExecPermissionAuthorizer {
         case deny
     }
 
-        private var alwaysAllowedKeys = Set<String>()
+    private var alwaysAllowedKeys = Set<String>()
     private var didLoadPersistedAllowedCommands = false
 
     public init() {}
@@ -31,7 +31,7 @@ public actor LocalExecPermissionAuthorizer {
         #if !os(macOS)
         return true
         #else
-                        loadPersistedAllowedCommandsIfNeeded()
+        loadPersistedAllowedCommandsIfNeeded()
         let cacheKey = permissionCacheKey(for: request)
         if alwaysAllowedKeys.contains(cacheKey) {
             return true
@@ -44,7 +44,7 @@ public actor LocalExecPermissionAuthorizer {
         switch decision {
         case .allowOnce:
             return true
-                case .allowAlways:
+        case .allowAlways:
             alwaysAllowedKeys.insert(cacheKey)
             persistAllowedCommand(for: request)
             return true
@@ -54,13 +54,37 @@ public actor LocalExecPermissionAuthorizer {
         #endif
     }
 
-        static func commandPermissionIdentity(for command: String) -> String? {
+    static func commandPermissionIdentity(for command: String) -> String? {
         guard let words = shellWords(command), let executable = words.first else {
             return nil
         }
         return executable
     }
 
+    static func persistedCommandPermissionIdentity(for command: String) -> String? {
+        commandPermissionIdentity(for: command)
+            ?? normalizedCommandIdentity(for: command)
+    }
+
+    static func isCommandPersistentlyAllowed(
+        _ command: String,
+        manifest: AgentSettingsManifest? = AgentSettingsManifestStore.load()
+    ) -> Bool {
+        guard let commandIdentity = persistedCommandPermissionIdentity(for: command),
+              let manifest else {
+            return false
+        }
+        return manifest.localExecAllowedCommands.contains {
+            $0.caseInsensitiveCompare(commandIdentity) == .orderedSame
+        }
+    }
+
+    static func persistAllowedCommand(_ command: String) {
+        guard let commandIdentity = persistedCommandPermissionIdentity(for: command) else {
+            return
+        }
+        persistAllowedCommandIdentity(commandIdentity)
+    }
 
 
     private static func shellWords(_ command: String) -> [String]? {
@@ -114,15 +138,19 @@ public actor LocalExecPermissionAuthorizer {
         return words
     }
 
+    private static func normalizedCommandIdentity(for command: String) -> String? {
+        command.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+    }
+
 
     private func permissionCacheKey(for request: AgentToolAuthorizationRequest) -> String {
-                        [
+        [
             request.toolName,
-            Self.commandPermissionIdentity(for: request.command) ?? request.command
+            Self.persistedCommandPermissionIdentity(for: request.command) ?? request.command
         ].joined(separator: "\u{1f}")
     }
 
-        private func loadPersistedAllowedCommandsIfNeeded() {
+    private func loadPersistedAllowedCommandsIfNeeded() {
         guard !didLoadPersistedAllowedCommands else {
             return
         }
@@ -130,14 +158,20 @@ public actor LocalExecPermissionAuthorizer {
         guard let manifest = AgentSettingsManifestStore.load() else {
             return
         }
-                alwaysAllowedKeys.formUnion(manifest.localExecAllowedCommands.map { "local.exec\u{1f}\($0)" })
+        alwaysAllowedKeys.formUnion(
+            manifest.localExecAllowedCommands.map { "local.exec\u{1f}\($0)" }
+        )
     }
 
     private func persistAllowedCommand(for request: AgentToolAuthorizationRequest) {
-        guard let commandIdentity = Self.commandPermissionIdentity(for: request.command) else {
+        guard let commandIdentity = Self.persistedCommandPermissionIdentity(for: request.command) else {
             return
         }
-                let manifest = AgentSettingsManifestStore.load()
+        Self.persistAllowedCommandIdentity(commandIdentity)
+    }
+
+    private static func persistAllowedCommandIdentity(_ commandIdentity: String) {
+        let manifest = AgentSettingsManifestStore.load()
             ?? AgentSettingsManifest(models: [])
         guard !manifest.localExecAllowedCommands.contains(where: {
             $0.caseInsensitiveCompare(commandIdentity) == .orderedSame

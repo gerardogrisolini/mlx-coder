@@ -154,7 +154,7 @@ public enum AgentToolTurnTranscriptSupport {
             return jsonCalls
         }
 
-        return legacyToolCalls(from: trimmedText)
+        return []
     }
 
     public static func toolResults(
@@ -221,43 +221,6 @@ public enum AgentToolTurnTranscriptSupport {
             name: toolName,
             argumentsObject: argumentsObject
         )
-    }
-
-    private static func legacyToolCalls(
-        from text: String
-    ) -> [AgentToolTurnTranscriptToolCall] {
-        splitParagraphBlocks(text).compactMap { block in
-            let lines = block.components(separatedBy: .newlines)
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-            guard let header = lines.first else {
-                return nil
-            }
-
-            let name = legacyToolName(from: header)
-            guard !name.isEmpty else {
-                return nil
-            }
-
-            let argumentsJSON = lines.dropFirst()
-                .joined(separator: "\n")
-                .nilIfBlank
-                ?? "{}"
-            return AgentToolTurnTranscriptToolCall(
-                name: name,
-                argumentsJSON: argumentsJSON
-            )
-        }
-    }
-
-    private static func legacyToolName(from line: String) -> String {
-        guard line.hasSuffix("]"),
-              let openingBracket = line.range(of: " [", options: .backwards) else {
-            return line.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
-        return String(line[..<openingBracket.lowerBound])
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func matchingToolCall(

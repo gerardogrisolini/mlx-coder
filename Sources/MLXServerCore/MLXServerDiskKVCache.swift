@@ -40,27 +40,21 @@ public struct MLXServerDiskKVCacheConfiguration: Sendable, Equatable {
 struct MLXServerDiskKVCacheIdentity: Hashable {
     var modelID: String
     var runtimeKind: MLXServerModelRuntimeKind
-    var chatKeySignature: String
-    var transcriptSignature: String
     var cacheLayoutSignature: String
-    var promptTokenDigest: String?
-    var promptTokenCount: Int?
-    var promptTokenIDs: [Int]?
+    var promptTokenDigest: String
+    var promptTokenCount: Int
+    var promptTokenIDs: [Int]
 
     init(
         modelID: String,
         runtimeKind: MLXServerModelRuntimeKind,
-        chatKeySignature: String,
-        transcriptSignature: String,
         cacheLayoutSignature: String,
-        promptTokenDigest: String? = nil,
-        promptTokenCount: Int? = nil,
-        promptTokenIDs: [Int]? = nil
+        promptTokenDigest: String,
+        promptTokenCount: Int,
+        promptTokenIDs: [Int]
     ) {
         self.modelID = modelID
         self.runtimeKind = runtimeKind
-        self.chatKeySignature = chatKeySignature
-        self.transcriptSignature = transcriptSignature
         self.cacheLayoutSignature = cacheLayoutSignature
         self.promptTokenDigest = promptTokenDigest
         self.promptTokenCount = promptTokenCount
@@ -73,15 +67,9 @@ struct MLXServerDiskKVCacheIdentity: Hashable {
         append(modelID, to: &hasher)
         append(runtimeKind.rawValue, to: &hasher)
         append(cacheLayoutSignature, to: &hasher)
-        if let promptTokenDigest, let promptTokenCount {
-            append("prompt-tokens", to: &hasher)
-            append(promptTokenDigest, to: &hasher)
-            append(String(promptTokenCount), to: &hasher)
-        } else {
-            append("legacy-transcript", to: &hasher)
-            append(chatKeySignature, to: &hasher)
-            append(transcriptSignature, to: &hasher)
-        }
+        append("prompt-tokens", to: &hasher)
+        append(promptTokenDigest, to: &hasher)
+        append(String(promptTokenCount), to: &hasher)
         return Self.hexString(from: hasher.finalize())
     }
 
@@ -158,8 +146,7 @@ final class MLXServerDiskKVCacheStore {
                 removeEntry(cacheURL: urls.cacheURL, metadataURL: urls.metadataURL)
                 return nil
             }
-            if let promptTokenCount = metadata.promptTokenCount,
-               !normalizePromptCacheLength(cache, expectedTokenCount: promptTokenCount) {
+            if !normalizePromptCacheLength(cache, expectedTokenCount: metadata.promptTokenCount) {
                 removeEntry(cacheURL: urls.cacheURL, metadataURL: urls.metadataURL)
                 return nil
             }
@@ -277,8 +264,6 @@ final class MLXServerDiskKVCacheStore {
             version: Self.metadataVersion,
             modelID: identity.modelID,
             runtimeKind: identity.runtimeKind.rawValue,
-            chatKeySignature: identity.chatKeySignature,
-            transcriptSignature: identity.transcriptSignature,
             cacheLayoutSignature: identity.cacheLayoutSignature,
             promptTokenDigest: identity.promptTokenDigest,
             promptTokenCount: identity.promptTokenCount,
@@ -535,12 +520,10 @@ private struct MLXServerPersistedDiskKVCacheMetadata: Codable {
     var version: Int
     var modelID: String
     var runtimeKind: String
-    var chatKeySignature: String
-    var transcriptSignature: String
     var cacheLayoutSignature: String
-    var promptTokenDigest: String?
-    var promptTokenCount: Int?
-    var promptTokenIDs: [Int]?
+    var promptTokenDigest: String
+    var promptTokenCount: Int
+    var promptTokenIDs: [Int]
     var entryKey: String
     var byteCount: Int64
     var createdAt: Date
@@ -556,14 +539,8 @@ private struct MLXServerPersistedDiskKVCacheMetadata: Codable {
             return false
         }
 
-        if let promptTokenDigest = identity.promptTokenDigest,
-           let promptTokenCount = identity.promptTokenCount {
-            return self.promptTokenDigest == promptTokenDigest
-                && self.promptTokenCount == promptTokenCount
-        }
-
-        return chatKeySignature == identity.chatKeySignature
-            && transcriptSignature == identity.transcriptSignature
+        return promptTokenDigest == identity.promptTokenDigest
+            && promptTokenCount == identity.promptTokenCount
     }
 
     func reusablePromptPrefixCandidate(
@@ -575,8 +552,6 @@ private struct MLXServerPersistedDiskKVCacheMetadata: Codable {
               modelID == query.modelID,
               runtimeKind == query.runtimeKind.rawValue,
               cacheLayoutSignature == query.cacheLayoutSignature,
-              let promptTokenIDs,
-              let promptTokenCount,
               promptTokenCount == promptTokenIDs.count,
               promptTokenCount > 0,
               query.promptTokenIDs.count > 1 else {

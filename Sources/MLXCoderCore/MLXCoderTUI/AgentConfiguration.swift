@@ -64,7 +64,6 @@ public struct AgentConfiguration: Sendable {
       MLX_CODER_AGENT_SKILLS         Initial chat skill selection by name/number, all, or none.
       MLX_CODER_AGENT_VERBOSE        1/true to show status/tool progress on stderr.
       MLX_CODER_AGENT_BEARER_TOKEN   Fallback bearer token for configured remote providers.
-      Legacy SWIFTMLX_AGENT_* names are still accepted.
 
     In ACP mode stdout contains only ACP JSON-RPC messages. In chat mode stdout contains only assistant text.
     """
@@ -94,7 +93,6 @@ public struct AgentConfiguration: Sendable {
         let environment = ProcessInfo.processInfo.environment
         func agentEnvironmentValue(_ key: String) -> String? {
             environment["MLX_CODER_AGENT_\(key)"]
-                ?? environment["SWIFTMLX_AGENT_\(key)"]
         }
 
         var rawAgentName = environment["MLX_CODER_AGENT"]

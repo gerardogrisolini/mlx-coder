@@ -65,40 +65,6 @@ public struct MLXServerSettings: Codable, Equatable, Sendable {
         self.huggingFaceCache = huggingFaceCache
     }
 
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        host = try container.decodeIfPresent(String.self, forKey: .host) ?? "127.0.0.1"
-        port = try container.decodeIfPresent(Int.self, forKey: .port) ?? 8080
-        webServerThreadCount = try container.decodeIfPresent(
-            Int.self,
-            forKey: .webServerThreadCount
-        ) ?? Self.defaultWebServerThreadCount
-        loadOneModelAtATime = try container.decodeIfPresent(
-            Bool.self,
-            forKey: .loadOneModelAtATime
-        ) ?? true
-        http2PriorKnowledge = try container.decodeIfPresent(
-            Bool.self,
-            forKey: .http2PriorKnowledge
-        ) ?? false
-        apiKey = try container.decodeIfPresent(String.self, forKey: .apiKey)
-        tlsCertificatePath = try container.decodeIfPresent(String.self, forKey: .tlsCertificatePath)
-        tlsPrivateKeyPath = try container.decodeIfPresent(String.self, forKey: .tlsPrivateKeyPath)
-        metricsLogPath = try container.decodeIfPresent(String.self, forKey: .metricsLogPath)
-        kvCache = try container.decodeIfPresent(
-            MLXServerKVCacheSettings.self,
-            forKey: .kvCache
-        ) ?? .init()
-        diskKVCache = try container.decodeIfPresent(
-            MLXServerDiskKVCacheSettings.self,
-            forKey: .diskKVCache
-        ) ?? .init()
-        huggingFaceCache = try container.decodeIfPresent(
-            MLXServerHuggingFaceCacheSettings.self,
-            forKey: .huggingFaceCache
-        ) ?? .init()
-    }
-
     public func validated() throws -> Self {
         let configuration = try MLXServerConfiguration(host: host, port: port).validated()
         guard (1...Self.maximumWebServerThreadCount).contains(webServerThreadCount) else {
@@ -167,17 +133,6 @@ public struct MLXServerKVCacheSettings: Codable, Equatable, Sendable {
         self.quantizedBits = quantizedBits
         self.quantizedGroupSize = quantizedGroupSize
         self.quantizedStart = quantizedStart
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        mode = try container.decodeIfPresent(MLXServerKVCacheMode.self, forKey: .mode) ?? .standard
-        quantizedBits = try container.decodeIfPresent(Int.self, forKey: .quantizedBits)
-            ?? Self.defaultQuantizedBits
-        quantizedGroupSize = try container.decodeIfPresent(Int.self, forKey: .quantizedGroupSize)
-            ?? Self.defaultQuantizedGroupSize
-        quantizedStart = try container.decodeIfPresent(Int.self, forKey: .quantizedStart)
-            ?? Self.defaultQuantizedStart
     }
 
     public func validated() -> Self {

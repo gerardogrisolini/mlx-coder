@@ -9,6 +9,11 @@ import MLXCoderCore
 public enum MLXCoderAgentProfileSetupRunner {
     public static let option = "--setup-agents"
     private static let interactiveLineReader = TerminalInteractiveLineReader()
+    static let retiredRecommendedAgentNames = Set(["Feature", "Research"].map(agentSetupNameKey))
+    static let retiredRecommendedAgentIDs = Set([
+        "00000000-0000-0000-0000-000000000003",
+        "00000000-0000-0000-0000-000000000005"
+    ].map(agentSetupNameKey))
 
     public static func shouldRunSetup(arguments: [String]) -> Bool {
         arguments.dropFirst().contains(option)
@@ -46,9 +51,7 @@ public enum MLXCoderAgentProfileSetupRunner {
             agents = try editAgents(agents)
         }
 
-        let normalizedAgents = AgentProfileStore.normalizedAgentsForSave(
-            ensureRequiredDefaultAgents(in: uniqueAgents(agents))
-        )
+        let normalizedAgents = preparedAgentsForSave(agents)
         try AgentProfileStore.save(normalizedAgents)
         AgentOutput.standardError.writeString(
             "\nUpdated: agents.json (\(normalizedAgents.count) agents)\n\n"
@@ -91,14 +94,14 @@ public enum MLXCoderAgentProfileSetupRunner {
     private static func initialAgents(existingAgents: [AgentProfile]?) throws -> [AgentProfile] {
         if let existingAgents {
             let useRecommended = try promptYesNo(
-                "Regenerate the 7 recommended agents?",
+                "Regenerate the \(recommendedAgentCount) recommended agents?",
                 defaultValue: false
             )
             return useRecommended ? AgentProfileStore.defaultProfiles() : existingAgents
         }
 
         let useRecommended = try promptYesNo(
-            "Create the 7 recommended agents?",
+            "Create the \(recommendedAgentCount) recommended agents?",
             defaultValue: true
         )
         guard !useRecommended else {
@@ -106,6 +109,18 @@ public enum MLXCoderAgentProfileSetupRunner {
         }
 
         return try readCustomAgents()
+    }
+
+    static var recommendedAgentCount: Int {
+        AgentProfileStore.defaultProfiles().count
+    }
+
+    static func preparedAgentsForSave(_ agents: [AgentProfile]) -> [AgentProfile] {
+        AgentProfileStore.normalizedAgentsForSave(
+            ensureRequiredDefaultAgents(
+                in: removeRetiredRecommendedAgents(from: uniqueAgents(agents))
+            )
+        )
     }
 
     private static func readCustomAgents() throws -> [AgentProfile] {
@@ -243,21 +258,43 @@ public enum MLXCoderAgentProfileSetupRunner {
         return result
     }
 
+    private static func removeRetiredRecommendedAgents(from agents: [AgentProfile]) -> [AgentProfile] {
+        agents.filter { agent in
+            !retiredRecommendedAgentIDs.contains(agentSetupNameKey(agent.id))
+                && !retiredRecommendedAgentNames.contains(agentSetupNameKey(agent.name))
+        }
+    }
+
     private static func ensureRequiredDefaultAgents(in agents: [AgentProfile]) -> [AgentProfile] {
         var result = agents
         let defaults = AgentProfileStore.defaultProfiles()
-        if !containsAgent(named: AgentProfileStore.defaultAgentName, in: result),
-           let defaultAgent = defaults.first(where: { $0.name == AgentProfileStore.defaultAgentName }) {
-            result.insert(defaultAgent, at: 0)
-        }
-        if !containsAgent(named: AgentProfileStore.builderAgentName, in: result),
-           let builderAgent = defaults.first(where: { AgentProfileStore.isBuilderAgent($0) }) {
-            let insertIndex = result.firstIndex {
-                agentSetupNameKey($0.name) == agentSetupNameKey(AgentProfileStore.defaultAgentName)
-            }.map { $0 + 1 } ?? 0
-            result.insert(builderAgent, at: insertIndex)
+        for defaultAgent in defaults where requiredDefaultAgentNames.contains(agentSetupNameKey(defaultAgent.name)) {
+            guard !containsAgent(named: defaultAgent.name, in: result) else {
+                continue
+            }
+            result.insert(defaultAgent, at: requiredDefaultAgentInsertIndex(for: defaultAgent, in: result))
         }
         return result
+    }
+
+    private static var requiredDefaultAgentNames: Set<String> {
+        Set([
+            AgentProfileStore.defaultAgentName,
+            "Minimal",
+            AgentProfileStore.builderAgentName
+        ].map(agentSetupNameKey))
+    }
+
+    private static func requiredDefaultAgentInsertIndex(
+        for defaultAgent: AgentProfile,
+        in agents: [AgentProfile]
+    ) -> Int {
+        let preferredOrder = AgentProfileStore.defaultProfiles().map { agentSetupNameKey($0.name) }
+        let defaultAgentOrder = preferredOrder.firstIndex(of: agentSetupNameKey(defaultAgent.name)) ?? 0
+        return agents.firstIndex { agent in
+            let agentOrder = preferredOrder.firstIndex(of: agentSetupNameKey(agent.name)) ?? Int.max
+            return agentOrder > defaultAgentOrder
+        } ?? agents.count
     }
 
     private static func containsAgent(named name: String, in agents: [AgentProfile]) -> Bool {

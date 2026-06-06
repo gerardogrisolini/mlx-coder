@@ -61,7 +61,9 @@ extension TerminalChat {
             lastRenderedSubAgentOverviewSignature = signature
         }
 
-        AgentOutput.standardError.writeString(
+        finishThoughtOutputIfNeeded()
+        finishAssistantContentFormatting()
+        writeChatError(
             "\n" + Self.renderSubAgentOverview(snapshots) + "\n"
         )
     }
@@ -102,13 +104,12 @@ extension TerminalChat {
             "Agents \(snapshots.count) | active \(activeCount) | completed \(completedCount) | failed \(failedCount) | closed \(closedCount)"
         ]
 
-        if snapshots.isEmpty {
+                if snapshots.isEmpty {
             lines.append("No delegated sub-agents.")
-            return renderSubAgentOverviewBox(lines: lines)
+            return renderSubAgentOverviewLines(lines)
         }
 
         for snapshot in snapshots {
-            lines.append("")
             lines.append(renderSubAgentHeader(snapshot))
             lines.append("  id: \(snapshot.id)")
             if !snapshot.role.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -119,7 +120,7 @@ extension TerminalChat {
             }
         }
 
-        return renderSubAgentOverviewBox(lines: lines)
+        return renderSubAgentOverviewLines(lines)
     }
 
     private static func renderSubAgentHeader(
@@ -186,26 +187,31 @@ extension TerminalChat {
         return "\(color)\(marker)\u{1B}[0m"
     }
 
-    private static func renderSubAgentOverviewBox(lines: [String]) -> String {
+        private static func renderSubAgentOverviewLines(_ lines: [String]) -> String {
         let columns = terminalColumnCount()
         let horizontalInset = terminalBoxHorizontalInset(columns: columns)
-        let boxWidth = max(24, columns - horizontalInset * 2)
-        let contentWidth = max(20, boxWidth - 4)
-        let horizontalRule = String(repeating: "─", count: max(0, boxWidth - 2))
+        let contentWidth = max(40, min(columns - horizontalInset, 120))
         let linePrefix = String(repeating: " ", count: horizontalInset)
         let orange = "\u{1B}[38;5;208m"
+        let dim = "\u{1B}[90m"
         let reset = "\u{1B}[0m"
+        let title = AgentOutput.standardErrorIsTerminal
+            ? "\(orange)Sub-Agents\(reset)"
+            : "Sub-Agents"
 
-        var output = [
-            "\(linePrefix)\(orange)┌\(horizontalRule)┐\(reset)",
-            "\(linePrefix)\(orange)│\(reset) \(padded(fitInline("Sub-Agents", width: contentWidth), width: contentWidth)) \(orange)│\(reset)",
-            "\(linePrefix)\(orange)├\(horizontalRule)┤\(reset)"
-        ]
-        for line in lines {
-            let fittedLine = padded(fitInline(line, width: contentWidth), width: contentWidth)
-            output.append("\(linePrefix)\(orange)│\(reset) \(fittedLine) \(orange)│\(reset)")
+        var output = ["\(linePrefix)\(title)"]
+        for (index, line) in lines.enumerated() {
+            let prefix: String
+            if index == 0 {
+                prefix = AgentOutput.standardErrorIsTerminal ? "\(dim)  \(reset)" : "  "
+            } else {
+                prefix = "  "
+            }
+            for wrappedLine in fitInline(line, width: contentWidth - 2)
+                .components(separatedBy: "\n") {
+                output.append("\(linePrefix)\(prefix)\(wrappedLine)")
+            }
         }
-        output.append("\(linePrefix)\(orange)└\(horizontalRule)┘\(reset)")
         return output.joined(separator: "\n")
     }
 

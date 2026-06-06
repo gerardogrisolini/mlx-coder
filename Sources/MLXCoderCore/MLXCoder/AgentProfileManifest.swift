@@ -225,13 +225,17 @@ public enum AgentProfileStore {
     public static let defaultAgentName = "Default"
     public static let defaultAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
     public static let bugfixAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
-    public static let featureAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
     public static let reviewAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000004")!
-    public static let researchAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000005")!
     public static let refactorAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000006")!
     public static let builderAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000007")!
+    public static let minimalAgentID: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000008")!
     public static let builderAgentName = "Builder"
     public static let manifestFilename = "agents.json"
+    public static let minimalToolNames: [String] = [
+        "shell",
+        "files",
+        "text"
+    ]
     public static let codingToolNames: [String] = [
         "shell",
         "files",
@@ -245,16 +249,8 @@ public enum AgentProfileStore {
         "orchestration"
     ]
     public static let implementationToolNames: [String] = codingToolNames
-    public static let featureToolNames: [String] = codingToolNames + [
-        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-web-tools"),
-        "orchestration"
-    ]
     public static let builderToolNames: [String] = defaultToolNames
     public static let reviewToolNames: [String] = codingToolNames
-    public static let researchToolNames: [String] = codingToolNames + [
-        TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-web-tools"),
-        "orchestration"
-    ]
     public static let featureManagementToolNames = Set(DirectToolCatalog.featureDescriptors.map(\.name))
 
     public static func loadRequired(fileManager: FileManager = .default) throws -> [AgentProfile] {
@@ -331,7 +327,9 @@ public enum AgentProfileStore {
             AgentProfile(
                 id: defaultAgentID.uuidString,
                 name: defaultAgentName,
-                instructions: MLXSystemPromptBuilder.defaultAgentInstructions(),
+                instructions: """
+                General coding agent. Solve the user's request with available tools and keep replies concise.
+                """,
                 symbolName: "person.crop.circle",
                 tools: defaultToolNames
             ),
@@ -339,52 +337,43 @@ public enum AgentProfileStore {
                 id: bugfixAgentID.uuidString,
                 name: "Bugfix",
                 instructions: """
-                Work as a focused bug-fixing agent. Reproduce or narrow the defect before changing code when practical. Keep edits minimal, preserve existing behavior outside the bug, and verify the fix with the smallest meaningful build or test. Use memory to understand project context before touching code.
+                Bugfix agent. Reproduce or narrow the defect, keep edits minimal, and verify the fix.
                 """,
                 symbolName: "bandage",
                 tools: implementationToolNames
             ),
             AgentProfile(
+                id: minimalAgentID.uuidString,
+                name: "Minimal",
+                instructions: """
+                Minimal agent. Use essential tools only, answer briefly, and avoid extra workflow unless asked.
+                """,
+                symbolName: "circle",
+                tools: minimalToolNames
+            ),
+            AgentProfile(
                 id: builderAgentID.uuidString,
                 name: builderAgentName,
                 instructions: """
-                Work as the dedicated feature-builder agent. Create, install, validate, build, enable, disable, and delete Swift feature packages only when the user asks for reusable runtime capability. Keep generated feature packages focused, Swift tools 6.3 compatible, and aligned with the existing feature runtime contract.
+                Builder agent. Manage Swift feature packages only when reusable runtime capability is requested.
                 """,
                 symbolName: "hammer",
                 tools: builderToolNames
             ),
             AgentProfile(
-                id: featureAgentID.uuidString,
-                name: "Feature",
-                instructions: """
-                Work as a feature implementation agent. Clarify ambiguous product or API behavior before committing to a broad design. Match existing architecture and UI patterns, keep the feature complete for the requested workflow, and verify the main path. Use memory to resume project context and record durable decisions when the work is significant.
-                """,
-                symbolName: "sparkles",
-                tools: featureToolNames
-            ),
-            AgentProfile(
                 id: reviewAgentID.uuidString,
                 name: "Review",
                 instructions: """
-                Work as a code review agent. Do not modify files unless explicitly asked. Prioritize correctness bugs, regressions, security risks, performance issues, and missing tests. Report findings first, ordered by severity, with precise file and line references. Keep summaries brief.
+                Review agent. Report correctness, regression, security, performance, and test risks first; do not edit unless asked.
                 """,
                 symbolName: "checklist",
                 tools: reviewToolNames
             ),
             AgentProfile(
-                id: researchAgentID.uuidString,
-                name: "Research",
-                instructions: """
-                Work as a research agent. Gather facts, inspect relevant sources, and separate confirmed information from inference. Do not make code changes unless explicitly requested. When current or external information matters, prefer primary sources and cite what you used.
-                """,
-                symbolName: "magnifyingglass",
-                tools: researchToolNames
-            ),
-            AgentProfile(
                 id: refactorAgentID.uuidString,
                 name: "Refactor",
                 instructions: """
-                Work as a refactoring agent. Preserve observable behavior unless the user explicitly requests a behavior change. Keep the scope tight, prefer existing abstractions, avoid churn, and verify equivalence with targeted tests or builds. Explain risky moves before making them.
+                Refactor agent. Preserve behavior, keep scope tight, follow existing patterns, and verify equivalence.
                 """,
                 symbolName: "arrow.triangle.2.circlepath",
                 tools: implementationToolNames

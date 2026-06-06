@@ -62,7 +62,7 @@ func apiKeyProtectsHTTPRoutesWhenConfigured() async throws {
 
 @Test
 func chatCompletionsEndpointMapsThinkingProtocol() async throws {
-    let runtime = RecordingRuntime(outputText: "<think>Sto ragionando.</think>Ciao!")
+    let runtime = RecordingRuntime(outputText: "Sto ragionando.</think>Ciao!")
     let server = try TestHTTPServer(runtime: runtime)
     defer {
         server.stop()
@@ -94,8 +94,35 @@ func chatCompletionsEndpointMapsThinkingProtocol() async throws {
 }
 
 @Test
+func chatCompletionsEndpointKeepsDirectAnswerVisibleWhenThinkingRequested() async throws {
+    let runtime = RecordingRuntime(outputText: "Ciao!")
+    let server = try TestHTTPServer(runtime: runtime)
+    defer {
+        server.stop()
+    }
+
+    let body = """
+    {
+      "model": "mlx-community/test-model",
+      "messages": [
+        { "role": "user", "content": "ciao" }
+      ],
+      "reasoning_effort": "medium",
+      "max_tokens": 64
+    }
+    """
+
+    let data = try await server.post(path: "/v1/chat/completions", body: body)
+    let response = try JSONDecoder().decode(ChatCompletionTestResponse.self, from: data)
+    let message = try #require(response.choices.first?.message)
+
+    #expect(message.content == "Ciao!")
+    #expect(message.reasoningContent == nil)
+}
+
+@Test
 func responsesEndpointMapsReasoningProtocol() async throws {
-    let runtime = RecordingRuntime(outputText: "<think>Analisi breve.</think>Risposta finale.")
+    let runtime = RecordingRuntime(outputText: "Analisi breve.</think>Risposta finale.")
     let server = try TestHTTPServer(runtime: runtime)
     defer {
         server.stop()
@@ -129,6 +156,35 @@ func responsesEndpointMapsReasoningProtocol() async throws {
     #expect(request.messages.map(\.content) == ["ciao"])
     #expect(request.additionalContext?["enable_thinking"] as? Bool == true)
     #expect(request.additionalContext?["thinking_level"] as? String == "high")
+}
+
+@Test
+func responsesEndpointKeepsDirectAnswerVisibleWhenThinkingRequested() async throws {
+    let runtime = RecordingRuntime(outputText: "Risposta finale.")
+    let server = try TestHTTPServer(runtime: runtime)
+    defer {
+        server.stop()
+    }
+
+    let body = """
+    {
+      "model": "mlx-community/test-model",
+      "input": "ciao",
+      "reasoning": {
+        "effort": "high",
+        "summary": "auto"
+      },
+      "max_output_tokens": 64
+    }
+    """
+
+    let data = try await server.post(path: "/v1/responses", body: body)
+    let response = try JSONDecoder().decode(ResponsesTestResponse.self, from: data)
+    let reasoning = response.output.first { $0.type == "reasoning" }
+    let message = try #require(response.output.first { $0.type == "message" })
+
+    #expect(reasoning == nil)
+    #expect(message.content?.first?.text == "Risposta finale.")
 }
 
 @Test
@@ -176,7 +232,7 @@ func responsesEndpointMovesDeveloperMessagesToSystemPrefix() async throws {
 
 @Test
 func anthropicMessagesEndpointMapsThinkingProtocol() async throws {
-    let runtime = RecordingRuntime(outputText: "<think>Controllo il contesto.</think>Eccomi.")
+    let runtime = RecordingRuntime(outputText: "Controllo il contesto.</think>Eccomi.")
     let server = try TestHTTPServer(runtime: runtime)
     defer {
         server.stop()
@@ -208,6 +264,36 @@ func anthropicMessagesEndpointMapsThinkingProtocol() async throws {
     #expect(request.messages.map(\.content) == ["dove sei?"])
     #expect(request.additionalContext?["enable_thinking"] as? Bool == true)
     #expect(request.additionalContext?["thinking_level"] as? String == "medium")
+}
+
+@Test
+func anthropicMessagesEndpointKeepsDirectAnswerVisibleWhenThinkingRequested() async throws {
+    let runtime = RecordingRuntime(outputText: "Eccomi.")
+    let server = try TestHTTPServer(runtime: runtime)
+    defer {
+        server.stop()
+    }
+
+    let body = """
+    {
+      "model": "mlx-community/test-model",
+      "max_tokens": 64,
+      "messages": [
+        { "role": "user", "content": "dove sei?" }
+      ],
+      "thinking": {
+        "type": "enabled"
+      }
+    }
+    """
+
+    let data = try await server.post(path: "/v1/messages", body: body)
+    let response = try JSONDecoder().decode(AnthropicMessageTestResponse.self, from: data)
+    let thinking = response.content.first { $0.type == "thinking" }
+    let text = try #require(response.content.first { $0.type == "text" })
+
+    #expect(thinking == nil)
+    #expect(text.text == "Eccomi.")
 }
 
 @Test
@@ -295,7 +381,7 @@ func anthropicMessagesEndpointMapsPreviousAssistantThinkingAndToolUse() async th
 func chatCompletionsStreamingEmitsThinkingTextAndToolCalls() async throws {
     let runtime = RecordingRuntime(
         streamEvents: [
-            .chunk("<think>Sto ragionando.</think>"),
+            .chunk("Sto ragionando.</think>"),
             .chunk("Ciao!"),
             .toolCall(testToolCall())
         ]
@@ -339,7 +425,7 @@ func chatCompletionsStreamingEmitsThinkingTextAndToolCalls() async throws {
 func responsesStreamingEmitsThinkingTextAndToolCalls() async throws {
     let runtime = RecordingRuntime(
         streamEvents: [
-            .chunk("<think>Analisi.</think>"),
+            .chunk("Analisi.</think>"),
             .chunk("Risposta."),
             .toolCall(testToolCall())
         ]
@@ -381,7 +467,7 @@ func responsesStreamingEmitsThinkingTextAndToolCalls() async throws {
 func anthropicMessagesStreamingEmitsThinkingTextAndToolCalls() async throws {
     let runtime = RecordingRuntime(
         streamEvents: [
-            .chunk("<think>Controllo.</think>"),
+            .chunk("Controllo.</think>"),
             .chunk("Eccomi."),
             .toolCall(testToolCall())
         ]

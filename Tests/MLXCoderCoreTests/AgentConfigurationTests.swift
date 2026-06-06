@@ -101,19 +101,19 @@ struct AgentConfigurationTests {
         let webKey = TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-web-tools")
         let featureBuilderKey = TerminalToolSelectionCatalog.featureBuilderKey
         let defaultProfile = try #require(profiles["Default"])
+        let minimalProfile = try #require(profiles["Minimal"])
         let bugfixProfile = try #require(profiles["Bugfix"])
         let builderProfile = try #require(profiles["Builder"])
-        let featureProfile = try #require(profiles["Feature"])
         let reviewProfile = try #require(profiles["Review"])
-        let researchProfile = try #require(profiles["Research"])
         let refactorProfile = try #require(profiles["Refactor"])
+        #expect(profiles["Feature"] == nil)
+        #expect(profiles["Research"] == nil)
 
         for profile in profiles.values {
             #expect(!profile.tools.contains(xcodeKey))
             #expect(!profile.tools.contains(figmaKey))
             #expect(profile.tools.contains("files"))
             #expect(profile.tools.contains("text"))
-            #expect(profile.tools.contains("memory"))
         }
 
         for profile in profiles.values {
@@ -121,12 +121,20 @@ struct AgentConfigurationTests {
         }
 
         #expect(defaultProfile.tools.contains(webKey))
+        #expect(defaultProfile.instructions?.contains("General coding agent") == true)
         #expect(builderProfile.tools.contains(webKey))
-        #expect(featureProfile.tools.contains(webKey))
-        #expect(researchProfile.tools.contains(webKey))
+        #expect(builderProfile.instructions?.contains("Builder agent") == true)
+        #expect(!minimalProfile.tools.contains(webKey))
+        #expect(!minimalProfile.tools.contains("memory"))
+        #expect(!minimalProfile.tools.contains("orchestration"))
+        #expect(minimalProfile.tools == AgentProfileStore.minimalToolNames)
+        #expect(minimalProfile.instructions?.contains("Minimal agent") == true)
         #expect(!bugfixProfile.tools.contains(webKey))
+        #expect(bugfixProfile.instructions?.contains("Bugfix agent") == true)
         #expect(!reviewProfile.tools.contains(webKey))
+        #expect(reviewProfile.instructions?.contains("Review agent") == true)
         #expect(!refactorProfile.tools.contains(webKey))
+        #expect(refactorProfile.instructions?.contains("Refactor agent") == true)
     }
 
     @Test
@@ -136,12 +144,13 @@ struct AgentConfigurationTests {
         )
 
         #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Default"])).contains("General coding"))
+        #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Minimal"])).contains("Minimal tools"))
         #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Bugfix"])).contains("Focused bug fixes"))
         #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Builder"])).contains("Create, build"))
-        #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Feature"])).contains("Build complete product features"))
         #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Review"])).contains("Code review only"))
-        #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Research"])).contains("Research"))
         #expect(TerminalChat.agentSelectionDetail(try #require(profiles["Refactor"])).contains("Behavior-preserving"))
+        #expect(profiles["Feature"] == nil)
+        #expect(profiles["Research"] == nil)
 
         let customAgent = AgentProfile(
             id: "custom",
@@ -632,21 +641,34 @@ struct AgentConfigurationTests {
     }
 
     @Test
-    func defaultAgentInstructionsDescribeDynamicFeatureWorkflow() {
+    func defaultAgentInstructionsArePlatformNeutralAndOmitDynamicFeatureWorkflow() {
         let instructions = MLXSystemPromptBuilder.defaultAgentInstructions()
 
-        #expect(instructions.contains("Dynamic Swift feature workflow:"))
-        #expect(instructions.contains("feature.scaffold"))
-        #expect(instructions.contains("feature.validate"))
-        #expect(instructions.contains("feature.build"))
-        #expect(instructions.contains("feature.enable"))
-        #expect(instructions.contains("feature.reload"))
-        #expect(instructions.contains("feature.install"))
-        #expect(instructions.contains("feature.delete"))
-        #expect(instructions.contains("Swift tools 6.3"))
-        #expect(instructions.contains("core runtime behavior"))
-        #expect(instructions.contains("`local.*` file tools"))
-        #expect(instructions.contains("`text.*` tools"))
+        #expect(instructions.contains("on the user's machine"))
+        #expect(!instructions.contains("on the user's Mac"))
+        #expect(!instructions.contains("Dynamic Swift feature workflow:"))
+        #expect(!instructions.contains("dynamic Swift feature tools"))
+        #expect(!instructions.contains("feature.scaffold"))
+        #expect(!instructions.contains("feature.validate"))
+        #expect(!instructions.contains("feature.build"))
+        #expect(!instructions.contains("feature.enable"))
+        #expect(!instructions.contains("feature.reload"))
+        #expect(!instructions.contains("feature.install"))
+        #expect(!instructions.contains("feature.delete"))
+        #expect(!instructions.contains("Swift tools 6.3"))
+    }
+
+    @Test
+    func defaultAgentInstructionsDoNotRequireQuestionSentinel() {
+        let instructions = MLXSystemPromptBuilder.defaultAgentInstructions()
+
+        #expect(!instructions.contains("follow-up question"))
+        #expect(!instructions.contains("final character"))
+        #expect(!instructions.contains("whose final character is `?`"))
+        #expect(!instructions.contains("inspect, search, read, edit, write, or test"))
+        #expect(instructions.contains("Before starting file modifications, briefly explain the intended changes"))
+        #expect(instructions.contains("Do not modify files until the user confirms"))
+        #expect(instructions.contains("Once the requested work is complete and no tool call is needed, stop."))
     }
 
     @Test

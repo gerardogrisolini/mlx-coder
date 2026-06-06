@@ -307,7 +307,7 @@ func xcodeAgentIntegrationsUseDedicatedConfigurationFiles() throws {
 }
 
 @Test
-func aionUIExecutableCommandUsesSwiftRunForSourceBuild() throws {
+func aionUIExecutableCommandUsesBuiltExecutableForSourceBuild() throws {
     let rootURL = temporaryHomeDirectory()
     defer {
         try? FileManager.default.removeItem(at: rootURL)
@@ -334,21 +334,46 @@ func aionUIExecutableCommandUsesSwiftRunForSourceBuild() throws {
         )
     )
 
-    #expect(command.command == MLXServerAgentIntegrationService.swiftExecutableCommand(fileManager: .default))
-    #expect(command.argsPrefix == ["run", "--package-path", rootURL.path, "mlx-server"])
+    #expect(command.command == executableURL.standardizedFileURL.path)
+    #expect(command.argsPrefix.isEmpty)
     #expect(command.resolvedURL == executableURL.standardizedFileURL)
 
+    let coderExecutableURL = executableURL.deletingLastPathComponent()
+        .appendingPathComponent("mlx-coder")
+    try writeExecutable(at: coderExecutableURL)
     let coderCommand = try #require(
         MLXServerAgentIntegrationService.aionUIExecutableCommand(
             named: "mlx-coder",
             preferredURL: nil,
             relativeTo: executableURL.deletingLastPathComponent(),
-            sourcePackageRootURL: rootURL,
             fileManager: .default
         )
     )
-    #expect(coderCommand.command == command.command)
-    #expect(coderCommand.argsPrefix == ["run", "--package-path", rootURL.path, "mlx-coder"])
+    #expect(coderCommand.command == coderExecutableURL.standardizedFileURL.path)
+    #expect(coderCommand.argsPrefix.isEmpty)
+}
+
+@Test
+func aionUIExecutableCommandDoesNotFallbackToSwiftRun() throws {
+    let rootURL = temporaryHomeDirectory()
+    defer {
+        try? FileManager.default.removeItem(at: rootURL)
+    }
+    try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+    try "// swift-tools-version: 6.3\n".write(
+        to: rootURL.appendingPathComponent("Package.swift"),
+        atomically: true,
+        encoding: .utf8
+    )
+
+    let command = MLXServerAgentIntegrationService.aionUIExecutableCommand(
+        named: "mlx-coder-missing-\(UUID().uuidString)",
+        preferredURL: nil,
+        relativeTo: rootURL.appendingPathComponent(".build/debug", isDirectory: true),
+        fileManager: .default
+    )
+
+    #expect(command == nil)
 }
 
 @Test
@@ -513,6 +538,16 @@ func aionUICoderThinkingMetadataReadsSettingsManifest() throws {
 
     #expect(metadata.options == ["off", "medium", "high"])
     #expect(metadata.defaultSelection == "medium")
+}
+
+@Test
+func aionUITimeoutsKeepHealthChecksShortAndConfigurationRequestsLonger() {
+    #expect(MLXServerAgentIntegrationService.aionUIHealthCheckTimeout == 2)
+    #expect(MLXServerAgentIntegrationService.aionUIAPIRequestTimeout == 30)
+    #expect(
+        MLXServerAgentIntegrationService.aionUIAPIRequestTimeout
+            > MLXServerAgentIntegrationService.aionUIHealthCheckTimeout
+    )
 }
 
 private struct TestAionUIAgentConfigOptions: Decodable {

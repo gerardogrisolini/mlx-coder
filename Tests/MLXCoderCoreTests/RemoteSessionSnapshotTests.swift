@@ -196,6 +196,48 @@ struct RemoteSessionSnapshotTests {
         #expect(cachedObject["call_id"] as? String == "call_memory")
         #expect(payload.previousResponseID == "resp_tool_call")
     }
+
+    @Test
+    func chatGPTSubscriptionContextEstimateIncludesInstructionsAndTools() throws {
+        let payload = ChatGPTSubscriptionRequestBuilder.requestInputPayload(
+            from: chatGPTContinuationMessages(),
+            continuation: nil
+        )
+        let toolPayloads = RemoteToolWireCatalog(
+            descriptors: [
+                DirectToolDescriptor(
+                    name: "local.exec",
+                    description: "Run a shell command.",
+                    inputSchema: #"{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}"#
+                )
+            ]
+        ).responsesToolPayloads
+
+        let inputOnlyEstimate = try #require(
+            ChatGPTSubscriptionRequestBuilder.estimatedContextTokenCount(
+                instructions: nil,
+                input: payload.input,
+                toolPayloads: []
+            )
+        )
+        let withInstructionsEstimate = try #require(
+            ChatGPTSubscriptionRequestBuilder.estimatedContextTokenCount(
+                instructions: payload.instructions,
+                input: payload.input,
+                toolPayloads: []
+            )
+        )
+        let withToolsEstimate = try #require(
+            ChatGPTSubscriptionRequestBuilder.estimatedContextTokenCount(
+                instructions: payload.instructions,
+                input: payload.input,
+                toolPayloads: toolPayloads
+            )
+        )
+
+        #expect(withInstructionsEstimate > inputOnlyEstimate)
+        #expect(withToolsEstimate > withInstructionsEstimate)
+    }
 #endif
 
     private func remoteHistory() -> [AgentRuntimeMessage] {

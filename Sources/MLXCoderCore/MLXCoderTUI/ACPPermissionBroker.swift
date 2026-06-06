@@ -28,6 +28,10 @@ public actor ACPPermissionBroker {
         if alwaysRejectedKeys.contains(cacheKey) {
             return false
         }
+        if request.toolName == "local.exec",
+           LocalExecPermissionAuthorizer.isCommandPersistentlyAllowed(request.command) {
+            return true
+        }
 
         let optionID: String
         do {
@@ -42,6 +46,9 @@ public actor ACPPermissionBroker {
 
         if optionID == "allow_always" {
             alwaysAllowedKeys.insert(cacheKey)
+            if request.toolName == "local.exec" {
+                LocalExecPermissionAuthorizer.persistAllowedCommand(request.command)
+            }
             return true
         }
         if optionID == "reject_always" {

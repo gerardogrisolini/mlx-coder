@@ -1,11 +1,12 @@
 @testable import MLXCoderCore
+import Foundation
 import Testing
 
 @Suite
 struct TerminalChatRenderingTests {
     @Test
     func exposesSharedAgentVersion() {
-                        #expect(agentVersion == "0.1.7")
+                        #expect(agentVersion == "0.1.8")
     }
 
     @Test
@@ -73,7 +74,7 @@ struct TerminalChatRenderingTests {
         #expect(!TerminalChat.fitInline("Commands: /help, /models, /agents", width: 18).contains("..."))
     }
 
-                @Test
+    @Test
     func markdownFormatterStylesHeadingsAndInlineCode() {
         var formatter = TerminalMarkdownStreamFormatter(isEnabled: true)
 
@@ -103,6 +104,33 @@ struct TerminalChatRenderingTests {
     }
 
     @Test
+        func subAgentOverviewRendersPlainWrappedStatusWithoutBoxDrawing() {
+        let snapshot = DirectSubAgentRuntime.AgentSnapshot(
+            id: "agent_1",
+            name: "swift-scan",
+            role: "swift-scan",
+            isolationMode: .report,
+            status: .closed,
+            pending: false,
+            latestOutput: "Trovati 3 file `.swift`: 1. `./Tests/MLXCoderCoreTests/AgentCoreSessionRunnerTests.swift` 2. `./Tests/MLXCoderCoreTests/MLXMemoryServiceTests.swift` 3. `./Tests/MLXCoderCoreTests/VeryLongFileNameThatShouldWrapInsideTheBox.swift`",
+            latestError: nil,
+            createdAt: Date(),
+            updatedAt: Date()
+        )
+
+        let rendered = TerminalChat.renderSubAgentOverview([snapshot])
+        let visibleLines = rendered
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { ansiStripped(String($0)) }
+
+        #expect(visibleLines.first == "Sub-Agents")
+        #expect(!rendered.contains("┌"))
+        #expect(!rendered.contains("│"))
+        #expect(!rendered.contains("└"))
+        #expect(visibleLines.allSatisfy { $0.count <= 122 })
+    }
+
+    @Test
     func failureMessageColoringWrapsNonBlankLines() {
         let rendered = TerminalChat.failureMessageColorApplied(
             to: "mlx-coder: HTTP 402\n\nRetry later.\n",
@@ -114,7 +142,7 @@ struct TerminalChatRenderingTests {
         #expect(rendered.hasSuffix("\n"))
     }
 
-            @Test
+    @Test
     func compactEditToolLinesIncludeFileTarget() {
         let toolCall = DirectAgentToolCall(
             id: "call_1",
@@ -145,7 +173,7 @@ struct TerminalChatRenderingTests {
         #expect(!rendered.contains("  ✅"))
     }
 
-            @Test
+    @Test
     func detailedReplaceCompletionShowsSnippetsAsCodeLines() {
         let toolCall = DirectAgentToolCall(
             id: "call_1",
@@ -242,6 +270,23 @@ struct TerminalChatRenderingTests {
         #expect(lines.contains("  struct App {"))
         #expect(lines.contains("      let value = 1"))
         #expect(!lines.contains("rawOutput.summary: Wrote file"))
+    }
+
+    private func ansiStripped(_ text: String) -> String {
+        var output = ""
+        var cursor = text.startIndex
+        while cursor < text.endIndex {
+            if text[cursor] == "\u{1B}",
+               text.index(after: cursor) < text.endIndex,
+               text[text.index(after: cursor)] == "[",
+               let sequenceEnd = text[cursor...].firstIndex(of: "m") {
+                cursor = text.index(after: sequenceEnd)
+                continue
+            }
+            output.append(text[cursor])
+            cursor = text.index(after: cursor)
+        }
+        return output
     }
 
     @Test
