@@ -11,8 +11,8 @@ import MLXLMCommon
 @Test
 func exposesSharedVersionDescription() {
     #expect(MLXServerCore.serviceName == "mlx-server")
-            #expect(MLXServerCore.version == "0.1.8")
-    #expect(MLXServerCore.versionDescription == "mlx-server 0.1.8")
+            #expect(MLXServerCore.version == "0.1.10")
+    #expect(MLXServerCore.versionDescription == "mlx-server 0.1.10")
 }
 
 @Test

@@ -6,7 +6,7 @@ import Testing
 struct TerminalChatRenderingTests {
     @Test
     func exposesSharedAgentVersion() {
-                        #expect(agentVersion == "0.1.8")
+                        #expect(agentVersion == "0.1.10")
     }
 
     @Test
