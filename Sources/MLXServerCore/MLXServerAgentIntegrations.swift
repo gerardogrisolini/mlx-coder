@@ -933,15 +933,7 @@ private extension MLXServerAgentIntegrationService {
             let matches = existingAgents.filter { agent in
                 aionUIAgent(agent, matches: customAgent)
             }
-            let request = AionUICustomAgentRequest(
-                name: customAgent.name,
-                command: customAgent.command,
-                icon: "✴️",
-                args: customAgent.args,
-                enabled: true,
-                env: [],
-                advanced: AionUICustomAgentAdvanced()
-            )
+            let request = aionUICustomAgentRequest(for: customAgent)
 
             if let existingAgent = matches.first {
                 let updatedAgent = try updateAionUICustomAgent(
@@ -1001,6 +993,21 @@ private extension MLXServerAgentIntegrationService {
             registeredAgents: registeredAgents,
             updatedAgents: updatedAgents,
             removedDuplicateAgents: removedDuplicateAgents
+        )
+    }
+
+    static func aionUICustomAgentRequest(
+        for customAgent: AionUICustomAgentDefinition
+    ) -> AionUICustomAgentRequest {
+        AionUICustomAgentRequest(
+            name: customAgent.name,
+            command: customAgent.command,
+            icon: "✴️",
+            args: customAgent.args,
+            enabled: true,
+            env: [],
+            advanced: AionUICustomAgentAdvanced(),
+            backend: aionUICustomAgentBackend(for: customAgent)
         )
     }
 
@@ -1220,6 +1227,31 @@ private extension MLXServerAgentIntegrationService {
         return fallbackAgent
     }
 
+    static func aionUICustomAgentBackend(for customAgent: AionUICustomAgentDefinition) -> String {
+        customAgent.name.trimmedNonEmpty ?? customAgent.command
+    }
+
+    static func aionUIAgentBackend(for agent: AionUIAgent) -> String {
+        if let backend = agent.backend?.trimmedNonEmpty,
+           backend.lowercased() != "custom" {
+            return backend
+        }
+        return agent.name.trimmedNonEmpty ?? agent.id
+    }
+
+    static func aionUIChannelAgentPreference(
+        for customAgent: AionUIAgent
+    ) -> AionUIChannelAgentPreference {
+        AionUIChannelAgentPreference(
+            agentType: "acp",
+            backend: aionUIAgentBackend(for: customAgent),
+            agentID: customAgent.id,
+            customAgentID: customAgent.id,
+            id: customAgent.id,
+            name: customAgent.name
+        )
+    }
+
     static func aionUIClientSettings(baseURL: URL) throws -> AionUIClientSettings {
         let response: AionUIAPIEnvelope<AionUIClientSettings> = try sendAionUIAPIRequest(
             method: "GET",
@@ -1260,14 +1292,7 @@ private extension MLXServerAgentIntegrationService {
             pathComponents: ["api", "settings", "client"],
             body: AionUIChannelAgentPreferenceUpdate(
                 platform: platform,
-                preference: AionUIChannelAgentPreference(
-                    agentType: "acp",
-                    backend: "custom",
-                    agentID: customAgent.id,
-                    customAgentID: customAgent.id,
-                    id: customAgent.id,
-                    name: customAgent.name
-                )
+                preference: aionUIChannelAgentPreference(for: customAgent)
             ),
             baseURL: baseURL
         )
@@ -1289,14 +1314,7 @@ private extension MLXServerAgentIntegrationService {
             return
         }
 
-        let preference = AionUIChannelAgentPreference(
-            agentType: "acp",
-            backend: "custom",
-            agentID: customAgent.id,
-            customAgentID: customAgent.id,
-            id: customAgent.id,
-            name: customAgent.name
-        )
+        let preference = aionUIChannelAgentPreference(for: customAgent)
         let preferenceData = try JSONEncoder().encode(preference)
         guard let preferenceJSON = String(data: preferenceData, encoding: .utf8) else {
             throw MLXServerAgentIntegrationError.aionUIAPIRequestFailed(
@@ -1387,7 +1405,9 @@ private extension MLXServerAgentIntegrationService {
                 attributes: nil
             )
 
+            let agentBackend = aionUIAgentBackend(for: customAgent)
             let extra = AionUIChannelConversationExtra(
+                backend: agentBackend,
                 workspace: workspaceURL.path,
                 agentID: customAgent.id,
                 customAgentID: customAgent.id,
@@ -1422,7 +1442,7 @@ private extension MLXServerAgentIntegrationService {
                 )
                 VALUES (
                   \(sqliteQuotedString(configuredConversationID)),
-                  'custom',
+                  \(sqliteQuotedString(agentBackend)),
                   'builtin',
                   \(sqliteQuotedString(customAgent.id)),
                   NULL,
@@ -1485,7 +1505,7 @@ private extension MLXServerAgentIntegrationService {
               extra = json_set(
                 CASE WHEN json_valid(extra) THEN extra ELSE '{}' END,
                 '$.backend',
-                'custom',
+                \(sqliteQuotedString(agentBackend)),
                 '$.agent_id',
                 \(sqliteQuotedString(customAgent.id)),
                 '$.custom_agent_id',
@@ -2744,6 +2764,20 @@ private struct AionUICustomAgentRequest: Encodable {
     var enabled: Bool
     var env: [AionUICustomAgentEnvironmentVariable]
     var advanced: AionUICustomAgentAdvanced
+    var backend: String
+    var agentType: String = "acp"
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case command
+        case icon
+        case args
+        case enabled
+        case env
+        case advanced
+        case backend
+        case agentType = "agent_type"
+    }
 }
 
 private struct AionUICustomAgentEnvironmentVariable: Encodable {
@@ -2908,5 +2942,41 @@ extension MLXServerAgentIntegrationService {
             fileManager: fileManager
         )
         return (metadata.options, metadata.defaultSelection)
+    }
+
+    static func aionUICustomAgentRequestJSONForTesting(
+        name: String,
+        command: String,
+        args: [String]
+    ) throws -> String {
+        try compactJSONString(
+            aionUICustomAgentRequest(
+                for: AionUICustomAgentDefinition(
+                    name: name,
+                    command: command,
+                    args: args,
+                    defaultThinking: nil
+                )
+            )
+        )
+    }
+
+    static func aionUIChannelAgentPreferenceJSONForTesting(
+        id: String,
+        name: String,
+        backend: String?
+    ) throws -> String {
+        try compactJSONString(
+            aionUIChannelAgentPreference(
+                for: AionUIAgent(
+                    id: id,
+                    name: name,
+                    backend: backend,
+                    agentSource: "custom",
+                    command: nil,
+                    args: nil
+                )
+            )
+        )
     }
 }

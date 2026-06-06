@@ -400,6 +400,52 @@ func aionUIExecutableCommandUsesManualInstallPathOutsideSourceBuild() throws {
     #expect(command.argsPrefix.isEmpty)
 }
 
+@Test
+func aionUICustomAgentRequestIncludesStableACPBackend() throws {
+    let json = try MLXServerAgentIntegrationService.aionUICustomAgentRequestJSONForTesting(
+        name: "mlx-coder",
+        command: "/opt/homebrew/bin/mlx-coder",
+        args: ["--acp"]
+    )
+    let data = try #require(json.data(using: .utf8))
+    let decoded = try JSONDecoder().decode(TestAionUICustomAgentRequest.self, from: data)
+
+    #expect(decoded.backend == "mlx-coder")
+    #expect(decoded.agentType == "acp")
+}
+
+@Test
+func aionUIChannelPreferenceKeepsAgentIDAndStableBackend() throws {
+    let json = try MLXServerAgentIntegrationService
+        .aionUIChannelAgentPreferenceJSONForTesting(
+            id: "1ab77997",
+            name: "mlx-coder",
+            backend: nil
+        )
+    let data = try #require(json.data(using: .utf8))
+    let decoded = try JSONDecoder().decode(TestAionUIChannelAgentPreference.self, from: data)
+
+    #expect(decoded.agentType == "acp")
+    #expect(decoded.backend == "mlx-coder")
+    #expect(decoded.agentID == "1ab77997")
+    #expect(decoded.customAgentID == "1ab77997")
+    #expect(decoded.id == "1ab77997")
+    #expect(decoded.name == "mlx-coder")
+
+    let ambiguousBackendJSON = try MLXServerAgentIntegrationService
+        .aionUIChannelAgentPreferenceJSONForTesting(
+            id: "1ab77997",
+            name: "mlx-coder",
+            backend: "custom"
+        )
+    let ambiguousBackendData = try #require(ambiguousBackendJSON.data(using: .utf8))
+    let ambiguousBackend = try JSONDecoder().decode(
+        TestAionUIChannelAgentPreference.self,
+        from: ambiguousBackendData
+    )
+    #expect(ambiguousBackend.backend == "mlx-coder")
+}
+
 private func temporaryHomeDirectory() -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("mlx-server-agent-tests-\(UUID().uuidString)", isDirectory: true)
@@ -472,6 +518,34 @@ private struct TestCodexTruncationPolicy: Decodable {
 
 private struct TestClaudeSettings: Decodable {
     var env: [String: String]
+}
+
+private struct TestAionUICustomAgentRequest: Decodable {
+    var backend: String
+    var agentType: String
+
+    enum CodingKeys: String, CodingKey {
+        case backend
+        case agentType = "agent_type"
+    }
+}
+
+private struct TestAionUIChannelAgentPreference: Decodable {
+    var agentType: String
+    var backend: String
+    var agentID: String
+    var customAgentID: String
+    var id: String
+    var name: String
+
+    enum CodingKeys: String, CodingKey {
+        case agentType = "agent_type"
+        case backend
+        case agentID = "agent_id"
+        case customAgentID = "custom_agent_id"
+        case id
+        case name
+    }
 }
 
 @Test
