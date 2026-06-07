@@ -327,7 +327,7 @@ Generated features are reusable Swift tool packages managed by the Builder agent
 
 Features are discovered from bundled feature binaries and generated packages under `~/.mlx-coder/features`. Generated packages are plain Swift 6.3 packages and run out-of-process over a JSON stdin/stdout protocol.
 
-See [Dynamic Swift Features](DynamicSwiftFeatures.md) for the complete feature contract.
+See the [Builder agent guide](builder.md) for Builder usage and technical feature package notes.
 
 ## ACP Mode
 

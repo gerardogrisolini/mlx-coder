@@ -81,6 +81,7 @@ swift run -c release mlx-server
 Detailed guides:
 
 - [mlx-coder guide](Docs/mlx-coder.md): standalone/ACP agent setup, profiles, tools, skills, sessions, memory, and dynamic features.
+- [Builder agent guide](Docs/builder.md): creating, enabling, building, and exposing reusable Swift feature packages.
 - [mlx-server guide](Docs/mlx-server.md): setup, model catalog, HTTP APIs, metrics, benchmarking, and direct coder mode.
 - [Aion UI manual setup](Docs/aion-ui.md): manual ACP configuration for Aion UI.
 
@@ -141,7 +142,8 @@ Useful TUI commands:
 /sessions    Save, refresh, load, or delete session snapshots
 /changes     Review the latest tracked file changes
 /undo        Revert the latest tracked agent changes
-/feature     Manage generated Swift features with the Builder agent
+/features    Enable or disable feature packages with the Builder agent
+/feature     Create and manage Swift features with the Builder agent
 /telegram    Turn Telegram remote control on/off when paired in setup
 /voice       Record a voice prompt when local voice tools are enabled in setup
 /speak       Play the last assistant response aloud when local voice tools are enabled

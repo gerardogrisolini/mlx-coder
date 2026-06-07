@@ -704,11 +704,11 @@ private enum JiraToolsError: LocalizedError {
         case let .missingArgument(name):
             return "Missing Jira tool argument: \(name)."
         case .notConfigured:
-            return "Jira is not configured. Enable the feature with `/feature enable mlx-jira-tools` to run Jira setup."
+            return "Jira is not configured. Run `/feature enable mlx-jira-tools` to configure Jira."
         case let .invalidConfiguration(message):
             return message
         case .missingCredentials:
-            return "Jira API token was not found. Enable the feature with `/feature enable mlx-jira-tools` to run Jira setup."
+            return "Jira API token was not found. Run `/feature enable mlx-jira-tools` to configure Jira."
         case let .requestFailed(message):
             return message
         case let .issueNotFound(issueKey):

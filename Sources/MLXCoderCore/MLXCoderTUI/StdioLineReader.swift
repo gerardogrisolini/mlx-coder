@@ -1142,22 +1142,43 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
         }
     }
 
-    private func activeCommandSuggestionsLocked() -> [TerminalCommandSuggestion] {
-        guard panelOverlayOverride == nil else {
-            return []
-        }
-
-        guard let commandPrefix = Self.commandPrefixForSuggestions(
-            text: String(panelBuffer),
-            cursorIndex: panelCursorIndex
+    static func matchingPanelCommandSuggestions(
+        text: String,
+        cursorIndex: Int,
+        suggestions: [TerminalCommandSuggestion]
+    ) -> [TerminalCommandSuggestion] {
+        guard let commandPrefix = commandPrefixForSuggestions(
+            text: text,
+            cursorIndex: cursorIndex
         ) else {
             return []
         }
 
         let normalizedPrefix = commandPrefix.lowercased()
-        return panelCommandSuggestions.filter { suggestion in
+        let matches = suggestions.filter { suggestion in
             suggestion.command.lowercased().hasPrefix(normalizedPrefix)
         }
+        let exactMatches = matches.filter { suggestion in
+            suggestion.command.lowercased() == normalizedPrefix
+        }
+        guard !exactMatches.isEmpty else {
+            return matches
+        }
+        return exactMatches + matches.filter { suggestion in
+            suggestion.command.lowercased() != normalizedPrefix
+        }
+    }
+
+    private func activeCommandSuggestionsLocked() -> [TerminalCommandSuggestion] {
+        guard panelOverlayOverride == nil else {
+            return []
+        }
+
+        return Self.matchingPanelCommandSuggestions(
+            text: String(panelBuffer),
+            cursorIndex: panelCursorIndex,
+            suggestions: panelCommandSuggestions
+        )
     }
 
     private static func commandPrefixForSuggestions(

@@ -61,6 +61,23 @@ struct TerminalInteractiveLineReaderTests {
     }
 
     @Test
+    func commandSuggestionsPreferExactCommandBeforePrefixMatches() {
+        let suggestions = [
+            TerminalCommandSuggestion(command: "/features", summary: "select feature packages"),
+            TerminalCommandSuggestion(command: "/feature", summary: "create/manage features"),
+            TerminalCommandSuggestion(command: "/featurex", summary: "another prefix match")
+        ]
+
+        let matches = TerminalInteractiveLineReader.matchingPanelCommandSuggestions(
+            text: "/feature",
+            cursorIndex: "/feature".count,
+            suggestions: suggestions
+        )
+
+        #expect(matches.map(\.command) == ["/feature", "/features", "/featurex"])
+    }
+
+    @Test
     func pastedTextNormalizesCarriageReturnsToNewlines() {
         let bytes = Array("first\r\nsecond\rthird".utf8)
 

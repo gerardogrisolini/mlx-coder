@@ -342,6 +342,25 @@ struct AgentConfigurationTests {
     }
 
     @Test
+    func featuresCommandIsVisibleOnlyWithBuilderAgent() {
+        let normalCommands = TerminalChat.visibleCommandDescriptors(
+            builderAgentEnabled: false,
+            telegramEnabled: false,
+            voiceEnabled: false
+        ).map(\.command)
+        let builderCommands = TerminalChat.visibleCommandDescriptors(
+            builderAgentEnabled: true,
+            telegramEnabled: false,
+            voiceEnabled: false
+        ).map(\.command)
+
+        #expect(!normalCommands.contains("/features"))
+        #expect(!normalCommands.contains("/feature"))
+        #expect(builderCommands.contains("/features"))
+        #expect(builderCommands.contains("/feature"))
+    }
+
+    @Test
     func savedSessionCommandTreatsSaveAsActiveSessionUpdate() {
         #expect(TerminalChat.savedSessionCommandAction(rawArguments: "") == .list)
         #expect(TerminalChat.savedSessionCommandAction(rawArguments: "delete") == .delete)
@@ -566,9 +585,26 @@ struct AgentConfigurationTests {
 
         #expect(rendered.contains("Xcode [mlx-xcode-tools] - disabled, bundled, discovers tools at runtime"))
         #expect(rendered.contains("Linear [custom-linear] - enabled, generated, 1 tool: linear.issue.list"))
-        #expect(rendered.contains("Use /feature enable <id|name|#>, /feature disable <id|name|#>, or /feature delete <id|name|#>."))
+        #expect(rendered.contains("Run /features to open the enable/disable menu."))
         #expect(try TerminalChat.resolvedFeatureID("xcode", statuses: statuses) == "mlx-xcode-tools")
         #expect(try TerminalChat.resolvedFeatureID("Linear", statuses: statuses) == "custom-linear")
+    }
+
+    @Test
+    func featureCheckboxItemShowsFeatureIdentityAndTools() {
+        let item = TerminalChat.featureCheckboxItem(
+            featureStatus(
+                id: "mlx-jira-tools",
+                source: .bundled,
+                tools: ["jira.read", "jira.search", "jira.signOut"],
+                enabled: false
+            )
+        )
+
+        #expect(item.value == "mlx-jira-tools")
+        #expect(item.title == "Jira [mlx-jira-tools]")
+        #expect(item.detail == "available, 3 tools: jira.read, jira.search, jira.signOut")
+        #expect(item.groupTitle == "Bundled")
     }
 
     @Test

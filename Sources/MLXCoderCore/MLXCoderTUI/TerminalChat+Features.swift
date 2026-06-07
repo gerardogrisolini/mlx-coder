@@ -12,6 +12,41 @@ enum TerminalFeatureCommandResult: Sendable {
 }
 
 extension TerminalChat {
+    func handleFeaturesCommand(_ command: String) async {
+        let rawArguments = String(command.dropFirst("/features".count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard rawArguments.isEmpty else {
+            writeFailureMessage("mlx-coder: /features does not accept arguments.\n")
+            writeSystemMessage(Self.renderFeaturesCommandUsage())
+            return
+        }
+
+        guard stdinIsTerminal else {
+            writeFailureMessage("mlx-coder: /features requires an interactive terminal.\n")
+            return
+        }
+
+        let statuses = await SwiftFeatureRuntime().featureStatuses(
+            includeTools: true,
+            includeDisabled: true
+        )
+        let sortedStatuses = statuses.sorted(by: Self.featureStatusSortOrder)
+        let selectedIDs = Set(sortedStatuses.filter(\.enabled).map(\.id))
+        let requestedIDs = TerminalCheckboxMenu.select(
+            title: "Features",
+            items: sortedStatuses.map(Self.featureCheckboxItem),
+            selected: selectedIDs,
+            reservedBottomRows: statusBar.reservedRowsForOverlay()
+        )
+        if let requestedIDs {
+            await applyFeatureSelection(
+                requestedIDs: requestedIDs,
+                statuses: sortedStatuses
+            )
+        }
+    }
+
     func handleFeatureCommand(_ command: String) async -> TerminalFeatureCommandResult {
         let rawArguments = String(command.dropFirst("/feature".count))
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -97,6 +132,49 @@ extension TerminalChat {
             includeDisabled: true
         )
         writeSystemMessage(Self.renderFeatureStatusList(statuses))
+    }
+
+    private func applyFeatureSelection(
+        requestedIDs: Set<String>,
+        statuses: [SwiftFeatureStatus]
+    ) async {
+        let enabledIDs = Set(statuses.filter(\.enabled).map(\.id))
+        let idsToEnable = requestedIDs.subtracting(enabledIDs)
+        let idsToDisable = enabledIDs.subtracting(requestedIDs)
+
+        var changed = false
+        for status in statuses where idsToEnable.contains(status.id) {
+            changed = await setFeatureEnabled(
+                id: status.id,
+                enabled: true
+            ) || changed
+        }
+        for status in statuses where idsToDisable.contains(status.id) {
+            changed = await setFeatureEnabled(id: status.id, enabled: false) || changed
+        }
+
+        if changed {
+            await updateCurrentSessionToolOptions(discoverExternalTools: false)
+        }
+    }
+
+    @discardableResult
+    private func setFeatureEnabled(
+        id: String,
+        enabled: Bool
+    ) async -> Bool {
+        let didSucceed = await runFeatureManagementTool(
+            name: enabled ? "feature.enable" : "feature.disable",
+            arguments: ["id": id]
+        )
+        guard didSucceed else {
+            return false
+        }
+
+        if !enabled {
+            selectedToolKeys.remove(TerminalToolSelectionCatalog.featurePackageKey(id: id))
+        }
+        return true
     }
 
     private func runJiraFeatureSetupBeforeEnable() async -> Bool {
@@ -478,6 +556,10 @@ extension TerminalChat {
         "Usage: /feature [list|reload|enable <id|name|#>|disable <id|name|#>|delete <id|name|#>|build <id|name|#>|validate <id|name|#>]\n"
     }
 
+    public static func renderFeaturesCommandUsage() -> String {
+        "Usage: /features\n"
+    }
+
     public static func renderFeatureBuilderInactiveWarning() -> String {
         renderFeatureCommandUnavailableForAgent()
     }
@@ -505,7 +587,7 @@ extension TerminalChat {
 
         var lines = ["Feature '\(id)' \(actions.joined(separator: ", "))."]
         if !enabled {
-            lines.append("It is not active yet. Enable it with /feature enable \(id), then select it from /tools.")
+            lines.append("It is not active yet. Enable it from /features, then select it from /tools.")
         } else if !selected {
             lines.append("It is enabled. Select it from /tools to expose its tools in this session.")
         } else {
@@ -765,8 +847,17 @@ extension TerminalChat {
                 "  \(offset + 1). \(featureDisplayName(status)) [\(status.id)] - \(state)\(availability), \(source)\(tools)\n"
             )
         }
-        lines.append("\nUse /feature enable <id|name|#>, /feature disable <id|name|#>, or /feature delete <id|name|#>.\n")
+        lines.append("\nRun /features to open the enable/disable menu. Builder-only management remains under /feature.\n")
         return lines.joined()
+    }
+
+    static func featureCheckboxItem(_ status: SwiftFeatureStatus) -> TerminalCheckboxMenuItem<String> {
+        TerminalCheckboxMenuItem(
+            value: status.id,
+            title: "\(featureDisplayName(status)) [\(status.id)]",
+            detail: featureMenuDetail(status),
+            groupTitle: status.source == .bundled ? "Bundled" : "Generated"
+        )
     }
 
     public static func resolvedFeatureID(
@@ -840,6 +931,8 @@ extension TerminalChat {
             return "Web"
         case "mlx-git-tools":
             return "Git"
+        case "mlx-jira-tools":
+            return "Jira"
         case "mlx-xcode-tools":
             return "Xcode"
         case "mlx-figma-tools":
@@ -847,6 +940,12 @@ extension TerminalChat {
         default:
             return featureWizardDisplayName(from: status.id)
         }
+    }
+
+    private static func featureMenuDetail(_ status: SwiftFeatureStatus) -> String {
+        let availability = status.available ? "available" : "unavailable"
+        let tools = featureStatusToolsSummary(status)
+        return "\(availability)\(tools)"
     }
 
     private static func featureLookupKeys(_ status: SwiftFeatureStatus) -> Set<String> {
