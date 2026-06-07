@@ -107,6 +107,12 @@ public final class TerminalStatusBar: @unchecked Sendable {
         }
         let newReservedRows = reservedBottomRowsLocked()
         if !hadInputPanel || oldReservedRows != newReservedRows {
+            if newReservedRows > oldReservedRows {
+                scrollOutputRegionUpLocked(
+                    by: newReservedRows - oldReservedRows,
+                    reservedRows: oldReservedRows
+                )
+            }
             clearReservedRowsLocked(count: max(oldReservedRows, newReservedRows))
             writeScrollRegionLocked(moveCursorToPrompt: true)
         }
@@ -287,6 +293,21 @@ public final class TerminalStatusBar: @unchecked Sendable {
             sequence += "\u{1B}[\(scrollBottom);1H"
         }
         writeLocked(sequence)
+    }
+
+    private func scrollOutputRegionUpLocked(by count: Int, reservedRows: Int) {
+        guard count > 0, row > reservedRows else {
+            return
+        }
+
+        let scrollBottom = max(1, row - reservedRows)
+        let scrollTop = 1
+        let newlines = String(repeating: "\n", count: count)
+        writeLocked(
+            "\u{1B}[\(scrollTop);\(scrollBottom)r"
+                + "\u{1B}[\(scrollBottom);1H"
+                + newlines
+        )
     }
 
     private func renderLocked() {

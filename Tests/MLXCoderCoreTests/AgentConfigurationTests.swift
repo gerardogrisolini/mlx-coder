@@ -718,7 +718,7 @@ struct AgentConfigurationTests {
     }
 
     @Test
-    func terminalSessionConfigurationUsesStableProjectCacheKeyByDefault() throws {
+    func terminalSessionConfigurationUsesSessionIDCacheKeyByDefault() throws {
         let workingDirectory = URL(
             fileURLWithPath: "/tmp/mlx-coder-cache-project",
             isDirectory: true
@@ -737,12 +737,7 @@ struct AgentConfigurationTests {
             allowedToolNames: []
         )
 
-        #expect(
-            sessionConfiguration.cacheKey
-                == AgentKVCachePersistencePolicy.terminalDiskCacheKey(
-                    workingDirectoryPath: workingDirectory.path
-                )
-        )
+        #expect(sessionConfiguration.cacheKey == terminal.sessionID)
     }
 
     @Test

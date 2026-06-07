@@ -157,11 +157,20 @@ extension TerminalChat {
             do {
                 let audio = try await self.telegramControlService.downloadVoiceAudio(voice)
                 let transcript = try await AgentVoiceTranscriptionService()
-                    .transcribe(audio)
+                    .transcribe(audio) { message in
+                        await eventQueue.send(
+                            .voicePromptProgress(
+                                TerminalVoicePromptProgress(
+                                    origin: .telegramVoice(chatID: chatID),
+                                    message: message
+                                )
+                            )
+                        )
+                    }
                 await eventQueue.send(
                     .voicePromptCompleted(
                         TerminalVoicePromptResult(
-                            origin: .telegram(chatID: chatID),
+                            origin: .telegramVoice(chatID: chatID),
                             outcome: .success(transcript)
                         )
                     )
@@ -170,7 +179,7 @@ extension TerminalChat {
                 await eventQueue.send(
                     .voicePromptCompleted(
                         TerminalVoicePromptResult(
-                            origin: .telegram(chatID: chatID),
+                            origin: .telegramVoice(chatID: chatID),
                             outcome: .failure(error.localizedDescription)
                         )
                     )
@@ -240,6 +249,47 @@ extension TerminalChat {
         )
     }
 
+    func sendTelegramVoiceCompletionIfLinked(
+        _ text: String,
+        origin: TerminalPromptOrigin
+    ) async {
+        guard origin.isTelegramVoice,
+              let chatID = origin.telegramChatID,
+              telegramLinkedChatID == chatID,
+              telegramControlState.isActive else {
+            return
+        }
+        guard AgentVoiceSynthesisService.isSupported else {
+            await sendTelegramCompletionIfLinked(text, origin: origin)
+            return
+        }
+
+        do {
+            let spokenText = AgentVoiceSpokenTextFormatter.prepare(text)
+            if spokenText.isShortened {
+                await sendTelegramSystemMessage(
+                    "Voice: speaking a shortened reply for faster playback.",
+                    to: chatID
+                )
+            }
+            let audio = try await AgentVoiceSynthesisService()
+                .synthesize(spokenText.text) { message in
+                    await self.sendTelegramSystemMessage("Voice: \(message)", to: chatID)
+                }
+            defer {
+                audio.cleanup()
+            }
+            telegramControlState = try await telegramControlService.sendAudio(audio, to: chatID)
+        } catch {
+            telegramControlState.lastError = error.localizedDescription
+            writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
+            await sendTelegramSystemMessage(
+                "Voice reply failed: \(error.localizedDescription)",
+                to: chatID
+            )
+        }
+    }
+
     func sendTelegramSystemMessageIfLinked(_ message: String) async {
         guard let chatID = telegramLinkedChatID,
               telegramControlState.isActive else {
@@ -252,7 +302,7 @@ extension TerminalChat {
         _ message: String,
         origin: TerminalPromptOrigin
     ) async {
-        guard case let .telegram(chatID) = origin,
+        guard let chatID = origin.telegramChatID,
               telegramLinkedChatID == chatID,
               telegramControlState.isActive else {
             return
@@ -315,7 +365,7 @@ extension TerminalChat {
     func makeTelegramTurnProgressReporter(
         for origin: TerminalPromptOrigin
     ) -> TerminalTelegramTurnProgressReporter? {
-        guard case let .telegram(chatID) = origin,
+        guard let chatID = origin.telegramChatID,
               telegramLinkedChatID == chatID,
               telegramControlState.isActive else {
             return nil

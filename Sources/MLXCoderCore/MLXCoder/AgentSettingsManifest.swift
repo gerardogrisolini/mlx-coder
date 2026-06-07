@@ -285,7 +285,6 @@ public struct AgentVoiceSettingsManifest: Codable, Equatable, Sendable {
         case provider
         case executablePath
         case transcriptionModelID
-        case synthesisModelID
         case modelID
         case language
         case speaker
@@ -297,17 +296,15 @@ public struct AgentVoiceSettingsManifest: Codable, Equatable, Sendable {
 
     public static let defaultProvider: Provider = .local
     public static let defaultExecutablePath = "mlx-voice-transcriber"
-    public static let defaultTranscriptionModelID = "large-v3-v20240930_626MB"
-    public static let defaultSynthesisModelID = "0.6b"
+    public static let defaultTranscriptionModelID = "tiny"
     public static let defaultLanguage = "it"
-    public static let defaultSpeaker = "ryan"
+    public static let defaultSpeaker = "Alice"
     public static let defaultModelID = defaultTranscriptionModelID
 
     public let enabled: Bool
     public let provider: Provider
     public let executablePath: String
     public let transcriptionModelID: String
-    public let synthesisModelID: String
     public let language: String?
     public let speaker: String?
 
@@ -316,13 +313,11 @@ public struct AgentVoiceSettingsManifest: Codable, Equatable, Sendable {
         provider: Provider = Self.defaultProvider,
         modelID: String = Self.defaultModelID,
         executablePath: String = Self.defaultExecutablePath,
-        synthesisModelID: String = Self.defaultSynthesisModelID,
         language: String? = Self.defaultLanguage,
         speaker: String? = Self.defaultSpeaker
     ) {
         let normalizedExecutablePath = executablePath.nilIfBlank ?? Self.defaultExecutablePath
         let normalizedModelID = modelID.nilIfBlank ?? Self.defaultModelID
-        let normalizedSynthesisModelID = synthesisModelID.nilIfBlank ?? Self.defaultSynthesisModelID
         let normalizedLanguage = language?.nilIfBlank
         let normalizedSpeaker = speaker?.nilIfBlank
         let shouldStoreConfiguration = enabled
@@ -336,9 +331,6 @@ public struct AgentVoiceSettingsManifest: Codable, Equatable, Sendable {
         self.transcriptionModelID = shouldStoreConfiguration
             ? normalizedModelID
             : Self.defaultModelID
-        self.synthesisModelID = shouldStoreConfiguration
-            ? normalizedSynthesisModelID
-            : Self.defaultSynthesisModelID
         self.language = shouldStoreConfiguration ? normalizedLanguage : nil
         self.speaker = shouldStoreConfiguration ? normalizedSpeaker : nil
     }
@@ -361,8 +353,6 @@ public struct AgentVoiceSettingsManifest: Codable, Equatable, Sendable {
             modelID: transcriptionModelID,
             executablePath: try container.decodeIfPresent(String.self, forKey: .executablePath)
                 ?? Self.defaultExecutablePath,
-            synthesisModelID: try container.decodeIfPresent(String.self, forKey: .synthesisModelID)
-                ?? Self.defaultSynthesisModelID,
             language: try container.decodeIfPresent(String.self, forKey: .language),
             speaker: try container.decodeIfPresent(String.self, forKey: .speaker)
                 ?? Self.defaultSpeaker
@@ -375,7 +365,6 @@ public struct AgentVoiceSettingsManifest: Codable, Equatable, Sendable {
         try container.encode(provider, forKey: .provider)
         try container.encode(executablePath, forKey: .executablePath)
         try container.encode(transcriptionModelID, forKey: .transcriptionModelID)
-        try container.encode(synthesisModelID, forKey: .synthesisModelID)
         if let language {
             try container.encode(language, forKey: .language)
         }

@@ -5,6 +5,8 @@
 
 import Foundation
 
+public typealias AgentVoiceTranscriptionProgress = AgentVoiceToolProgress
+
 public struct AgentVoiceAudioInput: Equatable, Sendable {
     public let fileURL: URL
     public let filename: String
@@ -38,7 +40,10 @@ public actor AgentVoiceTranscriptionService {
         self.settings = settings
     }
 
-    public func transcribe(_ audio: AgentVoiceAudioInput) async throws -> String {
+    public func transcribe(
+        _ audio: AgentVoiceAudioInput,
+        progress: AgentVoiceTranscriptionProgress? = nil
+    ) async throws -> String {
         defer {
             audio.cleanup()
         }
@@ -50,14 +55,15 @@ public actor AgentVoiceTranscriptionService {
             throw AgentVoiceTranscriptionError.missingAudioFile(audio.fileURL.path)
         }
 
-        let result = try await Self.runVoiceTool(
+        let result = try await AgentVoiceToolRunner.run(
             executablePath: settings.executablePath,
-            arguments: Self.transcriptionArguments(settings: settings, audioURL: audio.fileURL)
+            arguments: Self.transcriptionArguments(settings: settings, audioURL: audio.fileURL),
+            progress: progress
         )
         guard result.exitCode == 0 else {
             throw AgentVoiceTranscriptionError.toolFailed(
                 result.exitCode,
-                result.stderr.nilIfBlank
+                AgentVoiceToolRunner.errorDetail(from: result.stderr)
             )
         }
 
@@ -94,67 +100,8 @@ public actor AgentVoiceTranscriptionService {
         return arguments
     }
 
-    private nonisolated static func runVoiceTool(
-        executablePath: String,
-        arguments: [String]
-    ) async throws -> AgentVoiceToolResult {
-        try await Task.detached(priority: .userInitiated) {
-            let launch = Self.launchConfiguration(
-                executablePath: executablePath,
-                arguments: arguments
-            )
-            let process = Process()
-            process.executableURL = launch.executableURL
-            process.arguments = launch.arguments
-
-            let stdoutURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("mlx-coder-voice-stdout-\(UUID().uuidString)")
-            let stderrURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent("mlx-coder-voice-stderr-\(UUID().uuidString)")
-            FileManager.default.createFile(atPath: stdoutURL.path, contents: nil)
-            FileManager.default.createFile(atPath: stderrURL.path, contents: nil)
-
-            let stdoutHandle = try FileHandle(forWritingTo: stdoutURL)
-            let stderrHandle = try FileHandle(forWritingTo: stderrURL)
-            process.standardOutput = stdoutHandle
-            process.standardError = stderrHandle
-
-            do {
-                try process.run()
-                process.waitUntilExit()
-            } catch {
-                try? stdoutHandle.close()
-                try? stderrHandle.close()
-                try? FileManager.default.removeItem(at: stdoutURL)
-                try? FileManager.default.removeItem(at: stderrURL)
-                throw error
-            }
-
-            try stdoutHandle.close()
-            try stderrHandle.close()
-            defer {
-                try? FileManager.default.removeItem(at: stdoutURL)
-                try? FileManager.default.removeItem(at: stderrURL)
-            }
-
-            let stdout = (try? String(contentsOf: stdoutURL, encoding: .utf8)) ?? ""
-            let stderr = (try? String(contentsOf: stderrURL, encoding: .utf8)) ?? ""
-            return AgentVoiceToolResult(
-                exitCode: process.terminationStatus,
-                stdout: stdout,
-                stderr: stderr
-            )
-        }.value
-    }
-
-    private nonisolated static func launchConfiguration(
-        executablePath: String,
-        arguments: [String]
-    ) -> (executableURL: URL, arguments: [String]) {
-        if executablePath.contains("/") {
-            return (URL(fileURLWithPath: executablePath), arguments)
-        }
-        return (URL(fileURLWithPath: "/usr/bin/env"), [executablePath] + arguments)
+    public nonisolated static func voiceProgressMessage(from line: String) -> String? {
+        AgentVoiceToolRunner.progressMessage(from: line)
     }
 }
 
@@ -183,12 +130,6 @@ public enum AgentVoiceTranscriptionError: LocalizedError, Sendable, Equatable {
             return "Voice transcription failed with exit code \(exitCode)."
         }
     }
-}
-
-private struct AgentVoiceToolResult: Sendable {
-    let exitCode: Int32
-    let stdout: String
-    let stderr: String
 }
 
 private struct LocalVoiceTranscriptionResponse: Decodable {

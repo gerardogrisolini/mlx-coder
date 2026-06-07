@@ -3,10 +3,15 @@
 //  mlx-voice-transcriber
 //
 
-import Darwin
 import Foundation
-import TTSKit
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+#if canImport(WhisperKit)
 import WhisperKit
+#endif
 
 @main
 struct MLXVoiceTranscriberMain {
@@ -28,17 +33,20 @@ struct MLXVoiceTranscriberMain {
     }
 
     private static func transcribe(_ options: TranscribeOptions) async throws {
+        #if canImport(WhisperKit)
         let audioURL = URL(fileURLWithPath: options.audioPath)
         guard FileManager.default.fileExists(atPath: audioURL.path) else {
             throw VoiceToolError.missingFile(audioURL.path)
         }
 
+        writeStatus("Loading speech model \(options.model)...")
         let whisperKit = try await WhisperKit(
             WhisperKitConfig(
                 model: options.model,
                 verbose: options.verbose
             )
         )
+        writeStatus("Transcribing audio...")
         let decodeOptions = DecodingOptions(
             verbose: options.verbose,
             language: options.language,
@@ -56,6 +64,7 @@ struct MLXVoiceTranscriberMain {
             throw VoiceToolError.emptyTranscript
         }
 
+        writeStatus("Transcript ready.")
         switch options.format {
         case .json:
             try writeJSON(
@@ -68,41 +77,57 @@ struct MLXVoiceTranscriberMain {
         case .text:
             print(text)
         }
+        #else
+        _ = options
+        throw VoiceToolError.unsupportedTranscription
+        #endif
     }
 
     private static func synthesize(_ options: SynthesizeOptions) async throws {
+        #if os(macOS)
         let outputURL = URL(fileURLWithPath: options.outputPath)
         let outputFolder = outputURL.deletingLastPathComponent()
-        let outputFilename = outputURL.lastPathComponent.nilIfBlank ?? "speech.\(options.audioFormat.rawValue)"
+        try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
 
-        let tts = try await TTSKit(
-            TTSKitConfig(model: options.model.variant)
-        )
-        var generationOptions = GenerationOptions()
-        generationOptions.instruction = options.instruction
+        let systemVoice = options.voice?.nilIfBlank
+            ?? Self.defaultSystemVoice(for: options.language)
+        let intermediateURL = outputFolder
+            .appendingPathComponent("mlx-voice-\(UUID().uuidString)")
+            .appendingPathExtension("aiff")
+        defer {
+            try? FileManager.default.removeItem(at: intermediateURL)
+        }
 
-        let result = try await tts.generate(
-            text: options.text,
-            voice: options.speaker,
-            language: options.language,
-            options: generationOptions
+        writeStatus("Generating speech with \(systemVoice)...")
+        try runProcess(
+            executablePath: "/usr/bin/say",
+            arguments: ["-v", systemVoice, "-o", intermediateURL.path, options.text]
         )
-        let writtenURL = try await AudioOutput.saveAudio(
-            result.audio,
-            toFolder: outputFolder,
-            filename: outputFilename,
-            sampleRate: result.sampleRate,
-            format: options.audioFormat.ttsFormat
-        )
+        switch options.audioFormat {
+        case .m4a:
+            try runProcess(
+                executablePath: "/usr/bin/afconvert",
+                arguments: ["-f", "m4af", "-d", "aac", intermediateURL.path, outputURL.path]
+            )
+        case .wav:
+            try runProcess(
+                executablePath: "/usr/bin/afconvert",
+                arguments: ["-f", "WAVE", "-d", "LEI16", intermediateURL.path, outputURL.path]
+            )
+        }
 
+        writeStatus("Speech ready.")
         try writeJSON(
             SynthesisResponse(
-                audioPath: writtenURL.path,
-                format: writtenURL.pathExtension,
-                sampleRate: result.sampleRate,
-                duration: result.audioDuration
+                audioPath: outputURL.path,
+                format: outputURL.pathExtension,
+                voice: systemVoice
             )
         )
+        #else
+        _ = options
+        throw VoiceToolError.unsupportedAudioSynthesis
+        #endif
     }
 
     private static func writeJSON<T: Encodable>(_ value: T) throws {
@@ -113,14 +138,68 @@ struct MLXVoiceTranscriberMain {
         FileHandle.standardOutput.write(Data("\n".utf8))
     }
 
+    private static func writeStatus(_ message: String) {
+        FileHandle.standardError.write(Data("[mlx-voice] \(message)\n".utf8))
+    }
+
+    private static func defaultSystemVoice(for language: String?) -> String {
+        switch language?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "it", "italian", "italiano":
+            return "Alice"
+        case "en", "english":
+            return "Samantha"
+        case "es", "spanish":
+            return "Paulina"
+        case "fr", "french":
+            return "Thomas"
+        case "de", "german", "deutsch":
+            return "Anna"
+        case "pt", "portuguese":
+            return "Joana"
+        case "ja", "japanese":
+            return "Kyoko"
+        case "ko", "korean":
+            return "Yuna"
+        case "zh", "chinese":
+            return "Tingting"
+        case "ru", "russian":
+            return "Milena"
+        default:
+            return "Samantha"
+        }
+    }
+
+    private static func runProcess(
+        executablePath: String,
+        arguments: [String]
+    ) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+        let standardError = Pipe()
+        process.standardError = standardError
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            let data = standardError.fileHandleForReading.readDataToEndOfFile()
+            let detail = String(data: data, encoding: .utf8)
+            throw VoiceToolError.processFailed(
+                URL(fileURLWithPath: executablePath).lastPathComponent,
+                process.terminationStatus,
+                detail
+            )
+        }
+    }
+
     private static let usage = """
     Usage:
       mlx-voice-transcriber transcribe --audio <path> [--model <model>] [--language <code>] [--format json|text]
-      mlx-voice-transcriber synthesize --text <text> --output <path> [--model 0.6b|1.7b] [--language <language>] [--speaker <speaker>] [--format m4a|wav]
+      mlx-voice-transcriber synthesize --text <text> --output <path> [--language <language>] [--voice <system-voice>] [--format m4a|wav]
 
     Examples:
-      mlx-voice-transcriber transcribe --audio prompt.m4a --model large-v3-v20240930_626MB --language it
-      mlx-voice-transcriber synthesize --text "Ciao" --output reply.m4a --language italian --speaker ryan
+      mlx-voice-transcriber transcribe --audio prompt.m4a --model tiny --language it
+      mlx-voice-transcriber synthesize --text "Ciao" --output reply.m4a --language it --voice Alice
     """
 }
 
@@ -159,7 +238,7 @@ private struct TranscribeOptions {
     init(arguments: [String]) throws {
         var parser = ArgumentParser(arguments)
         audioPath = try parser.requiredValue(for: "--audio")
-        model = parser.value(for: "--model") ?? "large-v3-v20240930_626MB"
+        model = parser.value(for: "--model") ?? "tiny"
         language = parser.value(for: "--language")
         format = try OutputFormat(rawValue: parser.value(for: "--format") ?? "json")
             .orThrow(VoiceToolError.invalidValue("--format"))
@@ -171,10 +250,8 @@ private struct TranscribeOptions {
 private struct SynthesizeOptions {
     var text: String
     var outputPath: String
-    var model: SynthesisModel
     var language: String?
-    var speaker: String?
-    var instruction: String?
+    var voice: String?
     var audioFormat: AudioFormat
 
     init(arguments: [String]) throws {
@@ -192,11 +269,8 @@ private struct SynthesizeOptions {
         }
 
         outputPath = try parser.requiredValue(for: "--output")
-        model = try SynthesisModel(rawValue: parser.value(for: "--model") ?? "0.6b")
-            .orThrow(VoiceToolError.invalidValue("--model"))
-        language = Self.normalizedSynthesisLanguage(parser.value(for: "--language"))
-        speaker = parser.value(for: "--speaker")
-        instruction = parser.value(for: "--instruction")
+        language = parser.value(for: "--language")?.nilIfBlank?.lowercased()
+        voice = parser.value(for: "--voice")?.nilIfBlank
         audioFormat = try AudioFormat(rawValue: parser.value(for: "--format") ?? Self.outputFormat(from: outputPath))
             .orThrow(VoiceToolError.invalidValue("--format"))
         try parser.rejectUnused()
@@ -204,36 +278,6 @@ private struct SynthesizeOptions {
 
     private static func outputFormat(from path: String) -> String {
         URL(fileURLWithPath: path).pathExtension.nilIfBlank ?? "m4a"
-    }
-
-    private static func normalizedSynthesisLanguage(_ value: String?) -> String? {
-        guard let normalized = value?.nilIfBlank?.lowercased() else {
-            return nil
-        }
-        switch normalized {
-        case "en":
-            return "english"
-        case "zh", "cn":
-            return "chinese"
-        case "ja", "jp":
-            return "japanese"
-        case "ko":
-            return "korean"
-        case "de":
-            return "german"
-        case "fr":
-            return "french"
-        case "ru":
-            return "russian"
-        case "pt":
-            return "portuguese"
-        case "es":
-            return "spanish"
-        case "it":
-            return "italian"
-        default:
-            return normalized
-        }
     }
 }
 
@@ -245,29 +289,6 @@ private enum OutputFormat: String {
 private enum AudioFormat: String {
     case m4a
     case wav
-
-    var ttsFormat: AudioOutput.AudioFileFormat {
-        switch self {
-        case .m4a:
-            return .m4a
-        case .wav:
-            return .wav
-        }
-    }
-}
-
-private enum SynthesisModel: String {
-    case small = "0.6b"
-    case large = "1.7b"
-
-    var variant: TTSModelVariant {
-        switch self {
-        case .small:
-            return .qwen3TTS_0_6b
-        case .large:
-            return .qwen3TTS_1_7b
-        }
-    }
 }
 
 private struct TranscriptionResponse: Encodable {
@@ -279,8 +300,7 @@ private struct TranscriptionResponse: Encodable {
 private struct SynthesisResponse: Encodable {
     let audioPath: String
     let format: String
-    let sampleRate: Int
-    let duration: Double
+    let voice: String
 }
 
 private struct ArgumentParser {
@@ -338,6 +358,9 @@ private enum VoiceToolError: LocalizedError {
     case missingFile(String)
     case emptyTranscript
     case emptyText
+    case processFailed(String, Int32, String?)
+    case unsupportedTranscription
+    case unsupportedAudioSynthesis
 
     var errorDescription: String? {
         switch self {
@@ -355,6 +378,16 @@ private enum VoiceToolError: LocalizedError {
             return "transcription returned no text"
         case .emptyText:
             return "text is empty"
+        case let .processFailed(name, exitCode, detail):
+            let cleanedDetail = detail?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let cleanedDetail, !cleanedDetail.isEmpty {
+                return "\(name) failed with exit code \(exitCode): \(cleanedDetail)"
+            }
+            return "\(name) failed with exit code \(exitCode)"
+        case .unsupportedTranscription:
+            return "speech transcription is not supported in this build"
+        case .unsupportedAudioSynthesis:
+            return "audio generation is available only on macOS"
         }
     }
 }

@@ -20,8 +20,11 @@ let package = Package(
         .executableTarget(
             name: "MLXVoiceTranscriber",
             dependencies: [
-                .product(name: "WhisperKit", package: "argmax-oss-swift"),
-                .product(name: "TTSKit", package: "argmax-oss-swift")
+                .product(
+                    name: "WhisperKit",
+                    package: "argmax-oss-swift",
+                    condition: .when(platforms: [.macOS])
+                )
             ]
         )
     ]

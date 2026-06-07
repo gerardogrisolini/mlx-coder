@@ -18,6 +18,7 @@ enum TerminalChatCommandAvailability: Sendable, Equatable {
     case builderAgent
     case telegramEnabled
     case voiceEnabled
+    case voiceSynthesisEnabled
 }
 
 extension TerminalChat {
@@ -25,14 +26,16 @@ extension TerminalChat {
         Self.visibleCommandDescriptors(
             builderAgentEnabled: AgentProfileStore.isBuilderAgent(selectedAgent),
             telegramEnabled: isTelegramConfigured(),
-            voiceEnabled: isVoiceConfigured()
+            voiceEnabled: isVoiceConfigured(),
+            voiceSynthesisEnabled: isVoiceSynthesisConfigured()
         )
     }
 
     static func visibleCommandDescriptors(
         builderAgentEnabled: Bool,
         telegramEnabled: Bool,
-        voiceEnabled: Bool
+        voiceEnabled: Bool,
+        voiceSynthesisEnabled: Bool? = nil
     ) -> [TerminalChatCommandDescriptor] {
         allCommandDescriptors.filter { descriptor in
             switch descriptor.availability {
@@ -44,6 +47,8 @@ extension TerminalChat {
                 return telegramEnabled
             case .voiceEnabled:
                 return voiceEnabled
+            case .voiceSynthesisEnabled:
+                return voiceSynthesisEnabled ?? voiceEnabled
             }
         }
     }
@@ -66,6 +71,10 @@ extension TerminalChat {
 
     func isVoiceCommandVisible() -> Bool {
         isVoiceConfigured()
+    }
+
+    func isVoiceSynthesisConfigured() -> Bool {
+        isVoiceConfigured() && AgentVoiceSynthesisService.isSupported
     }
 
     static func commandToken(from line: String) -> String? {
@@ -169,6 +178,12 @@ extension TerminalChat {
             summary: "record a voice prompt",
             help: "/voice starts recording. Press Enter again to stop and send the transcript.",
             availability: .voiceEnabled
+        ),
+        TerminalChatCommandDescriptor(
+            command: "/speak",
+            summary: "play last response aloud",
+            help: "/speak synthesizes and plays the last assistant response.",
+            availability: .voiceSynthesisEnabled
         ),
         TerminalChatCommandDescriptor(
             command: "/clear",

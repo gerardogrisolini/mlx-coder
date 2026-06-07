@@ -39,7 +39,7 @@ extension TerminalChat {
             bearerToken: configuration.bearerToken,
             workingDirectory: configuration.workingDirectory,
             systemPrompt: systemPrompt,
-            cacheKey: activeSessionCacheKey ?? diskCacheKey,
+            cacheKey: activeSessionCacheKey ?? sessionID,
             sessionRevision: 0,
             history: activeSessionHistory,
             allowedToolNames: allowedToolNames,

@@ -269,15 +269,27 @@ public enum MLXCoderSetupRunner {
             return nil
         }
 
+        #if os(macOS)
         print(
             """
 
             Voice uses a local Swift executable, mlx-voice-transcriber.
-            It provides speech-to-text with WhisperKit and text-to-speech with TTSKit.
+            It provides speech-to-text with WhisperKit and text-to-speech with macOS voices.
             No external API key is required.
 
             """
         )
+        #else
+        print(
+            """
+
+            Voice uses a local Swift executable, mlx-voice-transcriber.
+            Audio generation is available only on macOS and will not be enabled on this platform.
+            No external API key is required.
+
+            """
+        )
+        #endif
 
         let executablePath = try resolvedVoiceExecutableURL(existingSettings: existingSettings).path
         AgentOutput.standardError.writeString("Voice executable: \(executablePath)\n")
@@ -288,30 +300,27 @@ public enum MLXCoderSetupRunner {
             defaultValue: existingSettings?.modelID.nilIfBlank
                 ?? AgentVoiceSettingsManifest.defaultModelID
         )
-        let synthesisModelID = try selectVoiceSetupOption(
-            title: "Voice synthesis model",
-            options: voiceSynthesisModelOptions,
-            defaultValue: existingSettings?.synthesisModelID.nilIfBlank
-                ?? AgentVoiceSettingsManifest.defaultSynthesisModelID
-        )
         let language = try selectVoiceSetupOption(
             title: "Voice language",
             options: voiceLanguageOptions,
             defaultValue: existingSettings?.language?.nilIfBlank
                 ?? AgentVoiceSettingsManifest.defaultLanguage
         )
-        let speaker = try selectVoiceSetupOption(
-            title: "Voice synthesis speaker",
+        #if os(macOS)
+        let speaker: String? = try selectVoiceSetupOption(
+            title: "macOS synthesis voice",
             options: voiceSpeakerOptions,
             defaultValue: existingSettings?.speaker?.nilIfBlank
                 ?? AgentVoiceSettingsManifest.defaultSpeaker
         )
+        #else
+        let speaker: String? = nil
+        #endif
 
         return AgentVoiceSettingsManifest(
             enabled: true,
             modelID: modelID,
             executablePath: executablePath,
-            synthesisModelID: synthesisModelID,
             language: language,
             speaker: speaker
         )
@@ -319,27 +328,14 @@ public enum MLXCoderSetupRunner {
 
     private static let voiceTranscriptionModelOptions: [VoiceSetupOption] = [
         VoiceSetupOption(
-            value: "large-v3-v20240930_626MB",
-            title: "Whisper large-v3",
-            detail: "best multilingual accuracy"
-        ),
-        VoiceSetupOption(
             value: "tiny",
             title: "Whisper tiny",
-            detail: "fastest debug workflow"
-        )
-    ]
-
-    private static let voiceSynthesisModelOptions: [VoiceSetupOption] = [
-        VoiceSetupOption(
-            value: "0.6b",
-            title: "Qwen3 TTS 0.6B",
-            detail: "default, lighter"
+            detail: "fastest startup and short prompts"
         ),
         VoiceSetupOption(
-            value: "1.7b",
-            title: "Qwen3 TTS 1.7B",
-            detail: "larger, supports voice direction"
+            value: "large-v3-v20240930_626MB",
+            title: "Whisper large-v3",
+            detail: "best multilingual accuracy, slower first run"
         )
     ]
 
@@ -357,15 +353,17 @@ public enum MLXCoderSetupRunner {
     ]
 
     private static let voiceSpeakerOptions: [VoiceSetupOption] = [
-        VoiceSetupOption(value: "ryan", title: "Ryan", detail: "English male, dynamic"),
-        VoiceSetupOption(value: "aiden", title: "Aiden", detail: "English male, clear"),
-        VoiceSetupOption(value: "serena", title: "Serena", detail: "female, warm"),
-        VoiceSetupOption(value: "vivian", title: "Vivian", detail: "female, bright"),
-        VoiceSetupOption(value: "dylan", title: "Dylan", detail: "male, natural"),
-        VoiceSetupOption(value: "eric", title: "Eric", detail: "male, lively"),
-        VoiceSetupOption(value: "sohee", title: "Sohee", detail: "Korean female"),
-        VoiceSetupOption(value: "ono-anna", title: "Ono Anna", detail: "Japanese female"),
-        VoiceSetupOption(value: "uncle-fu", title: "Uncle Fu", detail: "male, low")
+        VoiceSetupOption(value: "Alice", title: "Alice", detail: "Italiano"),
+        VoiceSetupOption(value: "Samantha", title: "Samantha", detail: "English US"),
+        VoiceSetupOption(value: "Daniel", title: "Daniel", detail: "English UK"),
+        VoiceSetupOption(value: "Paulina", title: "Paulina", detail: "Spanish"),
+        VoiceSetupOption(value: "Thomas", title: "Thomas", detail: "French"),
+        VoiceSetupOption(value: "Anna", title: "Anna", detail: "German"),
+        VoiceSetupOption(value: "Joana", title: "Joana", detail: "Portuguese"),
+        VoiceSetupOption(value: "Kyoko", title: "Kyoko", detail: "Japanese"),
+        VoiceSetupOption(value: "Yuna", title: "Yuna", detail: "Korean"),
+        VoiceSetupOption(value: "Tingting", title: "Tingting", detail: "Chinese"),
+        VoiceSetupOption(value: "Milena", title: "Milena", detail: "Russian")
     ]
 
     private static func selectVoiceSetupOption(

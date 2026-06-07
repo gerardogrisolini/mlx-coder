@@ -19,11 +19,6 @@ public final class TerminalChat: @unchecked Sendable {
     public let interactiveReader = TerminalInteractiveLineReader()
     public let permissionAuthorizer: LocalExecPermissionAuthorizer
     public var sessionID = TerminalChat.newTerminalSessionID()
-    public var diskCacheKey: String {
-        AgentKVCachePersistencePolicy.terminalDiskCacheKey(
-            workingDirectoryPath: configuration.workingDirectory.path
-        )
-    }
     public var activeSessionCacheKey: String?
     public var activeSessionHistory: [AgentRuntimeMessage] = []
     public var activeSessionTranscript: [AgentRuntimeMessage] = []
@@ -64,6 +59,7 @@ public final class TerminalChat: @unchecked Sendable {
     public var telegramLinkedChatTitle: String?
     public let voiceRecordingService = TerminalVoiceRecordingService()
     public var activeVoiceRecordingSession: TerminalVoiceRecordingSession?
+    public var lastAssistantResponseText: String?
 
     public let statusBar: TerminalStatusBar
 
@@ -380,8 +376,8 @@ public final class TerminalChat: @unchecked Sendable {
                     if isGenerating {
                         if Self.isSubAgentsCommand(line) {
                             _ = await handleSubmittedPanelLine(line)
-                        } else if Self.isVoiceCommand(line) {
-                            writeFailureMessage("mlx-coder: /voice is unavailable while a prompt is running.\n")
+                        } else if Self.isVoiceCommand(line) || Self.isSpeakCommand(line) {
+                            writeFailureMessage("mlx-coder: voice commands are unavailable while a prompt is running.\n")
                         } else {
                             queuedPrompts.append(TerminalQueuedPrompt(text: line, origin: .local))
                             interactiveReader.setQueuedPromptCount(queuedPrompts.count)
@@ -424,6 +420,20 @@ public final class TerminalChat: @unchecked Sendable {
                     eventQueue: eventQueue
                 )
                 interactiveReader.setQueuedPromptCount(queuedPrompts.count)
+            case let .voicePromptProgress(progress):
+                if progress.origin == .local {
+                    interactiveReader.setPanelModeOverride(
+                        TerminalPanelModeOverride(
+                            modeText: "Transcribing voice",
+                            helpText: progress.message
+                        )
+                    )
+                    writeSystemMessage("Voice: \(progress.message)\n")
+                }
+                await sendTelegramSystemMessageIfLinked(
+                    "Voice: \(progress.message)",
+                    origin: progress.origin
+                )
             case let .voicePromptCompleted(result):
                 if result.origin == .local {
                     voiceTranscriptionTask = nil
@@ -467,7 +477,10 @@ public final class TerminalChat: @unchecked Sendable {
 
     private static func shouldSuspendPanelInput(for line: String) -> Bool {
         let prompt = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        return prompt.hasPrefix("/")
+        guard prompt.hasPrefix("/") else {
+            return false
+        }
+        return !isSpeakCommand(prompt)
     }
 
     private static func isSubAgentsCommand(_ line: String) -> Bool {
@@ -478,6 +491,11 @@ public final class TerminalChat: @unchecked Sendable {
     private static func isVoiceCommand(_ line: String) -> Bool {
         let prompt = line.trimmingCharacters(in: .whitespacesAndNewlines)
         return prompt == "/voice" || prompt.hasPrefix("/voice ")
+    }
+
+    private static func isSpeakCommand(_ line: String) -> Bool {
+        let prompt = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        return prompt == "/speak" || prompt.hasPrefix("/speak ")
     }
 
     private func renderHelpTextForCurrentAgent() -> String {
@@ -606,6 +624,13 @@ public final class TerminalChat: @unchecked Sendable {
             }
             await handleVoiceCommand(command)
             return .continueChat
+        case let command where command == "/speak" || command.hasPrefix("/speak "):
+            guard isVoiceSynthesisConfigured() else {
+                writeFailureMessage(Self.unknownCommandMessage(for: command))
+                return .continueChat
+            }
+            await handleSpeakCommand(command)
+            return .continueChat
         case "/clear":
             do {
                 await sessionRunner.resetSession(id: sessionID)
@@ -620,6 +645,7 @@ public final class TerminalChat: @unchecked Sendable {
                 refreshInitialStatusBarContextWindow()
                 pendingAttachments.removeAll()
                 lastFailedPrompt = nil
+                lastAssistantResponseText = nil
                 isSubAgentOverviewVisible = false
                 lastRenderedSubAgentOverviewSignature = nil
                 stopSubAgentOverviewRefreshLoop()
@@ -856,14 +882,17 @@ public final class TerminalChat: @unchecked Sendable {
             finishAssistantContentFormatting()
             printModelIfNeeded(response.modelID)
             let responseText = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let completionText = responseText.isEmpty ? "Done." : responseText
+            lastAssistantResponseText = completionText
             if responseText.isEmpty {
                 writeChatOutput("Done.")
             }
             writeChatOutput("\n")
-            await sendTelegramCompletionIfLinked(
-                responseText.isEmpty ? "Done." : responseText,
-                origin: origin
-            )
+            if origin.isTelegramVoice {
+                await sendTelegramVoiceCompletionIfLinked(completionText, origin: origin)
+            } else {
+                await sendTelegramCompletionIfLinked(completionText, origin: origin)
+            }
         case let .failure(failure):
             finishThoughtOutputIfNeeded()
             finishAssistantContentFormatting()
@@ -928,6 +957,23 @@ struct TerminalChatGenerationFailure: Sendable {
 enum TerminalPromptOrigin: Sendable, Equatable {
     case local
     case telegram(chatID: Int64)
+    case telegramVoice(chatID: Int64)
+
+    var telegramChatID: Int64? {
+        switch self {
+        case .local:
+            return nil
+        case let .telegram(chatID), let .telegramVoice(chatID):
+            return chatID
+        }
+    }
+
+    var isTelegramVoice: Bool {
+        if case .telegramVoice = self {
+            return true
+        }
+        return false
+    }
 }
 
 struct TerminalQueuedPrompt: Sendable, Equatable {
@@ -958,6 +1004,16 @@ struct TerminalVoicePromptResult: Sendable {
     enum Outcome: Sendable {
         case success(String)
         case failure(String)
+    }
+}
+
+struct TerminalVoicePromptProgress: Sendable {
+    let origin: TerminalPromptOrigin
+    let message: String
+
+    init(origin: TerminalPromptOrigin, message: String) {
+        self.origin = origin
+        self.message = message.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -1073,6 +1129,7 @@ enum TerminalChatRuntimeEvent: Sendable {
     case input(TerminalPromptInputEvent)
     case generationCompleted(TerminalChatGenerationResult)
     case telegramMessage(TerminalTelegramIncomingMessage)
+    case voicePromptProgress(TerminalVoicePromptProgress)
     case voicePromptCompleted(TerminalVoicePromptResult)
 }
 
