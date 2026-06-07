@@ -4,7 +4,6 @@
 //
 
 import Foundation
-import MLXCoderCore
 import MLXServerCore
 
 enum MLXServerResetConfigurationCommand {
@@ -21,11 +20,7 @@ enum MLXServerResetConfigurationCommand {
     static func run(fileManager: FileManager = .default) throws {
         let fileURLs = uniqueURLs([
             MLXServerSettingsStore.settingsURL(fileManager: fileManager),
-            MLXServerModelsManifestStore.modelsURL(fileManager: fileManager),
-            MLXAgentsContextService(fileManager: fileManager).globalAgentsFileURL(),
-            MLXMemoryService(fileManager: fileManager).globalMemoryFileURL(),
-            AgentProfileStore.agentsManifestURL(fileManager: fileManager),
-            AgentSettingsManifestStore.settingsURL(fileManager: fileManager)
+            MLXServerModelsManifestStore.modelsURL(fileManager: fileManager)
         ])
 
         var removed: [URL] = []

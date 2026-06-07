@@ -42,9 +42,12 @@ Create or update agent profiles:
 swift run -c release mlx-coder --setup-agents
 ```
 
-The first setup creates files under `~/.mlx-coder/`:
+The first setup creates files under `~/.mlx-coder/`. During setup you can also
+enable Telegram remote control, pair the bot once, enable local voice tools, and
+store those settings in `settings.json`.
 
-- `settings.json`: provider/model configuration and selected model.
+- `settings.json`: provider/model configuration, selected model, optional Telegram remote control token plus linked chat, and optional local voice tool settings.
+- `permissions.json`: persistent runtime approvals such as allowed `local.exec` commands.
 - `agents.json`: agent profiles, model overrides, tool selection, symbols, and instructions.
 - `AGENTS.md`: global operating guidance for the agent.
 - `MEMORY.md`: lightweight global resume index used only when a session does not start in a clear project.
@@ -54,13 +57,14 @@ The first setup creates files under `~/.mlx-coder/`:
 ## Command Line Options
 
 ```text
-mlx-coder [--setup] [--setup-agents] [--acp] [--agent NAME] [--model MODEL_ID] [--cwd PATH] [--skills LIST]
+mlx-coder [--setup] [--setup-agents] [--reset] [--acp] [--agent NAME] [--model MODEL_ID] [--cwd PATH] [--skills LIST]
 ```
 
 Important options:
 
 - `--setup`: create standalone support files and configure providers/models, then exit.
 - `--setup-agents`: create or update `~/.mlx-coder/agents.json`, then exit.
+- `--reset`: delete managed files in `~/.mlx-coder/`, then exit.
 - `--acp`: run ACP JSON-RPC over stdio instead of terminal chat.
 - `--agent NAME`: select an agent profile from `agents.json`; defaults to `Default` when omitted.
 - `--model MODEL_ID`: override the agent-selected model for this run. Accepted forms include a model id, `remoteapimodel:<uuid>`, or `remoteapi:<uuid>`.
@@ -115,7 +119,7 @@ Switching profiles resets the active conversation so the new system prompt and t
 Inside chat mode, type a prompt and press return. Commands start with `/`:
 
 - `/help`: show command help.
-- `/models`: show configured models and switch the default model.
+- `/models`: show configured models and switch the current session model.
 - `/agents [list|<agent name>|<number>]`: switch agent profile.
 - `/tools [all|none|tool-name|package-name|tool-number]`: select which tool groups are exposed to the model.
 - `/skills`: select installed prompt skills or install a skill from GitHub/local folder.
@@ -131,6 +135,12 @@ Inside chat mode, type a prompt and press return. Commands start with `/`:
 - `/undo`: revert the most recent tracked file changes created by the agent.
 - `/subagents`: show delegated sub-agent status.
 - `/subagents off`: hide automatic sub-agent status updates.
+- `/telegram`: show Telegram status for the current TUI session.
+- `/telegram on`: turn Telegram on for the current TUI session.
+- `/telegram off`: turn Telegram off for the current TUI session.
+  This command is available only after Telegram was enabled and paired during `mlx-coder --setup`; otherwise it is treated as unknown.
+- `/voice`: start recording a voice prompt. Press `Enter` again to stop; the transcript becomes the prompt.
+  This command is available only after local voice tools were enabled during `mlx-coder --setup`; otherwise it is treated as unknown.
 - `/clear`: reset the conversation.
 - `/exit`: close the session.
 
@@ -182,6 +192,47 @@ Use attachments for image or video context in models/providers that support it:
 ```
 
 Attachments are applied to the next prompt, then the session continues with the normal conversation history.
+
+## Local Voice Tools
+
+When installed from Homebrew, `mlx-voice-transcriber` is installed alongside
+`mlx-coder` and setup detects it automatically.
+
+In a source checkout, setup can build the local Swift voice executable
+automatically. You can also build it manually:
+
+```bash
+cd Tools/MLXVoiceTranscriber
+swift build -c release
+```
+
+Then enable voice tools during:
+
+```bash
+swift run -c release mlx-coder --setup
+```
+
+The setup discovers the installed `mlx-voice-transcriber` path automatically. If
+it is not installed but the source checkout is available, setup builds the local
+voice package and stores the produced release executable path. It then stores the
+selected speech-to-text model, text-to-speech model, language, and speaker in
+`settings.json`. No external API key is required.
+
+In the TUI, run:
+
+```text
+/voice
+```
+
+Recording starts immediately. Press `Enter` to stop recording; `mlx-coder`
+transcribes the audio and sends the transcript as the prompt. If Telegram remote
+control is active, Telegram voice messages use the same transcription pipeline.
+
+The voice executable also supports text-to-speech:
+
+```bash
+mlx-voice-transcriber synthesize --text "Ciao" --output reply.m4a --language italian --speaker ryan
+```
 
 ## Saved Sessions
 

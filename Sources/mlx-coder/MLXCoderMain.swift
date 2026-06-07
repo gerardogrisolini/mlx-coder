@@ -11,6 +11,21 @@ struct MLXCoderMain {
             return
         }
 
+        if MLXCoderResetConfigurationCommand.shouldRun(arguments: arguments) {
+            do {
+                try MLXCoderResetConfigurationCommand.run()
+                arguments = MLXCoderResetConfigurationCommand.argumentsAfterRemovingOption(
+                    arguments: arguments
+                )
+                if arguments.dropFirst().isEmpty {
+                    return
+                }
+            } catch {
+                AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
+                Foundation.exit(1)
+            }
+        }
+
         let didRequestSetup = MLXCoderSetupRunner.shouldRunSetup(arguments: arguments)
         let didRequestAgentSetup = MLXCoderAgentProfileSetupRunner.shouldRunSetup(arguments: arguments)
         if !didRequestSetup,
@@ -51,7 +66,7 @@ private enum MLXCoderStandaloneHelp {
         AgentConfiguration.helpText
             .replacingOccurrences(
                 of: "mlx-coder [--acp]",
-                with: "mlx-coder [--setup] [--setup-agents] [--acp]"
+                with: "mlx-coder [--setup] [--setup-agents] [--reset] [--acp]"
             )
             .replacingOccurrences(
                 of: "  --app                  App-hosted mode. Suppresses runtime chatter and requires explicit tool enablement.",
@@ -59,6 +74,7 @@ private enum MLXCoderStandaloneHelp {
                   --app                  App-hosted mode. Suppresses runtime chatter and requires explicit tool enablement.
                   --setup                Create standalone support files and configure providers/models, then exit.
                   --setup-agents         Create or update agent profiles in ~/.mlx-coder/agents.json, then exit.
+                  --reset                Delete managed files in ~/.mlx-coder, then exit.
                 """
             )
     }

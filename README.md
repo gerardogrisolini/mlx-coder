@@ -47,7 +47,7 @@ Or download a specific release from [GitHub Releases](https://github.com/gerardo
 
 ```bash
 tar xzf mlx-server-v0.1.1-macos-arm64.tar.gz
-sudo cp mlx-server mlx-coder /usr/local/bin/
+sudo cp mlx-server mlx-coder mlx-voice-transcriber /usr/local/bin/
 ```
 
 ### Build from Source
@@ -82,6 +82,7 @@ Detailed guides:
 
 - [mlx-coder guide](Docs/mlx-coder.md): standalone/ACP agent setup, profiles, tools, skills, sessions, memory, and dynamic features.
 - [mlx-server guide](Docs/mlx-server.md): setup, model catalog, HTTP APIs, metrics, benchmarking, and direct coder mode.
+- [Aion UI manual setup](Docs/aion-ui.md): manual ACP configuration for Aion UI.
 
 ## Why `mlx-server --coder`
 
@@ -141,17 +142,27 @@ Useful TUI commands:
 /changes     Review the latest tracked file changes
 /undo        Revert the latest tracked agent changes
 /feature     Manage generated Swift features with the Builder agent
+/telegram    Turn Telegram remote control on/off when paired in setup
+/voice       Record a voice prompt when local voice tools are enabled in setup
 /exit        Close the session
 ```
 
 `mlx-coder` stores its standalone configuration in `~/.mlx-coder/`:
 
-- `settings.json`: providers, models, and selected model.
+- `settings.json`: providers, models, selected model, optional Telegram remote control token plus linked chat, and optional local voice tool settings.
+- `permissions.json`: persistent runtime approvals such as allowed `local.exec` commands.
 - `agents.json`: agent profiles and defaults.
 - `AGENTS.md`: global operating guidance.
 - `MEMORY.md`: lightweight global resume index.
 - `sessions/`: saved per-project session snapshots.
 - `features/`: generated Swift feature packages.
+
+Local voice support is provided by the separate Swift package under
+`Tools/MLXVoiceTranscriber`, which builds the `mlx-voice-transcriber`
+executable for speech-to-text and text-to-speech. Homebrew installs that
+executable alongside `mlx-coder`; in a source checkout, `mlx-coder --setup` can
+build it automatically as a development fallback. During setup, the voice models,
+language, and speaker are selected from numbered lists.
 
 For a fully local model backend, prefer the `mlx-server --coder` workflow described above.
 
@@ -248,6 +259,8 @@ The setup can enable or disable owned entries for:
 
 When disabling an integration, setup removes only the entries it owns.
 
+For Aion UI, use the separate [manual setup guide](Docs/aion-ui.md). It is not configured by `--setup-agents`.
+
 ## Layout
 
 - `Sources/MLXCoderCore`: reusable coder agent runtime, TUI, tools, skills, ACP, prompt/config logic, memory, sessions, and feature management.
@@ -282,6 +295,7 @@ swift run -c release mlx-coder --setup
 swift run -c release mlx-coder --setup-agents
 swift run -c release mlx-coder --cwd /path/to/project
 swift run -c release mlx-coder --acp --cwd /path/to/project
+swift run -c release mlx-coder --reset
 
 swift run -c release mlx-server --help
 swift run -c release mlx-server --setup
@@ -297,10 +311,13 @@ swift run -c release mlx-server --reset-disk-cache
 ## Reset
 
 ```bash
+swift run -c release mlx-coder --reset
 swift run -c release mlx-server --reset
 swift run -c release mlx-server --reset-disk-cache
 ```
 
-`--reset` deletes managed configuration files in `~/.mlx-server/` and `~/.mlx-coder/`: `settings.json`, `models.json`, `agents.json`, `AGENTS.md`, and `MEMORY.md`.
+`mlx-coder --reset` deletes managed files in `~/.mlx-coder/`: `settings.json`, `permissions.json`, `agents.json`, `AGENTS.md`, and `MEMORY.md`.
 
-`--reset-disk-cache` empties the configured disk KV cache directory. If `settings.json` is missing, it uses the default `~/.mlx-server/KVCaches` location.
+`mlx-server --reset` deletes managed configuration files in `~/.mlx-server/`: `settings.json` and `models.json`.
+
+`mlx-server --reset-disk-cache` empties the configured disk KV cache directory. If `settings.json` is missing, it uses the default `~/.mlx-server/KVCaches` location.

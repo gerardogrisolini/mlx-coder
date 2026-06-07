@@ -10,13 +10,14 @@ import Foundation
 extension TerminalChat {
     public func publishFileChangeSummaryIfNeeded(
         from coordinator: TurnFileChangeCoordinator
-    ) async {
+    ) async -> TurnFileChangeSummary? {
         guard let summary = await coordinator.publishSummaryIfNeeded() else {
-            return
+            return nil
         }
 
         lastFileChangeSummary = summary
         writeFileChangeSummary(summary, includeDiff: false)
+        return summary
     }
 
     public func handleChangesCommand(_ command: String) {

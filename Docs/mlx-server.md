@@ -352,7 +352,7 @@ swift run -c release mlx-server --reset
 swift run -c release mlx-server --reset-disk-cache
 ```
 
-`--reset` deletes managed files in `~/.mlx-server/` and `~/.mlx-coder/`: `settings.json`, `models.json`, `agents.json`, `AGENTS.md`, and `MEMORY.md`.
+`--reset` deletes managed files in `~/.mlx-server/`: `settings.json` and `models.json`.
 
 `--reset-disk-cache` empties the configured disk KV cache directory. If settings are missing, it uses `~/.mlx-server/KVCaches`.
 

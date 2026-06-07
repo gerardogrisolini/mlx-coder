@@ -60,7 +60,13 @@ sudo mkdir -p "$FEATURES_DIR"
 # Install main binaries
 sudo cp "${TMPDIR}/mlx-server" "${INSTALL_DIR}/mlx-server"
 sudo cp "${TMPDIR}/mlx-coder" "${INSTALL_DIR}/mlx-coder"
+if [ -f "${TMPDIR}/mlx-voice-transcriber" ]; then
+    sudo cp "${TMPDIR}/mlx-voice-transcriber" "${INSTALL_DIR}/mlx-voice-transcriber"
+fi
 sudo chmod +x "${INSTALL_DIR}/mlx-server" "${INSTALL_DIR}/mlx-coder"
+if [ -f "${INSTALL_DIR}/mlx-voice-transcriber" ]; then
+    sudo chmod +x "${INSTALL_DIR}/mlx-voice-transcriber"
+fi
 
 if [ -f "${TMPDIR}/mlx.metallib" ]; then
     sudo cp "${TMPDIR}/mlx.metallib" "${INSTALL_DIR}/mlx.metallib"
@@ -84,6 +90,9 @@ echo "✓ mlx-server ${LATEST_TAG} installed successfully!"
 echo ""
 echo "  mlx-server   → ${INSTALL_DIR}/mlx-server"
 echo "  mlx-coder    → ${INSTALL_DIR}/mlx-coder"
+if [ -f "${INSTALL_DIR}/mlx-voice-transcriber" ]; then
+    echo "  voice tool   → ${INSTALL_DIR}/mlx-voice-transcriber"
+fi
 echo "  features     → ${FEATURES_DIR}/"
 echo ""
 echo "Make sure ${INSTALL_DIR} is in your PATH."

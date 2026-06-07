@@ -300,20 +300,6 @@ private extension String {
     }
 }
 
-public enum AgentSettingsStoreError: LocalizedError {
-    case noConfiguredModels
-    case modelNotConfigured(String)
-
-    public var errorDescription: String? {
-        switch self {
-        case .noConfiguredModels:
-            return "No remote models are configured for mlx-coder. Configure a remote runtime in mlx-coder first."
-        case let .modelNotConfigured(modelID):
-            return "'\(modelID)' is not in the mlx-coder agent model catalog."
-        }
-    }
-}
-
 public enum AgentSettingsStore {
     public static func resolvedEffectiveModelID(
         explicitModelID: String?,
@@ -415,39 +401,6 @@ public enum AgentSettingsStore {
             return apiKey
         }
         return nil
-    }
-
-    public static func saveSelectedModelID(_ modelID: String) throws {
-        try saveSelectedModelID(modelID, thinkingSelection: nil)
-    }
-
-    public static func saveSelectedModelID(
-        _ modelID: String,
-        thinkingSelection: AgentThinkingSelection?
-    ) throws {
-        let normalizedModelID = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedModelID.isEmpty else {
-            throw AgentSettingsStoreError.modelNotConfigured(modelID)
-        }
-        guard let manifest = AgentSettingsManifestStore.load() else {
-            throw AgentSettingsStoreError.noConfiguredModels
-        }
-        guard let model = manifest.models.first(where: { $0.matches(normalizedModelID) }) else {
-            throw AgentSettingsStoreError.modelNotConfigured(normalizedModelID)
-        }
-        let resolvedThinkingSelection = model.thinkingSelection(
-            for: thinkingSelection ?? manifest.selectedThinkingSelection
-        )
-        try AgentSettingsManifestStore.save(
-            AgentSettingsManifest(
-                providers: manifest.providers,
-                models: manifest.models,
-                selectedModelID: model.id,
-                selectedThinkingSelection: resolvedThinkingSelection,
-                                remoteAPIKeysByProviderID: manifest.remoteAPIKeysByProviderID,
-                localExecAllowedCommands: manifest.localExecAllowedCommands
-            )
-        )
     }
 
     public static func modelSelection(forLLMID llmID: String) -> AgentModelSelection? {

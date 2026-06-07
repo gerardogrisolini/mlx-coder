@@ -38,7 +38,7 @@ public final class TerminalChat: @unchecked Sendable {
     public var selectedToolKeys = Set<String>()
     public var selectedSkillIDs = Set<String>()
     public var pendingAttachments: [AgentRuntimeAttachment] = []
-    private var lastFailedPrompt: TerminalRetryPrompt?
+    var lastFailedPrompt: TerminalRetryPrompt?
     public var lastFileChangeSummary: TurnFileChangeSummary?
     public var isSubAgentOverviewVisible = false
     public var lastRenderedSubAgentOverviewSignature: String?
@@ -58,6 +58,12 @@ public final class TerminalChat: @unchecked Sendable {
     public var thoughtMarkdownFormatter = TerminalMarkdownStreamFormatter(
         isEnabled: AgentOutput.standardErrorIsTerminal
     )
+    public let telegramControlService = TerminalTelegramControlService()
+    public var telegramControlState = TerminalTelegramControlState.inactive()
+    public var telegramLinkedChatID: Int64?
+    public var telegramLinkedChatTitle: String?
+    public let voiceRecordingService = TerminalVoiceRecordingService()
+    public var activeVoiceRecordingSession: TerminalVoiceRecordingSession?
 
     public let statusBar: TerminalStatusBar
 
@@ -152,6 +158,9 @@ public final class TerminalChat: @unchecked Sendable {
         let statusBarStarted = statusBar.start()
         defer {
             stopSubAgentOverviewRefreshLoop()
+            Task {
+                _ = await telegramControlService.stop()
+            }
             statusBar.stop()
         }
 
@@ -182,6 +191,11 @@ public final class TerminalChat: @unchecked Sendable {
                 promptInput = ([line] + pastedLines).joined(separator: "\n")
             }
 
+            if activeVoiceRecordingSession != nil {
+                await stopVoiceRecordingAndRunPromptBlocking()
+                continue
+            }
+
             switch await submittedLineAction(promptInput) {
             case .continueChat:
                 continue
@@ -199,8 +213,10 @@ public final class TerminalChat: @unchecked Sendable {
 
     private func runInteractivePanelLoop() async throws {
         let eventQueue = TerminalChatEventQueue()
-        var queuedPrompts: [String] = []
+        var queuedPrompts: [TerminalQueuedPrompt] = []
         var generationTask: Task<Void, Never>?
+        var voiceTranscriptionTask: Task<Void, Never>?
+        let telegramForwardingTask = startTelegramForwardingTask(eventQueue: eventQueue)
         var isGenerating = false
 
         @discardableResult
@@ -233,13 +249,17 @@ public final class TerminalChat: @unchecked Sendable {
             generationTask = Task {
                 let result: TerminalChatGenerationResult
                 do {
-                    result = .success(try await self.generateResponse(attempt: attempt))
+                    result = .success(
+                        try await self.generateResponse(attempt: attempt),
+                        attempt.origin
+                    )
                 } catch is CancellationError {
                     result = .failure(
                         TerminalChatGenerationFailure(
                             message: "",
                             isCancellation: true,
-                            retryPrompt: nil
+                            retryPrompt: nil,
+                            origin: attempt.origin
                         )
                     )
                 } catch {
@@ -247,12 +267,23 @@ public final class TerminalChat: @unchecked Sendable {
                         TerminalChatGenerationFailure(
                             message: error.localizedDescription,
                             isCancellation: false,
-                            retryPrompt: attempt.retryPrompt
+                            retryPrompt: attempt.retryPrompt,
+                            origin: attempt.origin
                         )
                     )
                 }
                 await eventQueue.send(.generationCompleted(result))
             }
+        }
+
+        func startDirectPrompt(_ prompt: String, origin: TerminalPromptOrigin) {
+            let attempt = promptAttempt(prompt: prompt, origin: origin)
+            if origin == .local {
+                writeSubmittedPrompt(prompt)
+            } else {
+                writeTelegramSubmittedPrompt(prompt)
+            }
+            startGeneration(attempt: attempt)
         }
 
         guard startPanelInput() else {
@@ -261,15 +292,21 @@ public final class TerminalChat: @unchecked Sendable {
         }
         defer {
             generationTask?.cancel()
+            voiceTranscriptionTask?.cancel()
+            voiceRecordingService.cancelRecording()
+            telegramForwardingTask.cancel()
         }
 
-        func handleSubmittedPanelLine(_ line: String) async -> Bool {
-            let shouldSuspendPanel = Self.shouldSuspendPanelInput(for: line)
+        func handleSubmittedPanelLine(
+            _ line: String,
+            origin: TerminalPromptOrigin = .local
+        ) async -> Bool {
+            let shouldSuspendPanel = origin == .local && Self.shouldSuspendPanelInput(for: line)
             if shouldSuspendPanel {
                 await stopPanelInput(clearPanel: false)
             }
 
-            switch await submittedLineAction(line) {
+            switch await submittedLineAction(line, origin: origin) {
             case .continueChat:
                 if shouldSuspendPanel {
                     _ = startPanelInput()
@@ -282,16 +319,24 @@ public final class TerminalChat: @unchecked Sendable {
                 if shouldSuspendPanel {
                     _ = startPanelInput()
                 }
-                let attempt = promptAttempt(prompt: prompt)
-                writeSubmittedPrompt(prompt)
+                let attempt = promptAttempt(prompt: prompt, origin: origin)
+                if origin == .local {
+                    writeSubmittedPrompt(prompt)
+                } else {
+                    writeTelegramSubmittedPrompt(prompt)
+                }
                 startGeneration(attempt: attempt)
                 return true
             case let .retryPrompt(retryPrompt):
                 if shouldSuspendPanel {
                     _ = startPanelInput()
                 }
-                let attempt = promptAttempt(retryPrompt: retryPrompt)
-                writeSubmittedPrompt(retryPrompt.prompt)
+                let attempt = promptAttempt(retryPrompt: retryPrompt, origin: origin)
+                if origin == .local {
+                    writeSubmittedPrompt(retryPrompt.prompt)
+                } else {
+                    writeTelegramSubmittedPrompt(retryPrompt.prompt)
+                }
                 startGeneration(attempt: attempt)
                 return true
             case let .prefillPrompt(prompt):
@@ -307,7 +352,14 @@ public final class TerminalChat: @unchecked Sendable {
             if !isGenerating, !queuedPrompts.isEmpty {
                 let nextPrompt = queuedPrompts.removeFirst()
                 interactiveReader.setQueuedPromptCount(queuedPrompts.count)
-                guard await handleSubmittedPanelLine(nextPrompt) else {
+                if nextPrompt.mode == .directPrompt {
+                    startDirectPrompt(nextPrompt.text, origin: nextPrompt.origin)
+                    continue
+                }
+                guard await handleSubmittedPanelLine(
+                    nextPrompt.text,
+                    origin: nextPrompt.origin
+                ) else {
                     break eventLoop
                 }
                 continue
@@ -318,11 +370,20 @@ public final class TerminalChat: @unchecked Sendable {
             case let .input(inputEvent):
                 switch inputEvent {
                 case let .submitted(line):
-                                                                                                    if isGenerating {
+                    if activeVoiceRecordingSession != nil {
+                        voiceTranscriptionTask = stopVoiceRecordingAndTranscribe(
+                            eventQueue: eventQueue
+                        )
+                        continue
+                    }
+
+                    if isGenerating {
                         if Self.isSubAgentsCommand(line) {
                             _ = await handleSubmittedPanelLine(line)
+                        } else if Self.isVoiceCommand(line) {
+                            writeFailureMessage("mlx-coder: /voice is unavailable while a prompt is running.\n")
                         } else {
-                            queuedPrompts.append(line)
+                            queuedPrompts.append(TerminalQueuedPrompt(text: line, origin: .local))
                             interactiveReader.setQueuedPromptCount(queuedPrompts.count)
                         }
                         continue
@@ -332,7 +393,16 @@ public final class TerminalChat: @unchecked Sendable {
                         break eventLoop
                     }
                 case .cancelRequested:
-                    generationTask?.cancel()
+                    if activeVoiceRecordingSession != nil {
+                        cancelVoiceRecording()
+                    } else if voiceTranscriptionTask != nil {
+                        voiceTranscriptionTask?.cancel()
+                        voiceTranscriptionTask = nil
+                        clearVoicePanelMode()
+                        writeSystemMessage("Voice transcription cancelled.\n")
+                    } else {
+                        generationTask?.cancel()
+                    }
                 case .toggleToolDetailsRequested:
                     self.toggleToolDetailsOutput()
                     interactiveReader.refreshPanel()
@@ -346,13 +416,56 @@ public final class TerminalChat: @unchecked Sendable {
                 statusBar.setProcessing(false)
                 interactiveReader.setPanelProcessing(false)
                 await finishPromptResult(result)
+            case let .telegramMessage(message):
+                await handleTelegramMessage(
+                    message,
+                    isGenerating: isGenerating,
+                    queuedPrompts: &queuedPrompts,
+                    eventQueue: eventQueue
+                )
+                interactiveReader.setQueuedPromptCount(queuedPrompts.count)
+            case let .voicePromptCompleted(result):
+                if result.origin == .local {
+                    voiceTranscriptionTask = nil
+                    clearVoicePanelMode()
+                    interactiveReader.setPanelProcessing(isGenerating)
+                }
+                switch result.outcome {
+                case let .success(prompt):
+                    if isGenerating {
+                        queuedPrompts.append(
+                            TerminalQueuedPrompt(
+                                text: prompt,
+                                origin: result.origin,
+                                mode: .directPrompt
+                            )
+                        )
+                        interactiveReader.setQueuedPromptCount(queuedPrompts.count)
+                        await sendTelegramSystemMessageIfLinked(
+                            "Transcription ready. Queued for the current mlx-coder session.",
+                            origin: result.origin
+                        )
+                    } else {
+                        await sendTelegramSystemMessageIfLinked(
+                            "Transcription ready. mlx-coder is working.",
+                            origin: result.origin
+                        )
+                        startDirectPrompt(prompt, origin: result.origin)
+                    }
+                case let .failure(message):
+                    writeFailureMessage("mlx-coder: \(message)\n")
+                    await sendTelegramSystemMessageIfLinked(
+                        "Voice transcription failed: \(message)",
+                        origin: result.origin
+                    )
+                }
             }
         }
 
         await stopPanelInput()
     }
 
-            private static func shouldSuspendPanelInput(for line: String) -> Bool {
+    private static func shouldSuspendPanelInput(for line: String) -> Bool {
         let prompt = line.trimmingCharacters(in: .whitespacesAndNewlines)
         return prompt.hasPrefix("/")
     }
@@ -362,125 +475,46 @@ public final class TerminalChat: @unchecked Sendable {
         return prompt == "/subagents" || prompt.hasPrefix("/subagents ")
     }
 
-    
+    private static func isVoiceCommand(_ line: String) -> Bool {
+        let prompt = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        return prompt == "/voice" || prompt.hasPrefix("/voice ")
+    }
 
     private func renderHelpTextForCurrentAgent() -> String {
         var lines = [
-            "Type a prompt and press return.",
-            "/models shows configured models and lets you switch the default agent model.",
-            "/agents selects an agent profile and resets the session.",
-            "/tools selects which tool groups are available to the model."
+            "Type a prompt and press return."
         ]
-        if AgentProfileStore.isBuilderAgent(selectedAgent) {
-            lines.append("/feature creates and manages generated Swift feature packages.")
-        }
+        lines.append(contentsOf: visibleCommandDescriptorsForCurrentAgent().map(\.help))
         lines.append(contentsOf: [
-            "/skills selects installed prompt skills or installs one from GitHub or a local folder.",
-            "/sessions saves, restores, or deletes named session snapshots for this project.",
-            "/attach <file> [file ...] attaches image or video files to the next prompt.",
-            "/attachments shows pending attachments.",
-            "/detach [all|number] removes pending attachments.",
-            "/retry reruns the most recent failed prompt.",
-            "/changes shows the most recent file change summary. Use /changes diff to include patches.",
-            "/undo reverts the most recent tracked file changes.",
-            "/subagents shows delegated sub-agent status. Use /subagents off to hide automatic updates.",
             "Ctrl+T toggles compact/full tool output.",
-            "/clear resets the conversation.",
-            "/exit closes the session."
         ])
         return lines.joined(separator: "\n") + "\n\n"
     }
 
     func commandSuggestionsForCurrentAgent() -> [TerminalCommandSuggestion] {
-        if AgentProfileStore.isBuilderAgent(selectedAgent) {
-            return Self.baseCommandSuggestionsWithFeature
+        visibleCommandDescriptorsForCurrentAgent().map { descriptor in
+            TerminalCommandSuggestion(
+                command: descriptor.command,
+                summary: descriptor.summary,
+                requiresArgument: descriptor.requiresArgument
+            )
         }
-        return Self.baseCommandSuggestions
     }
 
-    private static let featureCommandSuggestion = TerminalCommandSuggestion(
-        command: "/feature",
-        summary: "create/manage features"
-    )
-
-    private static let baseCommandSuggestionsWithFeature: [TerminalCommandSuggestion] = {
-        var suggestions = baseCommandSuggestions
-        suggestions.insert(featureCommandSuggestion, at: 4)
-        return suggestions
-    }()
-
-    private static let baseCommandSuggestions: [TerminalCommandSuggestion] = [
-        TerminalCommandSuggestion(
-            command: "/help",
-            summary: "show command help"
-        ),
-        TerminalCommandSuggestion(
-            command: "/models",
-            summary: "switch model"
-        ),
-        TerminalCommandSuggestion(
-            command: "/agents",
-            summary: "switch agent"
-        ),
-        TerminalCommandSuggestion(
-            command: "/tools",
-            summary: "select tool groups"
-        ),
-        TerminalCommandSuggestion(
-            command: "/skills",
-            summary: "select/install prompt skills"
-        ),
-        TerminalCommandSuggestion(
-            command: "/sessions",
-            summary: "save/load/delete sessions"
-        ),
-        TerminalCommandSuggestion(
-            command: "/attach",
-            summary: "attach files",
-            requiresArgument: true
-        ),
-        TerminalCommandSuggestion(
-            command: "/attachments",
-            summary: "show pending attachments"
-        ),
-        TerminalCommandSuggestion(
-            command: "/detach",
-            summary: "remove attachments",
-            requiresArgument: true
-        ),
-        TerminalCommandSuggestion(
-            command: "/retry",
-            summary: "rerun failed prompt"
-        ),
-        TerminalCommandSuggestion(
-            command: "/changes",
-            summary: "show last file changes"
-        ),
-        TerminalCommandSuggestion(
-            command: "/undo",
-            summary: "revert last file changes"
-        ),
-        TerminalCommandSuggestion(
-            command: "/subagents",
-            summary: "show sub-agent status"
-        ),
-        TerminalCommandSuggestion(
-            command: "/clear",
-            summary: "reset conversation"
-        ),
-        TerminalCommandSuggestion(
-            command: "/exit",
-            summary: "close session"
-        ),
-    ]
-
-    private func submittedLineAction(_ promptInput: String) async -> TerminalSubmittedLineAction {
+    private func submittedLineAction(
+        _ promptInput: String,
+        origin: TerminalPromptOrigin = .local
+    ) async -> TerminalSubmittedLineAction {
         let prompt = promptInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else {
-            if !pendingAttachments.isEmpty {
+            if origin == .local && !pendingAttachments.isEmpty {
                 return .runPrompt("")
             }
             return .continueChat
+        }
+
+        if origin != .local {
+            return submittedTelegramLineAction(prompt)
         }
 
         switch prompt {
@@ -558,6 +592,20 @@ public final class TerminalChat: @unchecked Sendable {
         case let command where command == "/subagents" || command.hasPrefix("/subagents "):
             await handleSubAgentsCommand(command)
             return .continueChat
+        case let command where command == "/telegram" || command.hasPrefix("/telegram "):
+            guard isTelegramCommandVisible() else {
+                writeFailureMessage(Self.unknownCommandMessage(for: command))
+                return .continueChat
+            }
+            await handleTelegramCommand(command)
+            return .continueChat
+        case let command where command == "/voice" || command.hasPrefix("/voice "):
+            guard isVoiceCommandVisible() else {
+                writeFailureMessage(Self.unknownCommandMessage(for: command))
+                return .continueChat
+            }
+            await handleVoiceCommand(command)
+            return .continueChat
         case "/clear":
             do {
                 await sessionRunner.resetSession(id: sessionID)
@@ -581,33 +629,43 @@ public final class TerminalChat: @unchecked Sendable {
             }
             return .continueChat
         default:
+            if prompt.hasPrefix("/") {
+                writeFailureMessage(Self.unknownCommandMessage(for: prompt))
+                return .continueChat
+            }
             return .runPrompt(prompt)
         }
     }
 
-    private func promptAttempt(prompt: String) -> TerminalPromptAttempt {
+    func promptAttempt(
+        prompt: String,
+        origin: TerminalPromptOrigin = .local
+    ) -> TerminalPromptAttempt {
         TerminalPromptAttempt(
             prompt: prompt,
-            attachments: consumePendingAttachmentsForPrompt(),
+            attachments: origin == .local ? consumePendingAttachmentsForPrompt() : [],
             baseCacheKey: activeSessionCacheKey,
             baseHistory: activeSessionHistory,
-            restoresBaseBeforeRun: false
+            restoresBaseBeforeRun: false,
+            origin: origin
         )
     }
 
-    private func promptAttempt(
-        retryPrompt: TerminalRetryPrompt
+    func promptAttempt(
+        retryPrompt: TerminalRetryPrompt,
+        origin: TerminalPromptOrigin = .local
     ) -> TerminalPromptAttempt {
         TerminalPromptAttempt(
             prompt: retryPrompt.prompt,
             attachments: retryPrompt.attachments,
             baseCacheKey: retryPrompt.baseCacheKey,
             baseHistory: retryPrompt.baseHistory,
-            restoresBaseBeforeRun: true
+            restoresBaseBeforeRun: true,
+            origin: origin
         )
     }
 
-    private func runPromptBlocking(_ attempt: TerminalPromptAttempt) async {
+    func runPromptBlocking(_ attempt: TerminalPromptAttempt) async {
         do {
             didReceiveMetricsForCurrentPrompt = false
             statusBar.setProcessing(true)
@@ -636,12 +694,13 @@ public final class TerminalChat: @unchecked Sendable {
                 stopMonitor.cancel()
                 await stopMonitor.value
             }
-            await finishPromptResult(.success(response))
+            await finishPromptResult(.success(response, attempt.origin))
         } catch {
             let failure = TerminalChatGenerationFailure(
                 message: error.localizedDescription,
                 isCancellation: error is CancellationError,
-                retryPrompt: error is CancellationError ? nil : attempt.retryPrompt
+                retryPrompt: error is CancellationError ? nil : attempt.retryPrompt,
+                origin: attempt.origin
             )
             await finishPromptResult(.failure(failure))
         }
@@ -662,6 +721,14 @@ public final class TerminalChat: @unchecked Sendable {
         let fileChanges = TurnFileChangeCoordinator(
             baseDirectoryURL: configuration.workingDirectory
         )
+        let telegramProgressReporter = telegramControlState.isActive
+            ? makeTelegramTurnProgressReporter(for: attempt.origin)
+            : nil
+        if let telegramProgressReporter = telegramProgressReporter {
+            await telegramProgressReporter.enqueue(
+                telegramTurnStartedMessage(prompt: attempt.prompt)
+            )
+        }
         do {
             let response = try await sessionRunner.sendPrompt(
                 configuration: await currentSessionConfiguration(),
@@ -678,15 +745,32 @@ public final class TerminalChat: @unchecked Sendable {
                         if self.configuration.verboseLogging {
                             self.writeChatError("[mlx-coder] \(message)\n")
                         }
+                        if let telegramProgressReporter = telegramProgressReporter,
+                           let progressMessage = self.telegramStatusProgressMessage(message) {
+                            await telegramProgressReporter.enqueueStatus(progressMessage)
+                        }
                     case let .diagnostic(message):
                         if self.configuration.verboseLogging {
                             self.writeDiagnostic(message)
                         }
+                        if let telegramProgressReporter = telegramProgressReporter,
+                           let progressMessage = self.telegramDiagnosticProgressMessage(message) {
+                            await telegramProgressReporter.enqueueStatus(progressMessage)
+                        }
                     case let .thought(message):
                         await transcriptTurn.appendThought(message)
                         self.writeThought(message)
+                        if let telegramProgressReporter = telegramProgressReporter,
+                           message.nilIfBlank != nil {
+                            await telegramProgressReporter.enqueueThinkingIfNeeded()
+                        }
                     case let .modelLoaded(modelID):
                         self.printModelIfNeeded(modelID)
+                        if let telegramProgressReporter = telegramProgressReporter {
+                            await telegramProgressReporter.enqueue(
+                                self.telegramModelLoadedMessage(modelID: modelID)
+                            )
+                        }
                     case let .modelLoadedDetails(details):
                         self.printLoadedModelDetails(details)
                     case let .metrics(metrics):
@@ -698,11 +782,20 @@ public final class TerminalChat: @unchecked Sendable {
                         await transcriptTurn.appendAssistantContent(delta)
                         self.finishThoughtOutputIfNeeded()
                         self.writeAssistantContent(delta)
+                        if let telegramProgressReporter = telegramProgressReporter,
+                           delta.nilIfBlank != nil {
+                            await telegramProgressReporter.enqueueWritingIfNeeded()
+                        }
                     case let .toolCallStarted(toolCall):
                         await transcriptTurn.appendToolCallStarted(toolCall)
                         self.finishThoughtOutputIfNeeded()
                         self.finishAssistantContentFormatting()
                         self.writeToolCallStarted(toolCall)
+                        if let telegramProgressReporter = telegramProgressReporter {
+                            await telegramProgressReporter.enqueue(
+                                self.telegramToolStartedMessage(toolCall)
+                            )
+                        }
                         await self.publishSubAgentOverviewIfVisible(
                             relatedToolName: toolCall.name
                         )
@@ -711,6 +804,11 @@ public final class TerminalChat: @unchecked Sendable {
                         self.finishThoughtOutputIfNeeded()
                         self.finishAssistantContentFormatting()
                         self.writeToolCallCompleted(toolCall, result: result)
+                        if let telegramProgressReporter = telegramProgressReporter {
+                            await telegramProgressReporter.enqueue(
+                                self.telegramToolCompletedMessage(toolCall, result: result)
+                            )
+                        }
                         await self.publishSubAgentOverviewIfVisible(
                             relatedToolName: toolCall.name
                         )
@@ -725,45 +823,69 @@ public final class TerminalChat: @unchecked Sendable {
             activeSessionTranscript.append(
                 contentsOf: await transcriptTurn.messages(finalResponseText: response.text)
             )
-            await publishFileChangeSummaryIfNeeded(from: fileChanges)
+            let fileChangeSummary = await publishFileChangeSummaryIfNeeded(from: fileChanges)
+            if let telegramProgressReporter = telegramProgressReporter,
+               let summary = fileChangeSummary {
+                await telegramProgressReporter.enqueue(
+                    telegramFileChangeSummaryMessage(summary)
+                )
+            }
             await publishSubAgentOverviewIfVisible()
+            await telegramProgressReporter?.flush()
             return response
         } catch {
             activeSessionTranscript.append(contentsOf: await transcriptTurn.messages())
-            await publishFileChangeSummaryIfNeeded(from: fileChanges)
+            let fileChangeSummary = await publishFileChangeSummaryIfNeeded(from: fileChanges)
+            if let telegramProgressReporter = telegramProgressReporter,
+               let summary = fileChangeSummary {
+                await telegramProgressReporter.enqueue(
+                    telegramFileChangeSummaryMessage(summary)
+                )
+            }
             await publishSubAgentOverviewIfVisible()
+            await telegramProgressReporter?.flush()
             throw error
         }
     }
 
     private func finishPromptResult(_ result: TerminalChatGenerationResult) async {
         switch result {
-        case let .success(response):
+        case let .success(response, origin):
             lastFailedPrompt = nil
             finishThoughtOutputIfNeeded()
             finishAssistantContentFormatting()
             printModelIfNeeded(response.modelID)
-            if response.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let responseText = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if responseText.isEmpty {
                 writeChatOutput("Done.")
             }
             writeChatOutput("\n")
+            await sendTelegramCompletionIfLinked(
+                responseText.isEmpty ? "Done." : responseText,
+                origin: origin
+            )
         case let .failure(failure):
             finishThoughtOutputIfNeeded()
             finishAssistantContentFormatting()
             if failure.isCancellation {
                 writeChatError("\nStopped.\n")
+                await sendTelegramSystemMessageIfLinked("Stopped.", origin: failure.origin)
             } else {
                 lastFailedPrompt = failure.retryPrompt
                 writeFailureMessage("mlx-coder: \(failure.message)\n")
                 if failure.retryPrompt != nil {
                     writeSystemMessage("Use /retry to run the prompt again.\n")
                 }
+                await sendTelegramSystemMessageIfLinked(
+                    "mlx-coder failed: \(failure.message)",
+                    origin: failure.origin
+                )
             }
         }
     }
 }
 
-private enum TerminalSubmittedLineAction {
+enum TerminalSubmittedLineAction {
     case continueChat
     case exitChat
     case runPrompt(String)
@@ -771,12 +893,13 @@ private enum TerminalSubmittedLineAction {
     case prefillPrompt(String)
 }
 
-private struct TerminalPromptAttempt: Sendable {
+struct TerminalPromptAttempt: Sendable {
     let prompt: String
     let attachments: [AgentRuntimeAttachment]
     let baseCacheKey: String?
     let baseHistory: [AgentRuntimeMessage]
     let restoresBaseBeforeRun: Bool
+    let origin: TerminalPromptOrigin
 
     var retryPrompt: TerminalRetryPrompt {
         TerminalRetryPrompt(
@@ -788,17 +911,54 @@ private struct TerminalPromptAttempt: Sendable {
     }
 }
 
-private struct TerminalRetryPrompt: Sendable {
+struct TerminalRetryPrompt: Sendable {
     let prompt: String
     let attachments: [AgentRuntimeAttachment]
     let baseCacheKey: String?
     let baseHistory: [AgentRuntimeMessage]
 }
 
-private struct TerminalChatGenerationFailure: Sendable {
+struct TerminalChatGenerationFailure: Sendable {
     let message: String
     let isCancellation: Bool
     let retryPrompt: TerminalRetryPrompt?
+    let origin: TerminalPromptOrigin
+}
+
+enum TerminalPromptOrigin: Sendable, Equatable {
+    case local
+    case telegram(chatID: Int64)
+}
+
+struct TerminalQueuedPrompt: Sendable, Equatable {
+    let text: String
+    let origin: TerminalPromptOrigin
+    let mode: TerminalQueuedPromptMode
+
+    init(
+        text: String,
+        origin: TerminalPromptOrigin,
+        mode: TerminalQueuedPromptMode = .submittedLine
+    ) {
+        self.text = text
+        self.origin = origin
+        self.mode = mode
+    }
+}
+
+enum TerminalQueuedPromptMode: Sendable, Equatable {
+    case submittedLine
+    case directPrompt
+}
+
+struct TerminalVoicePromptResult: Sendable {
+    let origin: TerminalPromptOrigin
+    let outcome: Outcome
+
+    enum Outcome: Sendable {
+        case success(String)
+        case failure(String)
+    }
 }
 
 private actor TerminalSessionTranscriptTurn {
@@ -904,17 +1064,19 @@ private actor TerminalSessionTranscriptTurn {
     }
 }
 
-private enum TerminalChatGenerationResult: Sendable {
-    case success(DirectAgentResponse)
+enum TerminalChatGenerationResult: Sendable {
+    case success(DirectAgentResponse, TerminalPromptOrigin)
     case failure(TerminalChatGenerationFailure)
 }
 
-private enum TerminalChatRuntimeEvent: Sendable {
+enum TerminalChatRuntimeEvent: Sendable {
     case input(TerminalPromptInputEvent)
     case generationCompleted(TerminalChatGenerationResult)
+    case telegramMessage(TerminalTelegramIncomingMessage)
+    case voicePromptCompleted(TerminalVoicePromptResult)
 }
 
-private actor TerminalChatEventQueue {
+actor TerminalChatEventQueue {
     private var events: [TerminalChatRuntimeEvent] = []
     private var waiters: [CheckedContinuation<TerminalChatRuntimeEvent, Never>] = []
 

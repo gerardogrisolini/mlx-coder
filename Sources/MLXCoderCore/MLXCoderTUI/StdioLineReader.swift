@@ -500,6 +500,16 @@ public struct TerminalCommandSuggestion: Sendable {
     }
 }
 
+public struct TerminalPanelModeOverride: Sendable, Equatable {
+    public let modeText: String
+    public let helpText: String
+
+    public init(modeText: String, helpText: String) {
+        self.modeText = modeText
+        self.helpText = helpText
+    }
+}
+
 public final class TerminalInteractiveLineReader: @unchecked Sendable {
     private enum Key {
         case character(String)
@@ -539,6 +549,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
     private var panelCursorIndex = 0
     private var panelIsProcessing = false
     private var panelQueuedPromptCount = 0
+    private var panelModeOverride: TerminalPanelModeOverride?
     private var panelCommandSuggestions: [TerminalCommandSuggestion] = []
     private var panelCommandSuggestionIndex = 0
 
@@ -673,6 +684,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
         panelStatusBar = statusBar
         panelBuffer.removeAll()
         panelCursorIndex = 0
+        panelModeOverride = nil
         panelCommandSuggestions = commandSuggestions
         panelCommandSuggestionIndex = 0
         historyIndex = nil
@@ -735,6 +747,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
             panelStatusBar = nil
             panelBuffer.removeAll()
             panelCursorIndex = 0
+            panelModeOverride = nil
             panelCommandSuggestions.removeAll()
             panelCommandSuggestionIndex = 0
         }
@@ -760,6 +773,14 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
     public func setQueuedPromptCount(_ count: Int) {
         panelLock.lock()
         panelQueuedPromptCount = max(0, count)
+        panelLock.unlock()
+        renderPanel()
+    }
+
+    public func setPanelModeOverride(_ override: TerminalPanelModeOverride?) {
+        panelLock.lock()
+        panelModeOverride = override
+        panelCommandSuggestionIndex = 0
         panelLock.unlock()
         renderPanel()
     }
@@ -984,6 +1005,10 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
     }
 
     private func panelModeTextLocked() -> String {
+        if let modeText = panelModeOverride?.modeText {
+            return modeText
+        }
+
         var modeText = panelIsProcessing ? "Next prompt" : "Prompt"
         if panelQueuedPromptCount > 0 {
             modeText += " · queued \(panelQueuedPromptCount)"
@@ -992,6 +1017,10 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
     }
 
     private func panelHelpTextLocked() -> String {
+        if let helpText = panelModeOverride?.helpText {
+            return helpText
+        }
+
         if hasActiveCommandSuggestionsLocked() {
             return "↑/↓ select · Tab complete · Enter choose"
         }
@@ -1104,6 +1133,10 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
     }
 
     private func activeCommandSuggestionsLocked() -> [TerminalCommandSuggestion] {
+        guard panelModeOverride == nil else {
+            return []
+        }
+
         guard let commandPrefix = Self.commandPrefixForSuggestions(
             text: String(panelBuffer),
             cursorIndex: panelCursorIndex

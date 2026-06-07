@@ -29,8 +29,7 @@ extension MLXCoderACPBridge {
             renderedPromptText: rawPromptText,
             cwd: session.cwd
         )
-        let promptText = Self.promptTextRemovingAionFilesMarker(rawPromptText)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let promptText = rawPromptText.trimmingCharacters(in: .whitespacesAndNewlines)
         let agentMentionResolution = try resolveLeadingACPAgentMention(in: promptText)
         let routedPromptText = agentMentionResolution?.prompt ?? promptText
         guard !routedPromptText.isEmpty || !attachments.isEmpty else {
@@ -281,7 +280,7 @@ extension MLXCoderACPBridge {
 
     public static func promptAttachments(
         from blocks: [Any],
-        renderedPromptText: String,
+        renderedPromptText _: String,
         cwd: String
     ) -> [AgentRuntimeAttachment] {
         var attachments: [AgentRuntimeAttachment] = []
@@ -302,32 +301,7 @@ extension MLXCoderACPBridge {
         for block in blocks {
             append(promptAttachment(from: block, cwd: cwd))
         }
-        for fileURL in aionFileAttachmentURLs(from: renderedPromptText, cwd: cwd) {
-            append(try? AgentRuntimeAttachmentStore.importFile(from: fileURL).runtimeAttachment)
-        }
         return attachments
-    }
-
-    public static func promptTextRemovingAionFilesMarker(_ text: String) -> String {
-        var retainedLines: [String] = []
-        var isSkippingAionFiles = false
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let trimmed = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed == "[[AION_FILES]]" {
-                isSkippingAionFiles = true
-                continue
-            }
-            if isSkippingAionFiles {
-                if trimmed.isEmpty {
-                    isSkippingAionFiles = false
-                }
-                continue
-            }
-            retainedLines.append(String(line))
-        }
-        return retainedLines
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func promptAttachment(from block: Any, cwd: String) -> AgentRuntimeAttachment? {
@@ -409,29 +383,6 @@ extension MLXCoderACPBridge {
             return nil
         }
         return try? AgentRuntimeAttachmentStore.importFile(from: fileURL).runtimeAttachment
-    }
-
-    private static func aionFileAttachmentURLs(from text: String, cwd: String) -> [URL] {
-        var urls: [URL] = []
-        var isReadingFiles = false
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let trimmed = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed == "[[AION_FILES]]" {
-                isReadingFiles = true
-                continue
-            }
-            guard isReadingFiles else {
-                continue
-            }
-            if trimmed.isEmpty {
-                isReadingFiles = false
-                continue
-            }
-            if let url = fileURL(from: trimmed, cwd: cwd) {
-                urls.append(url)
-            }
-        }
-        return urls
     }
 
     private static func firstBase64Data(in object: [String: Any]) -> Data? {

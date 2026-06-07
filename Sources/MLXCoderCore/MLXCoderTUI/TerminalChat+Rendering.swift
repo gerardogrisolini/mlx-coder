@@ -45,9 +45,7 @@ extension TerminalChat {
             lines.append(selectedSkills)
         }
 
-        let commands = AgentProfileStore.isBuilderAgent(selectedAgent)
-            ? "Commands: /help, /models, /agents, /tools, /feature, /skills, /sessions, /attach, /retry, /changes, /undo, /subagents, /clear, /exit"
-            : "Commands: /help, /models, /agents, /tools, /skills, /sessions, /attach, /retry, /changes, /undo, /subagents, /clear, /exit"
+        let commands = "Commands: \(visibleCommandNamesForCurrentAgent().joined(separator: ", "))"
 
         lines.append(contentsOf: [
             "Working directory: \(configuration.workingDirectory.path)",

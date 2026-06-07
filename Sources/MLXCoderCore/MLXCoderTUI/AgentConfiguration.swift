@@ -33,7 +33,7 @@ public struct AgentConfiguration: Sendable {
 
     Modes:
       default                Human terminal chat.
-      --acp                  ACP JSON-RPC over stdio for clients such as Aion UI.
+      --acp                  ACP JSON-RPC over stdio for compatible clients.
 
     Agent runtime:
       --agent NAME           Agent profile from ~/.mlx-coder/agents.json. Default is used when omitted.

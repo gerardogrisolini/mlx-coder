@@ -48,8 +48,14 @@ public enum MLXCoderSetupRunner {
                     guard existingManifest != nil else {
                         throw MLXCoderSetupError.noModelsConfigured
                     }
-                    let result = try MLXCoderSupportFileService.ensureBaseFiles()
-                    printResult(result, settingsWasWritten: false)
+                    let existingManifest = try requireExistingManifest(existingManifest)
+                    let manifest = try await configureOptionalIntegrations(in: existingManifest)
+                    let shouldWriteSettings = manifest != existingManifest
+                    let result = try MLXCoderSupportFileService.ensureRequiredFiles(
+                        settingsManifest: manifest,
+                        overwriteSettings: shouldWriteSettings
+                    )
+                    printResult(result, settingsWasWritten: shouldWriteSettings)
                     printCompletion()
                     return
                 }
@@ -119,6 +125,8 @@ public enum MLXCoderSetupRunner {
         let selectedThinkingSelection = models
             .first { $0.matches(selectedModelID) }?
             .resolvedDefaultThinkingSelection
+        let telegram = try await promptTelegramSettings(existingSettings: existingManifest?.telegram)
+        let voice = try promptVoiceSettings(existingSettings: existingManifest?.voice)
         let apiKeysByProviderID: [String: String] = Dictionary(
             uniqueKeysWithValues: providerInputs.compactMap { input -> (String, String)? in
                 guard let apiKey = input.apiKey else {
@@ -133,8 +141,387 @@ public enum MLXCoderSetupRunner {
             models: models,
             selectedModelID: selectedModelID,
             selectedThinkingSelection: selectedThinkingSelection,
+            telegram: telegram,
+            voice: voice,
             remoteAPIKeysByProviderID: apiKeysByProviderID
         )
+    }
+
+    private static func configureOptionalIntegrations(
+        in manifest: AgentSettingsManifest
+    ) async throws -> AgentSettingsManifest {
+        let telegram = try await promptTelegramSettings(existingSettings: manifest.telegram)
+        let voice = try promptVoiceSettings(existingSettings: manifest.voice)
+        return AgentSettingsManifest(
+            version: manifest.version,
+            providers: manifest.providers,
+            models: manifest.models,
+            selectedModelID: manifest.selectedModelID,
+            selectedThinkingSelection: manifest.selectedThinkingSelection,
+            telegram: telegram,
+            voice: voice,
+            remoteAPIKeysByProviderID: manifest.remoteAPIKeysByProviderID
+        )
+    }
+
+    private static func requireExistingManifest(
+        _ manifest: AgentSettingsManifest?
+    ) throws -> AgentSettingsManifest {
+        guard let manifest else {
+            throw MLXCoderSetupError.noModelsConfigured
+        }
+        return manifest
+    }
+
+    private static func promptTelegramSettings(
+        existingSettings: AgentTelegramSettingsManifest?
+    ) async throws -> AgentTelegramSettingsManifest? {
+        let shouldEnableTelegram = try promptYesNo(
+            "Enable Telegram remote control?",
+            defaultValue: existingSettings?.isConfigured == true
+        )
+        guard shouldEnableTelegram else {
+            return nil
+        }
+
+        let existingToken = existingSettings?.botToken?.nilIfBlank
+        if existingSettings?.isEnabled == true {
+            let shouldReplacePairing = try promptYesNo(
+                "Replace stored Telegram bot token and pairing?",
+                defaultValue: false
+            )
+            if !shouldReplacePairing {
+                return existingSettings
+            }
+        }
+
+        let token: String
+        if let existingToken,
+           try promptYesNo("Use stored Telegram bot token for pairing?", defaultValue: true) {
+            token = existingToken
+        } else {
+            printTelegramBotTokenGuide()
+            token = try promptString(
+                "Telegram bot token",
+                defaultValue: nil,
+                allowEmpty: false
+            )
+        }
+
+        return try await pairTelegram(botToken: token)
+    }
+
+    private static func printTelegramBotTokenGuide() {
+        AgentOutput.standardError.writeString(
+            """
+            \nTelegram bot setup:
+              1. Open Telegram and start a chat with @BotFather.
+              2. Send /newbot and follow the prompts for bot name and username.
+              3. Copy the bot token returned by BotFather and paste it below.
+              4. Setup will then show a pairing code to send to your bot.
+              Keep the token private; it gives access to your bot.
+
+            """
+        )
+    }
+
+    private static func pairTelegram(
+        botToken: String
+    ) async throws -> AgentTelegramSettingsManifest {
+        let pairingCode = newTelegramPairingCode()
+        let pairingService = TerminalTelegramPairingService(botToken: botToken)
+        let bot = try await pairingService.prepare()
+        let botLabel = bot.username.map { "@\($0)" } ?? "your Telegram bot"
+
+        AgentOutput.standardError.writeString(
+            """
+            Telegram pairing:
+              Send this code to \(botLabel): \(pairingCode)
+              You can send the code alone or /start \(pairingCode).
+              Waiting for Telegram...
+
+            """
+        )
+
+        let linkedChat = try await pairingService.waitForPairing(code: pairingCode)
+        let title = linkedChat.chatTitle?.nilIfBlank ?? "chat \(linkedChat.chatID)"
+        AgentOutput.standardError.writeString("Telegram linked: \(title)\n")
+        return AgentTelegramSettingsManifest(
+            enabled: true,
+            botToken: botToken,
+            linkedChatID: linkedChat.chatID,
+            linkedChatTitle: linkedChat.chatTitle
+        )
+    }
+
+    private static func newTelegramPairingCode() -> String {
+        String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8)).uppercased()
+    }
+
+    private static func promptVoiceSettings(
+        existingSettings: AgentVoiceSettingsManifest?
+    ) throws -> AgentVoiceSettingsManifest? {
+        let shouldEnableVoice = try promptYesNo(
+            "Enable local voice tools?",
+            defaultValue: existingSettings?.isConfigured == true
+        )
+        guard shouldEnableVoice else {
+            return nil
+        }
+
+        print(
+            """
+
+            Voice uses a local Swift executable, mlx-voice-transcriber.
+            It provides speech-to-text with WhisperKit and text-to-speech with TTSKit.
+            No external API key is required.
+
+            """
+        )
+
+        let executablePath = try resolvedVoiceExecutableURL(existingSettings: existingSettings).path
+        AgentOutput.standardError.writeString("Voice executable: \(executablePath)\n")
+
+        let modelID = try selectVoiceSetupOption(
+            title: "Voice transcription model",
+            options: voiceTranscriptionModelOptions,
+            defaultValue: existingSettings?.modelID.nilIfBlank
+                ?? AgentVoiceSettingsManifest.defaultModelID
+        )
+        let synthesisModelID = try selectVoiceSetupOption(
+            title: "Voice synthesis model",
+            options: voiceSynthesisModelOptions,
+            defaultValue: existingSettings?.synthesisModelID.nilIfBlank
+                ?? AgentVoiceSettingsManifest.defaultSynthesisModelID
+        )
+        let language = try selectVoiceSetupOption(
+            title: "Voice language",
+            options: voiceLanguageOptions,
+            defaultValue: existingSettings?.language?.nilIfBlank
+                ?? AgentVoiceSettingsManifest.defaultLanguage
+        )
+        let speaker = try selectVoiceSetupOption(
+            title: "Voice synthesis speaker",
+            options: voiceSpeakerOptions,
+            defaultValue: existingSettings?.speaker?.nilIfBlank
+                ?? AgentVoiceSettingsManifest.defaultSpeaker
+        )
+
+        return AgentVoiceSettingsManifest(
+            enabled: true,
+            modelID: modelID,
+            executablePath: executablePath,
+            synthesisModelID: synthesisModelID,
+            language: language,
+            speaker: speaker
+        )
+    }
+
+    private static let voiceTranscriptionModelOptions: [VoiceSetupOption] = [
+        VoiceSetupOption(
+            value: "large-v3-v20240930_626MB",
+            title: "Whisper large-v3",
+            detail: "best multilingual accuracy"
+        ),
+        VoiceSetupOption(
+            value: "tiny",
+            title: "Whisper tiny",
+            detail: "fastest debug workflow"
+        )
+    ]
+
+    private static let voiceSynthesisModelOptions: [VoiceSetupOption] = [
+        VoiceSetupOption(
+            value: "0.6b",
+            title: "Qwen3 TTS 0.6B",
+            detail: "default, lighter"
+        ),
+        VoiceSetupOption(
+            value: "1.7b",
+            title: "Qwen3 TTS 1.7B",
+            detail: "larger, supports voice direction"
+        )
+    ]
+
+    private static let voiceLanguageOptions: [VoiceSetupOption] = [
+        VoiceSetupOption(value: "it", title: "Italiano", aliases: ["italian"]),
+        VoiceSetupOption(value: "en", title: "English", aliases: ["english"]),
+        VoiceSetupOption(value: "es", title: "Spanish", aliases: ["spanish"]),
+        VoiceSetupOption(value: "fr", title: "French", aliases: ["french"]),
+        VoiceSetupOption(value: "de", title: "Deutsch", aliases: ["german"]),
+        VoiceSetupOption(value: "pt", title: "Portuguese", aliases: ["portuguese"]),
+        VoiceSetupOption(value: "ja", title: "Japanese", aliases: ["japanese"]),
+        VoiceSetupOption(value: "ko", title: "Korean", aliases: ["korean"]),
+        VoiceSetupOption(value: "zh", title: "Chinese", aliases: ["chinese"]),
+        VoiceSetupOption(value: "ru", title: "Russian", aliases: ["russian"])
+    ]
+
+    private static let voiceSpeakerOptions: [VoiceSetupOption] = [
+        VoiceSetupOption(value: "ryan", title: "Ryan", detail: "English male, dynamic"),
+        VoiceSetupOption(value: "aiden", title: "Aiden", detail: "English male, clear"),
+        VoiceSetupOption(value: "serena", title: "Serena", detail: "female, warm"),
+        VoiceSetupOption(value: "vivian", title: "Vivian", detail: "female, bright"),
+        VoiceSetupOption(value: "dylan", title: "Dylan", detail: "male, natural"),
+        VoiceSetupOption(value: "eric", title: "Eric", detail: "male, lively"),
+        VoiceSetupOption(value: "sohee", title: "Sohee", detail: "Korean female"),
+        VoiceSetupOption(value: "ono-anna", title: "Ono Anna", detail: "Japanese female"),
+        VoiceSetupOption(value: "uncle-fu", title: "Uncle Fu", detail: "male, low")
+    ]
+
+    private static func selectVoiceSetupOption(
+        title: String,
+        options: [VoiceSetupOption],
+        defaultValue: String
+    ) throws -> String {
+        AgentOutput.standardError.writeString("\n\(title):\n")
+        let defaultIndex = options.firstIndex { $0.matches(defaultValue) } ?? 0
+        for (index, option) in options.enumerated() {
+            let marker = index == defaultIndex ? " *" : ""
+            let detail = option.detail.map { " - \($0)" } ?? ""
+            AgentOutput.standardError.writeString(
+                "  \(index + 1). \(option.title) [\(option.value)]\(detail)\(marker)\n"
+            )
+        }
+
+        let value = try promptString(
+            "Choice",
+            defaultValue: String(defaultIndex + 1),
+            allowEmpty: false
+        )
+        if let index = Int(value),
+           options.indices.contains(index - 1) {
+            return options[index - 1].value
+        }
+        if let option = options.first(where: { $0.matches(value) }) {
+            return option.value
+        }
+        throw MLXCoderSetupError.invalidChoice(value)
+    }
+
+    private static func resolvedVoiceExecutableURL(
+        existingSettings: AgentVoiceSettingsManifest?
+    ) throws -> URL {
+        if let installedURL = installedVoiceExecutableURL(existingSettings: existingSettings) {
+            return installedURL
+        }
+        if let packageRoot = detectedPackageRootURL() {
+            return try buildLocalVoiceExecutable(packageRoot: packageRoot)
+        }
+        throw MLXCoderSetupError.voiceToolExecutableNotFound
+    }
+
+    private static func installedVoiceExecutableURL(
+        existingSettings: AgentVoiceSettingsManifest?
+    ) -> URL? {
+        for url in installedVoiceExecutableCandidates(existingSettings: existingSettings) {
+            if isExecutableFile(url) {
+                return url
+            }
+        }
+        return nil
+    }
+
+    private static func installedVoiceExecutableCandidates(
+        existingSettings: AgentVoiceSettingsManifest?
+    ) -> [URL] {
+        var candidates: [URL] = []
+        if let executableDirectory = Bundle.main.executableURL?.deletingLastPathComponent() {
+            candidates.append(
+                executableDirectory.appendingPathComponent(
+                    AgentVoiceSettingsManifest.defaultExecutablePath
+                )
+            )
+        }
+        if let pathURL = executableURLFromPATH(named: AgentVoiceSettingsManifest.defaultExecutablePath) {
+            candidates.append(pathURL)
+        }
+        if let existingPath = existingSettings?.executablePath.nilIfBlank,
+           existingPath.contains("/") {
+            candidates.append(URL(fileURLWithPath: existingPath))
+        }
+        return uniqueURLs(candidates)
+    }
+
+    private static func buildLocalVoiceExecutable(packageRoot: URL) throws -> URL {
+        let voicePackageURL = packageRoot.appendingPathComponent(
+            "Tools/MLXVoiceTranscriber",
+            isDirectory: true
+        )
+        let executableURL = voicePackageURL
+            .appendingPathComponent(".build/release")
+            .appendingPathComponent(AgentVoiceSettingsManifest.defaultExecutablePath)
+
+        AgentOutput.standardError.writeString(
+            """
+            Building local voice executable...
+              cd \(voicePackageURL.path)
+              swift build -c release
+
+            """
+        )
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["swift", "build", "-c", "release"]
+        process.currentDirectoryURL = voicePackageURL
+        process.standardOutput = FileHandle.standardError
+        process.standardError = FileHandle.standardError
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            throw MLXCoderSetupError.voiceToolBuildFailed(process.terminationStatus)
+        }
+        guard isExecutableFile(executableURL) else {
+            throw MLXCoderSetupError.voiceToolExecutableMissing(executableURL.path)
+        }
+        return executableURL
+    }
+
+    private static func detectedPackageRootURL() -> URL? {
+        var candidates: [URL] = [
+            URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        ]
+        if let executableURL = Bundle.main.executableURL {
+            candidates.append(executableURL.deletingLastPathComponent())
+        }
+
+        for candidate in candidates {
+            var current = candidate.standardizedFileURL
+            while current.path != "/" {
+                let packageManifest = current.appendingPathComponent("Package.swift")
+                let voicePackage = current.appendingPathComponent("Tools/MLXVoiceTranscriber/Package.swift")
+                if FileManager.default.fileExists(atPath: packageManifest.path),
+                   FileManager.default.fileExists(atPath: voicePackage.path) {
+                    return current
+                }
+                current.deleteLastPathComponent()
+            }
+        }
+        return nil
+    }
+
+    private static func executableURLFromPATH(named executableName: String) -> URL? {
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        for directory in path.split(separator: ":").map(String.init) {
+            let url = URL(fileURLWithPath: directory, isDirectory: true)
+                .appendingPathComponent(executableName)
+            if isExecutableFile(url) {
+                return url
+            }
+        }
+        return nil
+    }
+
+    private static func isExecutableFile(_ url: URL) -> Bool {
+        FileManager.default.isExecutableFile(atPath: url.path)
+    }
+
+    private static func uniqueURLs(_ urls: [URL]) -> [URL] {
+        var seen = Set<String>()
+        return urls.filter { url in
+            seen.insert(url.standardizedFileURL.path).inserted
+        }
     }
 
     private static func reconfigureExistingProviders(
@@ -1065,6 +1452,34 @@ public enum MLXCoderSetupRunner {
     }
 }
 
+private struct VoiceSetupOption {
+    let value: String
+    let title: String
+    let detail: String?
+    let aliases: [String]
+
+    init(
+        value: String,
+        title: String,
+        detail: String? = nil,
+        aliases: [String] = []
+    ) {
+        self.value = value
+        self.title = title
+        self.detail = detail
+        self.aliases = aliases
+    }
+
+    func matches(_ rawValue: String?) -> Bool {
+        guard let value = rawValue?.nilIfBlank?.lowercased() else {
+            return false
+        }
+        return self.value.lowercased() == value
+            || title.lowercased() == value
+            || aliases.contains { $0.lowercased() == value }
+    }
+}
+
 private struct SetupProviderInput {
     let id: UUID
     let name: String
@@ -1087,6 +1502,9 @@ private enum MLXCoderSetupError: LocalizedError {
     case noModelsConfigured
     case noRemoteModelsReturned
     case chatGPTSubscriptionUnsupported
+    case voiceToolExecutableNotFound
+    case voiceToolBuildFailed(Int32)
+    case voiceToolExecutableMissing(String)
 
     var errorDescription: String? {
         switch self {
@@ -1104,6 +1522,12 @@ private enum MLXCoderSetupError: LocalizedError {
             return "The server did not return any models from /models."
         case .chatGPTSubscriptionUnsupported:
             return "ChatGPT Subscription setup is available on macOS."
+        case .voiceToolExecutableNotFound:
+            return "Local voice executable was not found. Install or update mlx-coder so mlx-voice-transcriber is available next to mlx-coder or in PATH."
+        case let .voiceToolBuildFailed(exitCode):
+            return "Local voice tool build failed with exit code \(exitCode)."
+        case let .voiceToolExecutableMissing(path):
+            return "Local voice tool build completed, but the executable was not found: \(path)"
         }
     }
 }

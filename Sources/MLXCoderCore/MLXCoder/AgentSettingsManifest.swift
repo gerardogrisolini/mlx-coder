@@ -13,12 +13,14 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
         case providers
         case models
         case selected
-                case remoteAPIKeysByProviderID
+        case telegram
+        case voice
+        case remoteAPIKeysByProviderID
         case localExecAllowedCommands
 
     }
 
-    public static let currentVersion = 6
+    public static let currentVersion = 9
     public static let minimumSupportedVersion = 4
 
     public let version: Int
@@ -26,7 +28,9 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
     public let models: [AgentSettingsModelManifest]
     public let selectedModelID: String?
     public let selectedThinkingSelection: AgentThinkingSelection?
-        public let remoteAPIKeysByProviderID: [String: String]
+    public let telegram: AgentTelegramSettingsManifest?
+    public let voice: AgentVoiceSettingsManifest?
+    public let remoteAPIKeysByProviderID: [String: String]
     public let localExecAllowedCommands: [String]
 
 
@@ -36,7 +40,9 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
         models: [AgentSettingsModelManifest],
         selectedModelID: String? = nil,
         selectedThinkingSelection: AgentThinkingSelection? = nil,
-                remoteAPIKeysByProviderID: [String: String] = [:],
+        telegram: AgentTelegramSettingsManifest? = nil,
+        voice: AgentVoiceSettingsManifest? = nil,
+        remoteAPIKeysByProviderID: [String: String] = [:],
         localExecAllowedCommands: [String] = []
     ) {
         let normalizedProviders = Self.normalizedProviders(
@@ -58,7 +64,9 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
             selectedModelID: self.selectedModelID,
             models: normalizedModels
         )
-                self.remoteAPIKeysByProviderID = Self.normalizedRemoteAPIKeys(
+        self.telegram = telegram?.isConfigured == true ? telegram : nil
+        self.voice = voice?.isConfigured == true ? voice : nil
+        self.remoteAPIKeysByProviderID = Self.normalizedRemoteAPIKeys(
             remoteAPIKeysByProviderID,
             models: normalizedModels
         )
@@ -84,8 +92,16 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
             models: models,
             selectedModelID: selected?.modelID,
             selectedThinkingSelection: selected?.thinking,
+            telegram: try container.decodeIfPresent(
+                AgentTelegramSettingsManifest.self,
+                forKey: .telegram
+            ),
+            voice: try container.decodeIfPresent(
+                AgentVoiceSettingsManifest.self,
+                forKey: .voice
+            ),
             remoteAPIKeysByProviderID: try container.decodeIfPresent(
-                                [String: String].self,
+                [String: String].self,
                 forKey: .remoteAPIKeysByProviderID
             ) ?? [:],
             localExecAllowedCommands: try container.decodeIfPresent(
@@ -109,11 +125,14 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
         if !selection.isEmpty {
             try container.encode(selection, forKey: .selected)
         }
-                if !remoteAPIKeysByProviderID.isEmpty {
-            try container.encode(remoteAPIKeysByProviderID, forKey: .remoteAPIKeysByProviderID)
+        if let telegram, telegram.isConfigured {
+            try container.encode(telegram, forKey: .telegram)
         }
-        if !localExecAllowedCommands.isEmpty {
-            try container.encode(localExecAllowedCommands, forKey: .localExecAllowedCommands)
+        if let voice, voice.isConfigured {
+            try container.encode(voice, forKey: .voice)
+        }
+        if !remoteAPIKeysByProviderID.isEmpty {
+            try container.encode(remoteAPIKeysByProviderID, forKey: .remoteAPIKeysByProviderID)
         }
     }
 
@@ -122,8 +141,9 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
             && models.isEmpty
             && selectedModelID == nil
             && selectedThinkingSelection == nil
+            && telegram == nil
+            && voice == nil
             && remoteAPIKeysByProviderID.isEmpty
-            && localExecAllowedCommands.isEmpty
     }
 
     private static func normalizedLocalExecAllowedCommands(_ commands: [String]) -> [String] {
@@ -219,6 +239,160 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
             normalized[providerUUID.uuidString.lowercased()] = normalizedAPIKey
         }
         return normalized
+    }
+}
+
+public struct AgentTelegramSettingsManifest: Codable, Equatable, Sendable {
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case botToken
+        case linkedChatID
+        case linkedChatTitle
+    }
+
+    public let enabled: Bool
+    public let botToken: String?
+    public let linkedChatID: Int64?
+    public let linkedChatTitle: String?
+
+    public init(
+        enabled: Bool = false,
+        botToken: String? = nil,
+        linkedChatID: Int64? = nil,
+        linkedChatTitle: String? = nil
+    ) {
+        let normalizedToken = botToken?.nilIfBlank
+        let normalizedTitle = linkedChatTitle?.nilIfBlank
+        let shouldStoreConfiguration = enabled && normalizedToken != nil
+        self.enabled = shouldStoreConfiguration
+        self.botToken = shouldStoreConfiguration ? normalizedToken : nil
+        self.linkedChatID = shouldStoreConfiguration ? linkedChatID : nil
+        self.linkedChatTitle = shouldStoreConfiguration ? normalizedTitle : nil
+    }
+
+    public var isConfigured: Bool {
+        enabled && botToken?.nilIfBlank != nil
+    }
+
+    public var isEnabled: Bool {
+        isConfigured && linkedChatID != nil
+    }
+}
+
+public struct AgentVoiceSettingsManifest: Codable, Equatable, Sendable {
+    private enum CodingKeys: String, CodingKey {
+        case enabled
+        case provider
+        case executablePath
+        case transcriptionModelID
+        case synthesisModelID
+        case modelID
+        case language
+        case speaker
+    }
+
+    public enum Provider: String, Codable, Equatable, Sendable {
+        case local = "local"
+    }
+
+    public static let defaultProvider: Provider = .local
+    public static let defaultExecutablePath = "mlx-voice-transcriber"
+    public static let defaultTranscriptionModelID = "large-v3-v20240930_626MB"
+    public static let defaultSynthesisModelID = "0.6b"
+    public static let defaultLanguage = "it"
+    public static let defaultSpeaker = "ryan"
+    public static let defaultModelID = defaultTranscriptionModelID
+
+    public let enabled: Bool
+    public let provider: Provider
+    public let executablePath: String
+    public let transcriptionModelID: String
+    public let synthesisModelID: String
+    public let language: String?
+    public let speaker: String?
+
+    public init(
+        enabled: Bool = false,
+        provider: Provider = Self.defaultProvider,
+        modelID: String = Self.defaultModelID,
+        executablePath: String = Self.defaultExecutablePath,
+        synthesisModelID: String = Self.defaultSynthesisModelID,
+        language: String? = Self.defaultLanguage,
+        speaker: String? = Self.defaultSpeaker
+    ) {
+        let normalizedExecutablePath = executablePath.nilIfBlank ?? Self.defaultExecutablePath
+        let normalizedModelID = modelID.nilIfBlank ?? Self.defaultModelID
+        let normalizedSynthesisModelID = synthesisModelID.nilIfBlank ?? Self.defaultSynthesisModelID
+        let normalizedLanguage = language?.nilIfBlank
+        let normalizedSpeaker = speaker?.nilIfBlank
+        let shouldStoreConfiguration = enabled
+            && !normalizedExecutablePath.isEmpty
+            && !normalizedModelID.isEmpty
+        self.enabled = shouldStoreConfiguration
+        self.provider = provider
+        self.executablePath = shouldStoreConfiguration
+            ? normalizedExecutablePath
+            : Self.defaultExecutablePath
+        self.transcriptionModelID = shouldStoreConfiguration
+            ? normalizedModelID
+            : Self.defaultModelID
+        self.synthesisModelID = shouldStoreConfiguration
+            ? normalizedSynthesisModelID
+            : Self.defaultSynthesisModelID
+        self.language = shouldStoreConfiguration ? normalizedLanguage : nil
+        self.speaker = shouldStoreConfiguration ? normalizedSpeaker : nil
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let providerValue = try container.decodeIfPresent(String.self, forKey: .provider)
+        let provider = providerValue.flatMap(Provider.init(rawValue:)) ?? Self.defaultProvider
+        let usesLegacyProvider = providerValue?.lowercased() == "openai"
+        let transcriptionModelID = try container.decodeIfPresent(
+            String.self,
+            forKey: .transcriptionModelID
+        ) ?? (usesLegacyProvider
+            ? Self.defaultModelID
+            : container.decodeIfPresent(String.self, forKey: .modelID))
+        ?? Self.defaultModelID
+        self.init(
+            enabled: try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false,
+            provider: provider,
+            modelID: transcriptionModelID,
+            executablePath: try container.decodeIfPresent(String.self, forKey: .executablePath)
+                ?? Self.defaultExecutablePath,
+            synthesisModelID: try container.decodeIfPresent(String.self, forKey: .synthesisModelID)
+                ?? Self.defaultSynthesisModelID,
+            language: try container.decodeIfPresent(String.self, forKey: .language),
+            speaker: try container.decodeIfPresent(String.self, forKey: .speaker)
+                ?? Self.defaultSpeaker
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(enabled, forKey: .enabled)
+        try container.encode(provider, forKey: .provider)
+        try container.encode(executablePath, forKey: .executablePath)
+        try container.encode(transcriptionModelID, forKey: .transcriptionModelID)
+        try container.encode(synthesisModelID, forKey: .synthesisModelID)
+        if let language {
+            try container.encode(language, forKey: .language)
+        }
+        if let speaker {
+            try container.encode(speaker, forKey: .speaker)
+        }
+    }
+
+    public var modelID: String {
+        transcriptionModelID
+    }
+
+    public var isConfigured: Bool {
+        enabled
+            && provider == .local
+            && executablePath.nilIfBlank != nil
+            && transcriptionModelID.nilIfBlank != nil
     }
 }
 

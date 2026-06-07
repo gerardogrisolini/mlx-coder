@@ -27,12 +27,6 @@ extension TerminalChat {
         if models.count == 1,
            let model = models.first {
             let thinkingSelection = model.resolvedDefaultThinkingSelection
-            if configuration.hostedModels == nil {
-                try AgentSettingsStore.saveSelectedModelID(
-                    model.id,
-                    thinkingSelection: thinkingSelection
-                )
-            }
             manualModelIDOverride = model.id
             manualThinkingSelectionOverride = thinkingSelection
             writeSystemMessage(
@@ -50,12 +44,6 @@ extension TerminalChat {
         }
 
         let thinkingSelection = promptForThinkingSelection(model: model)
-        if configuration.hostedModels == nil {
-            try AgentSettingsStore.saveSelectedModelID(
-                model.id,
-                thinkingSelection: thinkingSelection
-            )
-        }
         manualModelIDOverride = model.id
         manualThinkingSelectionOverride = thinkingSelection
         writeSystemMessage(
@@ -88,12 +76,6 @@ extension TerminalChat {
 
         let selectedThinkingSelection = promptForThinkingSelection(model: selectedModel)
         activeSessionSystemPromptOverride = nil
-        if configuration.hostedModels == nil {
-            try AgentSettingsStore.saveSelectedModelID(
-                selectedModel.id,
-                thinkingSelection: selectedThinkingSelection
-            )
-        }
         manualModelIDOverride = selectedModel.id
         manualThinkingSelectionOverride = selectedThinkingSelection
 

@@ -68,15 +68,13 @@ public actor LocalExecPermissionAuthorizer {
 
     static func isCommandPersistentlyAllowed(
         _ command: String,
-        manifest: AgentSettingsManifest? = AgentSettingsManifestStore.load()
+        permissions: AgentPermissionsManifest? = persistedPermissions()
     ) -> Bool {
         guard let commandIdentity = persistedCommandPermissionIdentity(for: command),
-              let manifest else {
+              let permissions else {
             return false
         }
-        return manifest.localExecAllowedCommands.contains {
-            $0.caseInsensitiveCompare(commandIdentity) == .orderedSame
-        }
+        return permissions.containsLocalExecAllowedCommand(commandIdentity)
     }
 
     static func persistAllowedCommand(_ command: String) {
@@ -155,11 +153,11 @@ public actor LocalExecPermissionAuthorizer {
             return
         }
         didLoadPersistedAllowedCommands = true
-        guard let manifest = AgentSettingsManifestStore.load() else {
+        guard let permissions = Self.persistedPermissions() else {
             return
         }
         alwaysAllowedKeys.formUnion(
-            manifest.localExecAllowedCommands.map { "local.exec\u{1f}\($0)" }
+            permissions.localExecAllowedCommands.map { "local.exec\u{1f}\($0)" }
         )
     }
 
@@ -171,30 +169,35 @@ public actor LocalExecPermissionAuthorizer {
     }
 
     private static func persistAllowedCommandIdentity(_ commandIdentity: String) {
-        let manifest = AgentSettingsManifestStore.load()
-            ?? AgentSettingsManifest(models: [])
-        guard !manifest.localExecAllowedCommands.contains(where: {
-            $0.caseInsensitiveCompare(commandIdentity) == .orderedSame
-        }) else {
+        let permissions = persistedPermissions()
+            ?? AgentPermissionsManifest()
+        guard !permissions.containsLocalExecAllowedCommand(commandIdentity) else {
             return
         }
         do {
-            try AgentSettingsManifestStore.save(
-                AgentSettingsManifest(
-                    providers: manifest.providers,
-                    models: manifest.models,
-                    selectedModelID: manifest.selectedModelID,
-                    selectedThinkingSelection: manifest.selectedThinkingSelection,
-                    remoteAPIKeysByProviderID: manifest.remoteAPIKeysByProviderID,
-                    localExecAllowedCommands: manifest.localExecAllowedCommands + [commandIdentity]
-                )
+            try AgentPermissionsManifestStore.save(
+                permissions.appendingLocalExecAllowedCommand(commandIdentity)
             )
         } catch {
             return
         }
     }
 
-    
+    private static func persistedPermissions() -> AgentPermissionsManifest? {
+        let permissions = AgentPermissionsManifestStore.load()
+        guard let legacyCommands = AgentSettingsManifestStore.load()?.localExecAllowedCommands,
+              !legacyCommands.isEmpty else {
+            return permissions
+        }
+
+        let migrated = AgentPermissionsManifest(
+            localExecAllowedCommands: (permissions?.localExecAllowedCommands ?? []) + legacyCommands
+        )
+        if migrated != permissions {
+            try? AgentPermissionsManifestStore.save(migrated)
+        }
+        return migrated
+    }
 
     private func presentDialog(
         for request: AgentToolAuthorizationRequest

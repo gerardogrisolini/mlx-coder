@@ -121,7 +121,7 @@ struct ACPCompatibilityTests {
     }
 
     @Test
-    func permissionResponsesAcceptACPAndAionUIShapes() {
+    func permissionResponsesAcceptAlternateACPShapes() {
         let cases: [(JSONValue, String)] = [
             (.string("allow_once"), "allow_once"),
             (.object(["optionId": .string("allow_always")]), "allow_always"),
@@ -194,45 +194,6 @@ struct ACPCompatibilityTests {
         #expect(update?["size"]?.intValue == 4096)
         let meta = update?["_meta"]?.mlxObjectValue
         #expect(meta?["modelID"]?.acpStringValue == "local-model")
-    }
-
-    @Test
-    func aionFileMarkersAreConvertedToAttachments() throws {
-        let rootURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("mlx-acp-aion-attachments-\(UUID().uuidString)", isDirectory: true)
-        defer {
-            try? FileManager.default.removeItem(at: rootURL)
-        }
-        try FileManager.default.createDirectory(
-            at: rootURL,
-            withIntermediateDirectories: true
-        )
-        let imageURL = rootURL.appendingPathComponent("attached.png")
-        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: imageURL)
-
-        let promptText = """
-        Can you read the attachment?
-
-        [[AION_FILES]]
-        \(imageURL.path)
-        """
-
-        let promptBlocks: [Any] = [
-            [
-                "type": "text",
-                "text": promptText
-            ] as [String: Any]
-        ]
-        let attachments = MLXCoderACPBridge.promptAttachments(
-            from: promptBlocks,
-            renderedPromptText: promptText,
-            cwd: rootURL.path
-        )
-
-        #expect(attachments.count == 1)
-        #expect(attachments.first?.kind == .image)
-        #expect(attachments.first?.fileURL?.standardizedFileURL.path == imageURL.standardizedFileURL.path)
-        #expect(MLXCoderACPBridge.promptTextRemovingAionFilesMarker(promptText) == "Can you read the attachment?")
     }
 
     @Test
