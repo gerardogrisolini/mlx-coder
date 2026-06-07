@@ -549,7 +549,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
     private var panelCursorIndex = 0
     private var panelIsProcessing = false
     private var panelQueuedPromptCount = 0
-    private var panelModeOverride: TerminalPanelModeOverride?
+    private var panelOverlayOverride: TerminalPanelModeOverride?
     private var panelCommandSuggestions: [TerminalCommandSuggestion] = []
     private var panelCommandSuggestionIndex = 0
 
@@ -684,7 +684,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
         panelStatusBar = statusBar
         panelBuffer.removeAll()
         panelCursorIndex = 0
-        panelModeOverride = nil
+        panelOverlayOverride = nil
         panelCommandSuggestions = commandSuggestions
         panelCommandSuggestionIndex = 0
         historyIndex = nil
@@ -747,7 +747,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
             panelStatusBar = nil
             panelBuffer.removeAll()
             panelCursorIndex = 0
-            panelModeOverride = nil
+            panelOverlayOverride = nil
             panelCommandSuggestions.removeAll()
             panelCommandSuggestionIndex = 0
         }
@@ -778,8 +778,18 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
     }
 
     public func setPanelModeOverride(_ override: TerminalPanelModeOverride?) {
+        setPanelOverlay(override)
+    }
+
+    public func setPanelOverlay(
+        _ override: TerminalPanelModeOverride?,
+        isProcessing: Bool? = nil
+    ) {
         panelLock.lock()
-        panelModeOverride = override
+        panelOverlayOverride = override
+        if let isProcessing {
+            panelIsProcessing = isProcessing
+        }
         panelCommandSuggestionIndex = 0
         panelLock.unlock()
         renderPanel()
@@ -1005,7 +1015,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
     }
 
     private func panelModeTextLocked() -> String {
-        if let modeText = panelModeOverride?.modeText {
+        if let modeText = panelOverlayOverride?.modeText {
             return modeText
         }
 
@@ -1017,7 +1027,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
     }
 
     private func panelHelpTextLocked() -> String {
-        if let helpText = panelModeOverride?.helpText {
+        if let helpText = panelOverlayOverride?.helpText {
             return helpText
         }
 
@@ -1133,7 +1143,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
     }
 
     private func activeCommandSuggestionsLocked() -> [TerminalCommandSuggestion] {
-        guard panelModeOverride == nil else {
+        guard panelOverlayOverride == nil else {
             return []
         }
 

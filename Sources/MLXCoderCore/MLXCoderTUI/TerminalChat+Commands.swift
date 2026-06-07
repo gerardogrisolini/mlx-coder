@@ -21,7 +21,92 @@ enum TerminalChatCommandAvailability: Sendable, Equatable {
     case voiceSynthesisEnabled
 }
 
+enum TerminalSubmittedLineRole: Sendable, Equatable {
+    case empty
+    case prompt
+    case slashCommand(token: String)
+}
+
 extension TerminalChat {
+    static func submittedLineRole(for line: String) -> TerminalSubmittedLineRole {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return .empty
+        }
+        guard let command = commandToken(from: trimmed) else {
+            return .prompt
+        }
+        return .slashCommand(token: command)
+    }
+
+    static func isKnownSlashCommand(_ line: String) -> Bool {
+        guard let command = commandToken(from: line) else {
+            return false
+        }
+        if command == "/session" {
+            return true
+        }
+        return allCommandDescriptors.contains { $0.command == command }
+    }
+
+    static func shouldSuspendPanelInput(for line: String) -> Bool {
+        switch submittedLineRole(for: line) {
+        case .empty, .prompt:
+            return false
+        case let .slashCommand(token):
+            return token != "/speak"
+        }
+    }
+
+    static func isSubAgentsCommand(_ line: String) -> Bool {
+        commandToken(from: line) == "/subagents"
+    }
+
+    static func isVoiceCommand(_ line: String) -> Bool {
+        commandToken(from: line) == "/voice"
+    }
+
+    static func isSpeakCommand(_ line: String) -> Bool {
+        commandToken(from: line) == "/speak"
+    }
+
+    func unavailableLocalSlashCommandMessage(for line: String) -> String? {
+        guard let command = Self.commandToken(from: line) else {
+            return nil
+        }
+
+        switch command {
+        case "/telegram":
+            return isTelegramCommandVisible()
+                ? nil
+                : Self.unknownCommandMessage(for: line)
+        case "/voice":
+            return isVoiceCommandVisible()
+                ? nil
+                : Self.unknownCommandMessage(for: line)
+        case "/speak":
+            return isVoiceSynthesisConfigured()
+                ? nil
+                : Self.unknownCommandMessage(for: line)
+        default:
+            return nil
+        }
+    }
+
+    func generatingSlashCommandMessage(for line: String) -> String {
+        if let unavailableMessage = unavailableLocalSlashCommandMessage(for: line) {
+            return unavailableMessage
+        }
+        guard Self.isKnownSlashCommand(line) else {
+            return Self.unknownCommandMessage(for: line)
+        }
+        if Self.isVoiceCommand(line) || Self.isSpeakCommand(line) {
+            return "mlx-coder: voice commands are unavailable while a prompt is running.\n"
+        }
+        let command = Self.commandToken(from: line) ?? line.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "mlx-coder: command '\(command)' is unavailable while a prompt is running.\n"
+    }
+
     func visibleCommandDescriptorsForCurrentAgent() -> [TerminalChatCommandDescriptor] {
         Self.visibleCommandDescriptors(
             builderAgentEnabled: AgentProfileStore.isBuilderAgent(selectedAgent),

@@ -27,14 +27,13 @@ extension TerminalChat {
         do {
             activeVoiceRecordingSession = try await voiceRecordingService.startRecording()
             interactiveReader.setPanelText("")
-            interactiveReader.setPanelProcessing(true)
-            interactiveReader.setPanelModeOverride(
+            interactiveReader.setPanelOverlay(
                 TerminalPanelModeOverride(
                     modeText: "Recording voice",
                     helpText: "Press Enter to stop · Esc cancel"
-                )
+                ),
+                isProcessing: true
             )
-            writeSystemMessage("Recording voice. Press Enter to stop.\n")
         } catch {
             clearVoicePanelMode()
             writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
@@ -60,12 +59,30 @@ extension TerminalChat {
         }
 
         do {
+            interactiveReader.setPanelOverlay(
+                TerminalPanelModeOverride(
+                    modeText: "Speaking response",
+                    helpText: "Synthesizing audio"
+                ),
+                isProcessing: true
+            )
+            defer {
+                interactiveReader.setPanelOverlay(nil, isProcessing: false)
+            }
+
             let spokenText = AgentVoiceSpokenTextFormatter.prepare(text)
             let audio = try await AgentVoiceSynthesisService()
                 .synthesize(spokenText.text)
             defer {
                 audio.cleanup()
             }
+            interactiveReader.setPanelOverlay(
+                TerminalPanelModeOverride(
+                    modeText: "Speaking response",
+                    helpText: "Playing audio"
+                ),
+                isProcessing: true
+            )
             try await playSynthesizedAudio(at: audio.fileURL)
         } catch {
             writeFailureMessage("mlx-coder: \(error.localizedDescription)\n")
@@ -79,13 +96,13 @@ extension TerminalChat {
             let audio = try voiceRecordingService.stopRecording()
             activeVoiceRecordingSession = nil
             interactiveReader.setPanelText("")
-            interactiveReader.setPanelModeOverride(
+            interactiveReader.setPanelOverlay(
                 TerminalPanelModeOverride(
                     modeText: "Transcribing voice",
                     helpText: "Please wait"
-                )
+                ),
+                isProcessing: true
             )
-            writeSystemMessage("Transcribing voice...\n")
             return transcribeVoiceAudio(audio, origin: .local, eventQueue: eventQueue)
         } catch {
             activeVoiceRecordingSession = nil
@@ -126,8 +143,7 @@ extension TerminalChat {
     }
 
     func clearVoicePanelMode() {
-        interactiveReader.setPanelModeOverride(nil)
-        interactiveReader.setPanelProcessing(false)
+        interactiveReader.setPanelOverlay(nil, isProcessing: false)
     }
 
     func transcribeVoiceAudio(

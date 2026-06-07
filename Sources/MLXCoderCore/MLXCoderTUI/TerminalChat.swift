@@ -374,13 +374,14 @@ public final class TerminalChat: @unchecked Sendable {
                     }
 
                     if isGenerating {
-                        if Self.isSubAgentsCommand(line) {
-                            _ = await handleSubmittedPanelLine(line)
-                        } else if Self.isVoiceCommand(line) || Self.isSpeakCommand(line) {
-                            writeFailureMessage("mlx-coder: voice commands are unavailable while a prompt is running.\n")
-                        } else {
+                        switch Self.submittedLineRole(for: line) {
+                        case .empty, .prompt:
                             queuedPrompts.append(TerminalQueuedPrompt(text: line, origin: .local))
                             interactiveReader.setQueuedPromptCount(queuedPrompts.count)
+                        case .slashCommand where Self.isSubAgentsCommand(line):
+                            _ = await handleSubmittedPanelLine(line)
+                        case .slashCommand:
+                            writeFailureMessage(generatingSlashCommandMessage(for: line))
                         }
                         continue
                     }
@@ -422,13 +423,13 @@ public final class TerminalChat: @unchecked Sendable {
                 interactiveReader.setQueuedPromptCount(queuedPrompts.count)
             case let .voicePromptProgress(progress):
                 if progress.origin == .local {
-                    interactiveReader.setPanelModeOverride(
+                    interactiveReader.setPanelOverlay(
                         TerminalPanelModeOverride(
                             modeText: "Transcribing voice",
                             helpText: progress.message
-                        )
+                        ),
+                        isProcessing: true
                     )
-                    writeSystemMessage("Voice: \(progress.message)\n")
                 }
                 await sendTelegramSystemMessageIfLinked(
                     "Voice: \(progress.message)",
@@ -475,29 +476,6 @@ public final class TerminalChat: @unchecked Sendable {
         await stopPanelInput()
     }
 
-    private static func shouldSuspendPanelInput(for line: String) -> Bool {
-        let prompt = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard prompt.hasPrefix("/") else {
-            return false
-        }
-        return !isSpeakCommand(prompt)
-    }
-
-    private static func isSubAgentsCommand(_ line: String) -> Bool {
-        let prompt = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        return prompt == "/subagents" || prompt.hasPrefix("/subagents ")
-    }
-
-    private static func isVoiceCommand(_ line: String) -> Bool {
-        let prompt = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        return prompt == "/voice" || prompt.hasPrefix("/voice ")
-    }
-
-    private static func isSpeakCommand(_ line: String) -> Bool {
-        let prompt = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        return prompt == "/speak" || prompt.hasPrefix("/speak ")
-    }
-
     private func renderHelpTextForCurrentAgent() -> String {
         var lines = [
             "Type a prompt and press return."
@@ -533,6 +511,17 @@ public final class TerminalChat: @unchecked Sendable {
 
         if origin != .local {
             return submittedTelegramLineAction(prompt)
+        }
+
+        if case .slashCommand = Self.submittedLineRole(for: prompt) {
+            if let unavailableMessage = unavailableLocalSlashCommandMessage(for: prompt) {
+                writeFailureMessage(unavailableMessage)
+                return .continueChat
+            }
+            guard Self.isKnownSlashCommand(prompt) else {
+                writeFailureMessage(Self.unknownCommandMessage(for: prompt))
+                return .continueChat
+            }
         }
 
         switch prompt {
@@ -611,24 +600,12 @@ public final class TerminalChat: @unchecked Sendable {
             await handleSubAgentsCommand(command)
             return .continueChat
         case let command where command == "/telegram" || command.hasPrefix("/telegram "):
-            guard isTelegramCommandVisible() else {
-                writeFailureMessage(Self.unknownCommandMessage(for: command))
-                return .continueChat
-            }
             await handleTelegramCommand(command)
             return .continueChat
         case let command where command == "/voice" || command.hasPrefix("/voice "):
-            guard isVoiceCommandVisible() else {
-                writeFailureMessage(Self.unknownCommandMessage(for: command))
-                return .continueChat
-            }
             await handleVoiceCommand(command)
             return .continueChat
         case let command where command == "/speak" || command.hasPrefix("/speak "):
-            guard isVoiceSynthesisConfigured() else {
-                writeFailureMessage(Self.unknownCommandMessage(for: command))
-                return .continueChat
-            }
             await handleSpeakCommand(command)
             return .continueChat
         case "/clear":
@@ -655,7 +632,7 @@ public final class TerminalChat: @unchecked Sendable {
             }
             return .continueChat
         default:
-            if prompt.hasPrefix("/") {
+            if case .slashCommand = Self.submittedLineRole(for: prompt) {
                 writeFailureMessage(Self.unknownCommandMessage(for: prompt))
                 return .continueChat
             }

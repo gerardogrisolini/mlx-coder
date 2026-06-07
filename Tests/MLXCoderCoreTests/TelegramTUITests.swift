@@ -274,6 +274,25 @@ struct TelegramTUITests {
     }
 
     @Test
+    func submittedLineRoleSeparatesPromptsFromSlashCommands() {
+        #expect(TerminalChat.submittedLineRole(for: "ciao") == .prompt)
+        #expect(TerminalChat.submittedLineRole(for: "   ") == .empty)
+        #expect(TerminalChat.submittedLineRole(for: "/speak") == .slashCommand(token: "/speak"))
+        #expect(TerminalChat.submittedLineRole(for: "/help extra") == .slashCommand(token: "/help"))
+        #expect(TerminalChat.submittedLineRole(for: "/start 233B0EC4") == .slashCommand(token: "/start"))
+    }
+
+    @Test
+    func slashCommandsDoNotUsePromptPanelRules() {
+        #expect(!TerminalChat.shouldSuspendPanelInput(for: "ciao"))
+        #expect(TerminalChat.shouldSuspendPanelInput(for: "/help"))
+        #expect(TerminalChat.shouldSuspendPanelInput(for: "/unknown"))
+        #expect(!TerminalChat.shouldSuspendPanelInput(for: "/speak"))
+        #expect(TerminalChat.isKnownSlashCommand("/session save"))
+        #expect(!TerminalChat.isKnownSlashCommand("/start 233B0EC4"))
+    }
+
+    @Test
     func voiceTranscriptionArgumentsUseConfiguredLocalToolModelAndLanguage() throws {
         let audioURL = URL(fileURLWithPath: "/tmp/voice.m4a")
         let arguments = AgentVoiceTranscriptionService.transcriptionArguments(
