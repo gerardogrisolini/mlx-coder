@@ -353,9 +353,10 @@ public actor MLXServerRuntime {
     /// when probing per-model cache states.
     private var modelPromptPrefixKeys: [String: Set<PromptPrefixCacheKey>] = [:]
     private var promptPrefixCacheGeneration: UInt64 = 0
-    private let generationGate = MLXServerGenerationGate()
+    private let generationGates = MLXServerPerModelGenerationGate()
     private let retentionPolicy: MLXServerModelRetentionPolicy
     private let diskKVCacheStore: MLXServerDiskKVCacheStore?
+    private let diskKVCachePersistenceWriter: MLXServerDiskKVCachePersistenceWriter?
     private let modelLoadLogger: (@Sendable (MLXServerModelLoadEvent) -> Void)?
     private let modelUnloadLogger: (@Sendable (MLXServerModelUnloadEvent) -> Void)?
     private var lastChatCacheEvent: MLXServerChatCacheEvent?
@@ -367,9 +368,13 @@ public actor MLXServerRuntime {
         modelUnloadLogger: (@Sendable (MLXServerModelUnloadEvent) -> Void)? = nil
     ) {
         self.retentionPolicy = retentionPolicy
-        self.diskKVCacheStore = diskKVCacheConfiguration.isEnabled
-            ? MLXServerDiskKVCacheStore(configuration: diskKVCacheConfiguration)
-            : nil
+        if diskKVCacheConfiguration.isEnabled {
+            self.diskKVCacheStore = MLXServerDiskKVCacheStore(configuration: diskKVCacheConfiguration)
+            self.diskKVCachePersistenceWriter = MLXServerDiskKVCachePersistenceWriter()
+        } else {
+            self.diskKVCacheStore = nil
+            self.diskKVCachePersistenceWriter = nil
+        }
         self.modelLoadLogger = modelLoadLogger
         self.modelUnloadLogger = modelUnloadLogger
     }
@@ -384,7 +389,7 @@ public actor MLXServerRuntime {
         parameters: GenerateParameters,
         progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
     ) async throws {
-        let generationLease = try await generationGate.acquire()
+        let generationLease = try await generationGates.acquire(modelID: model.id)
         do {
             _ = try await container(
                 for: model,
@@ -400,7 +405,7 @@ public actor MLXServerRuntime {
     }
 
     public func unloadAll() async {
-        guard let generationLease = try? await generationGate.acquire() else {
+        guard let generationLeases = try? await generationGates.acquireAll() else {
             return
         }
         let unloadedModelIDs = Set(containers.keys.map(\.modelID)).sorted()
@@ -412,14 +417,14 @@ public actor MLXServerRuntime {
         promptPrefixCaches.removeAll(keepingCapacity: true)
         modelPromptPrefixKeys.removeAll(keepingCapacity: true)
         logUnloadedModels(unloadedModelIDs)
-        await generationLease.release()
+        await generationLeases.releaseAll()
     }
 
     public func generate(
         request: MLXServerGenerationRequest,
         progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
     ) async throws -> AsyncStream<Generation> {
-        let generationLease = try await generationGate.acquire()
+        let generationLease = try await generationGates.acquire(modelID: request.model.id)
 
         do {
             let container = try await container(
@@ -475,7 +480,7 @@ public actor MLXServerRuntime {
             return try await generate(request: request, progressHandler: progressHandler)
         }
 
-        let generationLease = try await generationGate.acquire()
+        let generationLease = try await generationGates.acquire(modelID: request.model.id)
 
         let container: ModelContainer
         let rendering: PromptPrefixRendering
@@ -1047,7 +1052,7 @@ public actor MLXServerRuntime {
             }
         }
 
-        await persistDiskPromptCacheIfNeeded(
+        enqueueDiskPromptCachePersistenceIfNeeded(
             cache: cache,
             key: key,
             tokenIDs: cachedTokenIDs,
@@ -1055,13 +1060,15 @@ public actor MLXServerRuntime {
         )
     }
 
-    private func persistDiskPromptCacheIfNeeded(
+    private func enqueueDiskPromptCachePersistenceIfNeeded(
         cache: [KVCache],
         key: PromptPrefixCacheKey,
         tokenIDs: [Int],
         parameters: GenerateParameters
-    ) async {
-        guard let diskKVCacheStore, cache.hasPromptState else {
+    ) {
+        guard let diskKVCacheStore,
+              let diskKVCachePersistenceWriter,
+              cache.hasPromptState else {
             return
         }
         let identity = MLXServerDiskKVCacheIdentity(
@@ -1069,18 +1076,14 @@ public actor MLXServerRuntime {
             tokenIDs: tokenIDs,
             parameters: parameters
         )
-        guard let target = try? diskKVCacheStore.preparePersistenceTarget(for: identity) else {
-            return
-        }
+        // The live cache can be reused by the next turn; the disk writer needs its own snapshot.
+        let cacheSnapshot = MLXServerKVCacheTransfer(cache: cache.map { $0.copy() })
 
-        do {
-            try savePromptCache(url: target.temporaryURL, cache: cache)
-            try diskKVCacheStore.commitPersistedCache(
+        diskKVCachePersistenceWriter.enqueue(coalescingKey: key.signature) {
+            diskKVCacheStore.persistCache(
                 identity: identity,
-                target: target
+                cache: cacheSnapshot.cache
             )
-        } catch {
-            diskKVCacheStore.discardPersistenceTarget(target)
         }
     }
 

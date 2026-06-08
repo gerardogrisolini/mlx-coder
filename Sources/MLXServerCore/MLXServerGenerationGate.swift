@@ -83,13 +83,20 @@ actor MLXServerPerModelGenerationGate {
     /// Acquires every per-model gate that exists at the time of the call.
     /// Uses a snapshot to avoid deadlocks between concurrent `acquireAll()` calls.
     func acquireAll() async throws -> MLXServerGenerationLeaseSet {
-        let snapshotIDs = Array(gates.keys)
+        let snapshotIDs = Array(gates.keys).sorted()
         var leases: [MLXServerGenerationLease] = []
-        for modelID in snapshotIDs {
-            let lease = try await gates[modelID]!.acquire()
-            leases.append(lease)
+        do {
+            for modelID in snapshotIDs {
+                let lease = try await gates[modelID]!.acquire()
+                leases.append(lease)
+            }
+            return MLXServerGenerationLeaseSet(leases: leases)
+        } catch {
+            for lease in leases {
+                await lease.release()
+            }
+            throw error
         }
-        return MLXServerGenerationLeaseSet(leases: leases)
     }
 }
 

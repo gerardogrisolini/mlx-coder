@@ -37,7 +37,7 @@ public struct MLXServerDiskKVCacheConfiguration: Sendable, Equatable {
     }
 }
 
-struct MLXServerDiskKVCacheIdentity: Hashable {
+struct MLXServerDiskKVCacheIdentity: Hashable, Sendable {
     var modelID: String
     var runtimeKind: MLXServerModelRuntimeKind
     var cacheLayoutSignature: String
@@ -105,11 +105,12 @@ struct MLXServerDiskKVCachePrefixMatch {
     var storedPromptTokenCount: Int
 }
 
-final class MLXServerDiskKVCacheStore {
+final class MLXServerDiskKVCacheStore: @unchecked Sendable {
     fileprivate static let metadataVersion = 3
     private let configuration: MLXServerDiskKVCacheConfiguration
     private let fileManager: FileManager
     private let indexRebuildObserver: (@Sendable () -> Void)?
+    private let storeLock = NSRecursiveLock()
     private let ensuredDirectoryLock = NSLock()
     private var ensuredDirectoryPaths = Set<String>()
 
@@ -223,189 +224,225 @@ final class MLXServerDiskKVCacheStore {
     func loadCache(
         for identity: MLXServerDiskKVCacheIdentity
     ) -> [KVCache]? {
-        guard configuration.isEnabled else {
-            return nil
-        }
-
-        let urls = entryURLs(for: identity)
-        guard
-            var metadata = loadMetadata(from: urls.metadataURL),
-            metadata.matches(identity),
-            fileManager.fileExists(atPath: urls.cacheURL.path)
-        else {
-            return nil
-        }
-
-        do {
-            let (cache, _) = try loadPromptCache(url: urls.cacheURL)
-            guard cache.hasPromptState else {
-                removeEntry(cacheURL: urls.cacheURL, metadataURL: urls.metadataURL)
+        withStoreLock {
+            guard configuration.isEnabled else {
                 return nil
             }
-            if !normalizePromptCacheLength(cache, expectedTokenCount: metadata.promptTokenCount) {
-                removeEntry(cacheURL: urls.cacheURL, metadataURL: urls.metadataURL)
+
+            let urls = entryURLs(for: identity)
+            guard
+                var metadata = loadMetadata(from: urls.metadataURL),
+                metadata.matches(identity),
+                fileManager.fileExists(atPath: urls.cacheURL.path)
+            else {
                 return nil
             }
-            metadata.lastAccessedAt = Date()
-            metadata.byteCount = byteCount(of: urls.cacheURL)
-            saveMetadata(metadata, to: urls.metadataURL)
-            upsertIndexedEntry(
-                MLXServerPersistedDiskKVCacheEntry(
-                    metadataURL: urls.metadataURL,
-                    cacheURL: urls.cacheURL,
-                    metadata: metadata
+
+            do {
+                let (cache, _) = try loadPromptCache(url: urls.cacheURL)
+                guard cache.hasPromptState else {
+                    removeEntry(cacheURL: urls.cacheURL, metadataURL: urls.metadataURL)
+                    return nil
+                }
+                if !normalizePromptCacheLength(cache, expectedTokenCount: metadata.promptTokenCount) {
+                    removeEntry(cacheURL: urls.cacheURL, metadataURL: urls.metadataURL)
+                    return nil
+                }
+                metadata.lastAccessedAt = Date()
+                metadata.byteCount = byteCount(of: urls.cacheURL)
+                saveMetadata(metadata, to: urls.metadataURL)
+                upsertIndexedEntry(
+                    MLXServerPersistedDiskKVCacheEntry(
+                        metadataURL: urls.metadataURL,
+                        cacheURL: urls.cacheURL,
+                        metadata: metadata
+                    )
                 )
-            )
-            return cache
-        } catch {
-            removeEntry(cacheURL: urls.cacheURL, metadataURL: urls.metadataURL)
-            return nil
+                return cache
+            } catch {
+                removeEntry(cacheURL: urls.cacheURL, metadataURL: urls.metadataURL)
+                return nil
+            }
         }
     }
 
     func loadLongestPromptPrefix(
         for query: MLXServerDiskKVCachePrefixQuery
     ) -> MLXServerDiskKVCachePrefixMatch? {
-        guard configuration.isEnabled, !query.promptTokenIDs.isEmpty else {
-            return nil
-        }
-
-        rebuildIndexIfNeeded()
-        let candidates = diskCacheEntries(
-            modelID: query.modelID,
-            runtimeKind: query.runtimeKind.rawValue,
-            cacheLayoutSignature: query.cacheLayoutSignature
-        )
-            .compactMap { entry -> MLXServerDiskKVCachePrefixCandidate? in
-                entry.metadata.reusablePromptPrefixCandidate(
-                    for: query,
-                    cacheURL: entry.cacheURL,
-                    metadataURL: entry.metadataURL
-                )
-            }
-            .sorted { lhs, rhs in
-                if lhs.reusablePromptTokenCount != rhs.reusablePromptTokenCount {
-                    return lhs.reusablePromptTokenCount > rhs.reusablePromptTokenCount
-                }
-                return lhs.metadata.lastAccessedAt > rhs.metadata.lastAccessedAt
+        withStoreLock {
+            guard configuration.isEnabled, !query.promptTokenIDs.isEmpty else {
+                return nil
             }
 
-        for candidate in candidates {
-            do {
-                let (cache, _) = try loadPromptCache(url: candidate.cacheURL)
-                guard cache.hasPromptState else {
-                    removeEntry(cacheURL: candidate.cacheURL, metadataURL: candidate.metadataURL)
-                    continue
+            rebuildIndexIfNeeded()
+            let candidates = diskCacheEntries(
+                modelID: query.modelID,
+                runtimeKind: query.runtimeKind.rawValue,
+                cacheLayoutSignature: query.cacheLayoutSignature
+            )
+                .compactMap { entry -> MLXServerDiskKVCachePrefixCandidate? in
+                    entry.metadata.reusablePromptPrefixCandidate(
+                        for: query,
+                        cacheURL: entry.cacheURL,
+                        metadataURL: entry.metadataURL
+                    )
                 }
-                guard normalizePromptCacheLength(
-                    cache,
-                    expectedTokenCount: candidate.storedPromptTokenCount
-                ) else {
-                    removeEntry(cacheURL: candidate.cacheURL, metadataURL: candidate.metadataURL)
-                    continue
+                .sorted { lhs, rhs in
+                    if lhs.reusablePromptTokenCount != rhs.reusablePromptTokenCount {
+                        return lhs.reusablePromptTokenCount > rhs.reusablePromptTokenCount
+                    }
+                    return lhs.metadata.lastAccessedAt > rhs.metadata.lastAccessedAt
                 }
-                let tokensToTrim = candidate.storedPromptTokenCount - candidate.reusablePromptTokenCount
-                if tokensToTrim > 0 {
-                    let trimmedTokenCount = trimPromptPrefixCache(cache, numTokens: tokensToTrim)
-                    guard trimmedTokenCount == tokensToTrim else {
+
+            for candidate in candidates {
+                do {
+                    let (cache, _) = try loadPromptCache(url: candidate.cacheURL)
+                    guard cache.hasPromptState else {
+                        removeEntry(cacheURL: candidate.cacheURL, metadataURL: candidate.metadataURL)
                         continue
                     }
-                }
-                guard cache.hasPromptState else {
-                    continue
-                }
-                guard normalizePromptCacheLength(
-                    cache,
-                    expectedTokenCount: candidate.reusablePromptTokenCount
-                ) else {
-                    continue
-                }
+                    guard normalizePromptCacheLength(
+                        cache,
+                        expectedTokenCount: candidate.storedPromptTokenCount
+                    ) else {
+                        removeEntry(cacheURL: candidate.cacheURL, metadataURL: candidate.metadataURL)
+                        continue
+                    }
+                    let tokensToTrim = candidate.storedPromptTokenCount - candidate.reusablePromptTokenCount
+                    if tokensToTrim > 0 {
+                        let trimmedTokenCount = trimPromptPrefixCache(cache, numTokens: tokensToTrim)
+                        guard trimmedTokenCount == tokensToTrim else {
+                            continue
+                        }
+                    }
+                    guard cache.hasPromptState else {
+                        continue
+                    }
+                    guard normalizePromptCacheLength(
+                        cache,
+                        expectedTokenCount: candidate.reusablePromptTokenCount
+                    ) else {
+                        continue
+                    }
 
-                var metadata = candidate.metadata
-                metadata.lastAccessedAt = Date()
-                metadata.byteCount = byteCount(of: candidate.cacheURL)
-                saveMetadata(metadata, to: candidate.metadataURL)
-                upsertIndexedEntry(
-                    MLXServerPersistedDiskKVCacheEntry(
-                        metadataURL: candidate.metadataURL,
-                        cacheURL: candidate.cacheURL,
-                        metadata: metadata
+                    var metadata = candidate.metadata
+                    metadata.lastAccessedAt = Date()
+                    metadata.byteCount = byteCount(of: candidate.cacheURL)
+                    saveMetadata(metadata, to: candidate.metadataURL)
+                    upsertIndexedEntry(
+                        MLXServerPersistedDiskKVCacheEntry(
+                            metadataURL: candidate.metadataURL,
+                            cacheURL: candidate.cacheURL,
+                            metadata: metadata
+                        )
                     )
-                )
-                return MLXServerDiskKVCachePrefixMatch(
-                    cache: cache,
-                    promptTokenCount: candidate.reusablePromptTokenCount,
-                    storedPromptTokenCount: candidate.storedPromptTokenCount
-                )
-            } catch {
-                removeEntry(cacheURL: candidate.cacheURL, metadataURL: candidate.metadataURL)
+                    return MLXServerDiskKVCachePrefixMatch(
+                        cache: cache,
+                        promptTokenCount: candidate.reusablePromptTokenCount,
+                        storedPromptTokenCount: candidate.storedPromptTokenCount
+                    )
+                } catch {
+                    removeEntry(cacheURL: candidate.cacheURL, metadataURL: candidate.metadataURL)
+                }
             }
-        }
 
-        return nil
+            return nil
+        }
     }
 
     func preparePersistenceTarget(
         for identity: MLXServerDiskKVCacheIdentity
     ) throws -> MLXServerDiskKVCachePersistenceTarget? {
-        guard configuration.isEnabled else {
-            return nil
+        try withStoreLock {
+            guard configuration.isEnabled else {
+                return nil
+            }
+            let urls = entryURLs(for: identity)
+            let temporaryURL = urls.cacheURL
+                .deletingLastPathComponent()
+                .appendingPathComponent("\(identity.entryKey).tmp.safetensors")
+
+            try ensureDirectoryExists(urls.cacheURL.deletingLastPathComponent())
+            try? fileManager.removeItem(at: temporaryURL)
+
+            return MLXServerDiskKVCachePersistenceTarget(
+                cacheURL: urls.cacheURL,
+                metadataURL: urls.metadataURL,
+                temporaryURL: temporaryURL
+            )
         }
-        let urls = entryURLs(for: identity)
-        let temporaryURL = urls.cacheURL
-            .deletingLastPathComponent()
-            .appendingPathComponent("\(identity.entryKey).tmp.safetensors")
-
-        try ensureDirectoryExists(urls.cacheURL.deletingLastPathComponent())
-        try? fileManager.removeItem(at: temporaryURL)
-
-        return MLXServerDiskKVCachePersistenceTarget(
-            cacheURL: urls.cacheURL,
-            metadataURL: urls.metadataURL,
-            temporaryURL: temporaryURL
-        )
     }
 
     func commitPersistedCache(
         identity: MLXServerDiskKVCacheIdentity,
         target: MLXServerDiskKVCachePersistenceTarget
     ) throws {
-        try? fileManager.removeItem(at: target.cacheURL)
-        try fileManager.moveItem(at: target.temporaryURL, to: target.cacheURL)
+        try withStoreLock {
+            try? fileManager.removeItem(at: target.cacheURL)
+            try fileManager.moveItem(at: target.temporaryURL, to: target.cacheURL)
 
-        let now = Date()
-        let existingMetadata = loadMetadata(from: target.metadataURL)
-        let metadata = MLXServerPersistedDiskKVCacheMetadata(
-            version: Self.metadataVersion,
-            modelID: identity.modelID,
-            runtimeKind: identity.runtimeKind.rawValue,
-            cacheLayoutSignature: identity.cacheLayoutSignature,
-            promptTokenDigest: identity.promptTokenDigest,
-            promptTokenCount: identity.promptTokenCount,
-            promptTokenIDs: identity.promptTokenIDs,
-            entryKey: identity.entryKey,
-            byteCount: byteCount(of: target.cacheURL),
-            createdAt: existingMetadata?.createdAt ?? now,
-            updatedAt: now,
-            lastAccessedAt: now
-        )
-        saveMetadata(metadata, to: target.metadataURL)
-        upsertIndexedEntry(
-            MLXServerPersistedDiskKVCacheEntry(
-                metadataURL: target.metadataURL,
-                cacheURL: target.cacheURL,
-                metadata: metadata
+            let now = Date()
+            let existingMetadata = loadMetadata(from: target.metadataURL)
+            let metadata = MLXServerPersistedDiskKVCacheMetadata(
+                version: Self.metadataVersion,
+                modelID: identity.modelID,
+                runtimeKind: identity.runtimeKind.rawValue,
+                cacheLayoutSignature: identity.cacheLayoutSignature,
+                promptTokenDigest: identity.promptTokenDigest,
+                promptTokenCount: identity.promptTokenCount,
+                promptTokenIDs: identity.promptTokenIDs,
+                entryKey: identity.entryKey,
+                byteCount: byteCount(of: target.cacheURL),
+                createdAt: existingMetadata?.createdAt ?? now,
+                updatedAt: now,
+                lastAccessedAt: now
             )
-        )
-        enforceDiskLimit(preserving: target.cacheURL)
+            saveMetadata(metadata, to: target.metadataURL)
+            upsertIndexedEntry(
+                MLXServerPersistedDiskKVCacheEntry(
+                    metadataURL: target.metadataURL,
+                    cacheURL: target.cacheURL,
+                    metadata: metadata
+                )
+            )
+            enforceDiskLimit(preserving: target.cacheURL)
+        }
     }
 
     func discardPersistenceTarget(_ target: MLXServerDiskKVCachePersistenceTarget) {
-        try? fileManager.removeItem(at: target.temporaryURL)
+        withStoreLock {
+            try? fileManager.removeItem(at: target.temporaryURL)
+        }
+    }
+
+    func persistCache(
+        identity: MLXServerDiskKVCacheIdentity,
+        cache: [KVCache]
+    ) {
+        guard let target = try? preparePersistenceTarget(for: identity) else {
+            return
+        }
+
+        do {
+            try savePromptCache(url: target.temporaryURL, cache: cache)
+            try commitPersistedCache(identity: identity, target: target)
+        } catch {
+            discardPersistenceTarget(target)
+        }
     }
 
     func enforceDiskLimit() {
-        enforceDiskLimit(preserving: nil)
+        withStoreLock {
+            enforceDiskLimit(preserving: nil)
+        }
+    }
+
+    private func withStoreLock<T>(_ body: () throws -> T) rethrows -> T {
+        storeLock.lock()
+        defer {
+            storeLock.unlock()
+        }
+        return try body()
     }
 
     private func entryURLs(
@@ -569,6 +606,69 @@ final class MLXServerDiskKVCacheStore {
     private func byteCount(of url: URL) -> Int64 {
         let attributes = try? fileManager.attributesOfItem(atPath: url.path)
         return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+    }
+}
+
+final class MLXServerDiskKVCachePersistenceWriter: @unchecked Sendable {
+    private struct Job: Sendable {
+        var operation: @Sendable () -> Void
+    }
+
+    private let lock = NSLock()
+    private var pendingJobs: [String: Job] = [:]
+    private var pendingKeys: [String] = []
+    private var isDraining = false
+
+    func enqueue(
+        coalescingKey: String,
+        operation: @escaping @Sendable () -> Void
+    ) {
+        let job = Job(operation: operation)
+        let shouldStartDrain: Bool
+
+        lock.lock()
+        if pendingJobs[coalescingKey] == nil {
+            pendingKeys.append(coalescingKey)
+        }
+        pendingJobs[coalescingKey] = job
+        if isDraining {
+            shouldStartDrain = false
+        } else {
+            isDraining = true
+            shouldStartDrain = true
+        }
+        lock.unlock()
+
+        guard shouldStartDrain else {
+            return
+        }
+
+        Task.detached(priority: .utility) { [self] in
+            drain()
+        }
+    }
+
+    private func drain() {
+        while let job = nextJob() {
+            job.operation()
+        }
+    }
+
+    private func nextJob() -> Job? {
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+
+        while !pendingKeys.isEmpty {
+            let key = pendingKeys.removeFirst()
+            if let job = pendingJobs.removeValue(forKey: key) {
+                return job
+            }
+        }
+
+        isDraining = false
+        return nil
     }
 }
 

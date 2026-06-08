@@ -5,6 +5,7 @@
 
 import Testing
 @testable import MLXServerCore
+import Dispatch
 import Foundation
 import MLXLMCommon
 
@@ -29,6 +30,68 @@ func startsRuntimeWithNoLoadedModels() async {
     let loadedModelIDs = await runtime.loadedModelIDs
 
     #expect(loadedModelIDs.isEmpty)
+}
+
+@Test
+func perModelGenerationGateSerializesSameModel() async throws {
+    let gate = MLXServerPerModelGenerationGate()
+    let firstLease = try await gate.acquire(modelID: "model-a")
+    let secondAcquired = AsyncSignalCounter()
+
+    let secondTask = Task {
+        let secondLease = try await gate.acquire(modelID: "model-a")
+        await secondAcquired.signal()
+        await secondLease.release()
+    }
+
+    let acquiredBeforeRelease = await secondAcquired.waitForCount(1, attempts: 10)
+    #expect(!acquiredBeforeRelease)
+    await firstLease.release()
+    let acquiredAfterRelease = await secondAcquired.waitForCount(1, attempts: 200)
+    #expect(acquiredAfterRelease)
+    try await secondTask.value
+}
+
+@Test
+func perModelGenerationGateAllowsDifferentModelsConcurrently() async throws {
+    let gate = MLXServerPerModelGenerationGate()
+    let firstLease = try await gate.acquire(modelID: "model-a")
+    let secondAcquired = AsyncSignalCounter()
+
+    let secondTask = Task {
+        let secondLease = try await gate.acquire(modelID: "model-b")
+        await secondAcquired.signal()
+        await secondLease.release()
+    }
+
+    let acquiredSecondModel = await secondAcquired.waitForCount(1, attempts: 200)
+    #expect(acquiredSecondModel)
+    await firstLease.release()
+    try await secondTask.value
+}
+
+@Test
+func perModelGenerationGateAcquireAllWaitsForActiveModelLeases() async throws {
+    let gate = MLXServerPerModelGenerationGate()
+    let firstLease = try await gate.acquire(modelID: "model-a")
+    let secondLease = try await gate.acquire(modelID: "model-b")
+    let acquiredAll = AsyncSignalCounter()
+
+    let acquireAllTask = Task {
+        let leases = try await gate.acquireAll()
+        await acquiredAll.signal()
+        await leases.releaseAll()
+    }
+
+    let acquiredAllBeforeRelease = await acquiredAll.waitForCount(1, attempts: 10)
+    #expect(!acquiredAllBeforeRelease)
+    await firstLease.release()
+    let acquiredAllAfterOneRelease = await acquiredAll.waitForCount(1, attempts: 10)
+    #expect(!acquiredAllAfterOneRelease)
+    await secondLease.release()
+    let acquiredAllAfterBothReleases = await acquiredAll.waitForCount(1, attempts: 200)
+    #expect(acquiredAllAfterBothReleases)
+    try await acquireAllTask.value
 }
 
 @Test
@@ -462,6 +525,61 @@ func diskKVCacheWarmIndexUpdatesRewrittenEntryByteCount() throws {
 }
 
 @Test
+func diskKVCachePersistenceWriterDoesNotBlockEnqueueBehindRunningJob() {
+    let writer = MLXServerDiskKVCachePersistenceWriter()
+    let firstStarted = DispatchSemaphore(value: 0)
+    let releaseFirst = DispatchSemaphore(value: 0)
+    let secondStarted = DispatchSemaphore(value: 0)
+    let enqueueReturned = DispatchSemaphore(value: 0)
+
+    writer.enqueue(coalescingKey: "first") {
+        firstStarted.signal()
+        _ = releaseFirst.wait(timeout: .now() + .seconds(2))
+    }
+    #expect(firstStarted.wait(timeout: .now() + .seconds(2)) == .success)
+
+    DispatchQueue.global().async {
+        writer.enqueue(coalescingKey: "second") {
+            secondStarted.signal()
+        }
+        enqueueReturned.signal()
+    }
+
+    #expect(enqueueReturned.wait(timeout: .now() + .milliseconds(200)) == .success)
+    #expect(secondStarted.wait(timeout: .now() + .milliseconds(100)) == .timedOut)
+
+    releaseFirst.signal()
+    #expect(secondStarted.wait(timeout: .now() + .seconds(2)) == .success)
+}
+
+@Test
+func diskKVCachePersistenceWriterCoalescesPendingJobsByKey() {
+    let writer = MLXServerDiskKVCachePersistenceWriter()
+    let firstStarted = DispatchSemaphore(value: 0)
+    let releaseFirst = DispatchSemaphore(value: 0)
+    let replacementFinished = DispatchSemaphore(value: 0)
+    let recorder = DiskKVCacheWriterExecutionRecorder()
+
+    writer.enqueue(coalescingKey: "blocking") {
+        firstStarted.signal()
+        _ = releaseFirst.wait(timeout: .now() + .seconds(2))
+    }
+    #expect(firstStarted.wait(timeout: .now() + .seconds(2)) == .success)
+
+    writer.enqueue(coalescingKey: "same-key") {
+        recorder.record("old")
+    }
+    writer.enqueue(coalescingKey: "same-key") {
+        recorder.record("new")
+        replacementFinished.signal()
+    }
+
+    releaseFirst.signal()
+    #expect(replacementFinished.wait(timeout: .now() + .seconds(2)) == .success)
+    #expect(recorder.values == ["new"])
+}
+
+@Test
 func savesAndLoadsModelsJSON() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("mlx-server-models-\(UUID().uuidString)", isDirectory: true)
@@ -668,6 +786,47 @@ private final class DiskKVCacheIndexRebuildProbe: @unchecked Sendable {
         lock.lock()
         _rebuildCount += 1
         lock.unlock()
+    }
+}
+
+private final class DiskKVCacheWriterExecutionRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _values: [String] = []
+
+    var values: [String] {
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+        return _values
+    }
+
+    func record(_ value: String) {
+        lock.lock()
+        _values.append(value)
+        lock.unlock()
+    }
+}
+
+private actor AsyncSignalCounter {
+    private var count = 0
+
+    func signal() {
+        count += 1
+    }
+
+    func waitForCount(
+        _ targetCount: Int,
+        attempts: Int,
+        intervalNanoseconds: UInt64 = 10_000_000
+    ) async -> Bool {
+        for _ in 0..<attempts {
+            if count >= targetCount {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: intervalNanoseconds)
+        }
+        return count >= targetCount
     }
 }
 
