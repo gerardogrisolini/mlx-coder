@@ -82,12 +82,17 @@ public actor DirectToolExecutor {
             ),
             allowedToolNames: allowedToolNames
         )
-        let featureDescriptors = await swiftFeatureRuntime.descriptors(
-            allowedToolNames: allowedToolNames
-        )
         let mcpDescriptors = await mcpRuntime.descriptors(
             allowedToolNames: allowedToolNames
         )
+        let featureDescriptors = await swiftFeatureRuntime.descriptors(
+            allowedToolNames: allowedToolNames,
+            excludingFeatureIDs: Self.mcpManagedSwiftFeatureIDs(
+                allowedToolNames: allowedToolNames,
+                mcpDescriptors: mcpDescriptors
+            )
+        )
+
         return Self.canonicalized(
             coreDescriptors + featureDescriptors + mcpDescriptors
         )
@@ -167,10 +172,9 @@ public actor DirectToolExecutor {
         _ descriptors: [DirectToolDescriptor],
         allowedToolNames: Set<String>?
     ) -> [DirectToolDescriptor] {
-                guard let allowedToolNames else {
+        guard let allowedToolNames else {
             return descriptors.filter { !DirectMCPToolRuntime.isXcodeToolName($0.name) }
         }
-
 
         guard !allowedToolNames.isEmpty else {
             return []
@@ -185,10 +189,9 @@ public actor DirectToolExecutor {
         _ toolName: String,
         allowedToolNames: Set<String>?
     ) -> Bool {
-                guard let allowedToolNames else {
+        guard let allowedToolNames else {
             return !DirectMCPToolRuntime.isXcodeToolName(toolName)
         }
-
 
         guard !allowedToolNames.isEmpty else {
             return false
@@ -232,6 +235,18 @@ public actor DirectToolExecutor {
         }
 
         return false
+    }
+
+    static func mcpManagedSwiftFeatureIDs(
+        allowedToolNames: Set<String>?,
+        mcpDescriptors: [DirectToolDescriptor]
+    ) -> Set<String> {
+        var featureIDs = Set<String>()
+        if allowedToolNames?.contains(where: DirectMCPToolRuntime.isXcodeToolName) == true
+            || mcpDescriptors.contains(where: { DirectMCPToolRuntime.isXcodeToolName($0.name) }) {
+            featureIDs.insert("mlx-xcode-tools")
+        }
+        return featureIDs
     }
 
     public static func isOrchestrationToolName(_ toolName: String) -> Bool {

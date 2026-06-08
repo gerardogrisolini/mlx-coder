@@ -251,7 +251,12 @@ extension TerminalChat {
             case let .modelLoadedDetails(details):
                 if emitStatus {
                     self.printLoadedModelDetails(details)
+                } else {
+                    _ = self.statusBar.update(modelID: details.modelID)
+                    _ = self.statusBar.update(modelRuntime: details.runtime)
                 }
+            case let .modelRuntime(runtime):
+                _ = self.statusBar.update(modelRuntime: runtime)
             case .diagnostic,
                  .thought,
                  .metrics,
@@ -292,6 +297,7 @@ extension TerminalChat {
         let displayTitle = loadedModelDisplayTitle(modelID)
         printedModelID = displayTitle
         _ = statusBar.update(modelID: modelID)
+        _ = statusBar.update(modelRuntime: details.runtime)
 
         guard configuration.verboseLogging else {
             writeOperationalMessage("mlx-server loaded model: \(displayTitle)\n")

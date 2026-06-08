@@ -34,6 +34,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
     private var isResizePending = false
     private var inputPanelState: InputPanelState?
     private var latestModelID: String?
+    private var latestModelRuntime: String?
     private var latestMetrics: DirectAgentGenerationMetrics?
     private var latestContextWindow: DirectAgentContextWindowStatus?
         private static let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -143,6 +144,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
         latestMetrics = nil
         latestContextWindow = nil
         latestModelID = nil
+        latestModelRuntime = nil
         isProcessing = false
         spinnerIndex = 0
         stopSpinnerTimerLocked()
@@ -177,7 +179,23 @@ public final class TerminalStatusBar: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
+        if latestModelID != modelID {
+            latestModelRuntime = nil
+        }
         latestModelID = modelID
+        guard isStarted else {
+            return false
+        }
+        renderLocked()
+        return true
+    }
+
+    @discardableResult
+    public func update(modelRuntime: String?) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        latestModelRuntime = Self.runtimeDisplayName(modelRuntime)
         guard isStarted else {
             return false
         }
@@ -515,7 +533,13 @@ public final class TerminalStatusBar: @unchecked Sendable {
             fragments.append(Self.modelDisplayName(latestModelID))
         }
         if isProcessing {
-            fragments.append(Self.spinnerFrames[spinnerIndex % Self.spinnerFrames.count])
+            var loader = Self.spinnerFrames[spinnerIndex % Self.spinnerFrames.count]
+            if let latestModelRuntime {
+                loader += " \(latestModelRuntime)"
+            }
+            fragments.append(loader)
+        } else if let latestModelRuntime {
+            fragments.append(latestModelRuntime)
         }
                 if tokensUsed != nil || latestContextWindow?.maxTokens != nil {
             let contextText = Self.tokenWindowText(
@@ -545,6 +569,21 @@ public final class TerminalStatusBar: @unchecked Sendable {
             .split(separator: "/")
             .last
             .map(String.init) ?? modelID
+    }
+
+    private static func runtimeDisplayName(_ runtime: String?) -> String? {
+        guard let runtime = runtime?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !runtime.isEmpty else {
+            return nil
+        }
+        switch runtime.lowercased() {
+        case "llm":
+            return "LLM"
+        case "vlm":
+            return "VLM"
+        default:
+            return runtime.uppercased()
+        }
     }
 
     private func mergedMetrics(

@@ -178,6 +178,48 @@ extension MLXCoderACPBridge {
         }
     }
 
+    public static func toolIcon(for toolName: String) -> String {
+        switch toolName {
+        case "local.exec":
+            return "💻"
+        case "local.readFile", "local.ls", "local.pwd":
+            return "📄"
+        case "local.writeFile", "local.replace", "local.append",
+             "local.mkdir", "local.editFile", "local.multiEdit":
+            return "✏️"
+        case "local.delete":
+            return "🗑️"
+        case "local.move":
+            return "↔️"
+        default:
+            if toolName.hasPrefix("memory.") || toolName.hasPrefix("todo.") {
+                return "🧠"
+            }
+            if toolName.hasPrefix("agent.") || toolName.hasPrefix("task.") {
+                return "👥"
+            }
+            if toolName.hasPrefix("git.") {
+                return "🔀"
+            }
+            if toolName.hasPrefix("web.") {
+                return "🌐"
+            }
+            if toolName.hasPrefix("search.") {
+                return "🔎"
+            }
+            if toolName.hasPrefix("xcode.") || DirectMCPToolRuntime.isXcodeToolName(toolName) {
+                return "🛠️"
+            }
+            if toolName.hasPrefix("figma.") {
+                return "🎨"
+            }
+            if toolName.hasPrefix("jira.") {
+                return "📋"
+            }
+            return "🔨"
+        }
+    }
+
     public static func xcodeToolKind(for rawName: String) -> String {
         switch rawName {
         case "XcodeUpdate", "XcodeWrite", "XcodeMakeDir":

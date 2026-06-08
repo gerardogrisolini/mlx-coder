@@ -721,6 +721,28 @@ struct AgentConfigurationTests {
     }
 
     @Test
+    func toolRoundPolicyCentralizesDefaultAndNormalization() throws {
+        let configuration = try AgentConfiguration(
+            hostedModelID: "mlx-community/test",
+            availableAgents: AgentProfileStore.defaultProfiles(),
+            workingDirectory: URL(fileURLWithPath: "/tmp/project", isDirectory: true)
+        )
+        let sessionConfiguration = AgentCoreSessionConfiguration(
+            sessionID: "tool-round-policy",
+            modelID: nil,
+            workingDirectory: "/tmp/project",
+            systemPrompt: nil,
+            cacheKey: nil,
+            history: [],
+            maxToolRounds: 0
+        )
+
+        #expect(configuration.maxToolRounds == AgentToolRoundPolicy.defaultMaxToolRounds)
+        #expect(AgentConfiguration.helpText.contains("Default: \(AgentToolRoundPolicy.defaultMaxToolRounds)."))
+        #expect(sessionConfiguration.maxToolRounds == AgentToolRoundPolicy.minimumMaxToolRounds)
+    }
+
+    @Test
     func hostedEffectiveModelUsesHostedManifestInsteadOfCoderSettings() {
         let provider = AgentRemoteProvider(
             name: "mlx-server",

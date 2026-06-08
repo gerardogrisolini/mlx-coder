@@ -40,7 +40,7 @@ public struct AgentConfiguration: Sendable {
       --model MODEL_ID        Model id, remoteapimodel:<uuid>, or remoteapi:<uuid>. Overrides the agent-selected model for this run.
       --cwd PATH              Working directory for local tools. Default: current directory, or home when launched from the executable directory.
       --skills LIST           Initial chat skill selection by name/number, all, or none. In chat mode use /skills to change or install skills.
-      --max-tool-rounds N     Maximum model/tool loop rounds per prompt. Default: 100.
+      --max-tool-rounds N     Maximum model/tool loop rounds per prompt. Default: \(AgentToolRoundPolicy.defaultMaxToolRounds).
       --max-output-tokens N   Maximum generated tokens per model call. Default: model default.
       --verbose               Show status/tool progress on stderr. Default: quiet chat output.
 
@@ -178,7 +178,10 @@ public struct AgentConfiguration: Sendable {
             throw AgentConfigurationError.invalidValue("--mode", rawRunMode)
         }
         let workingDirectory = Self.resolvedWorkingDirectory(rawValue: rawWorkingDirectory)
-        let maxToolRounds = try Self.positiveInt(rawMaxToolRounds, argument: "--max-tool-rounds") ?? 100
+        let maxToolRounds = try Self.maxToolRounds(
+            rawMaxToolRounds,
+            argument: "--max-tool-rounds"
+        )
         let maxOutputTokens = try Self.positiveInt(rawMaxOutputTokens, argument: "--max-output-tokens")
         let verboseLogging = Self.bool(rawVerboseLogging)
         let appMode = appModeOverride ?? false
@@ -215,7 +218,7 @@ public struct AgentConfiguration: Sendable {
         self.runMode = runMode
         self.workingDirectory = workingDirectory
         self.initialSkillSelection = rawInitialSkillSelection?.nilIfBlank
-        self.maxToolRounds = maxToolRounds
+        self.maxToolRounds = AgentToolRoundPolicy.normalizedMaxToolRounds(maxToolRounds)
         self.maxOutputTokens = maxOutputTokens
         self.verboseLogging = verboseLogging
         self.appMode = appMode
@@ -236,7 +239,7 @@ public struct AgentConfiguration: Sendable {
         runMode: AgentRunMode = .chat,
         workingDirectory: URL,
         initialSkillSelection: String? = nil,
-        maxToolRounds: Int = 100,
+        maxToolRounds: Int = AgentToolRoundPolicy.defaultMaxToolRounds,
         maxOutputTokens: Int? = nil,
         verboseLogging: Bool = false,
         appMode: Bool = false
@@ -266,7 +269,7 @@ public struct AgentConfiguration: Sendable {
         self.runMode = runMode
         self.workingDirectory = workingDirectory
         self.initialSkillSelection = initialSkillSelection?.nilIfBlank
-        self.maxToolRounds = max(1, maxToolRounds)
+        self.maxToolRounds = AgentToolRoundPolicy.normalizedMaxToolRounds(maxToolRounds)
         self.maxOutputTokens = maxOutputTokens.map { max(1, $0) }
         self.verboseLogging = verboseLogging
         self.appMode = appMode
@@ -368,6 +371,17 @@ public struct AgentConfiguration: Sendable {
     private static func sameFilePath(_ lhs: URL, _ rhs: URL) -> Bool {
         lhs.standardizedFileURL.resolvingSymlinksInPath().path
             == rhs.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    private static func maxToolRounds(_ rawValue: String?, argument: String) throws -> Int {
+        guard let rawValue = rawValue?.nilIfBlank else {
+            return AgentToolRoundPolicy.defaultMaxToolRounds
+        }
+        guard let value = Int(rawValue),
+              AgentToolRoundPolicy.isValidMaxToolRounds(value) else {
+            throw AgentConfigurationError.invalidValue(argument, rawValue)
+        }
+        return AgentToolRoundPolicy.normalizedMaxToolRounds(value)
     }
 
     private static func positiveInt(_ rawValue: String?, argument: String) throws -> Int? {

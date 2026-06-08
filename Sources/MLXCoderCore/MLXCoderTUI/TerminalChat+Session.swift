@@ -20,7 +20,7 @@ extension TerminalChat {
     }
 
     public func currentSessionConfiguration(
-        discoverExternalTools: Bool = true
+        discoverExternalTools: Bool = false
     ) async -> AgentCoreSessionConfiguration {
         let allowedToolNames = await selectedAllowedToolNames(
             discoverExternalTools: discoverExternalTools

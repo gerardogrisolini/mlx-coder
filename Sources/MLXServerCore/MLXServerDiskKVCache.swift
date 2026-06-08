@@ -109,15 +109,111 @@ final class MLXServerDiskKVCacheStore {
     fileprivate static let metadataVersion = 3
     private let configuration: MLXServerDiskKVCacheConfiguration
     private let fileManager: FileManager
+    private let indexRebuildObserver: (@Sendable () -> Void)?
     private let ensuredDirectoryLock = NSLock()
     private var ensuredDirectoryPaths = Set<String>()
 
+    // MARK: - In-memory index
+
+    /// Lazily-built in-memory index of all persisted entries on disk.
+    /// Avoids enumerating the filesystem on every call to
+    /// `loadLongestPromptPrefix` or `enforceDiskLimit`.
+    private var entriesIndex: [DiskCacheEntryIndexKey: [MLXServerPersistedDiskKVCacheEntry]]?
+
+    private struct DiskCacheEntryIndexKey: Hashable {
+        var modelID: String
+        var runtimeKind: String
+        var cacheLayoutSignature: String
+    }
+
+    private func diskCacheEntries() -> [MLXServerPersistedDiskKVCacheEntry] {
+        entriesIndex?.values.flatMap { $0 } ?? []
+    }
+
+    private func diskCacheEntries(
+        modelID: String,
+        runtimeKind: String,
+        cacheLayoutSignature: String
+    ) -> [MLXServerPersistedDiskKVCacheEntry] {
+        let key = DiskCacheEntryIndexKey(
+            modelID: modelID,
+            runtimeKind: runtimeKind,
+            cacheLayoutSignature: cacheLayoutSignature
+        )
+        return entriesIndex?[key] ?? []
+    }
+
+    private func rebuildIndexIfNeeded() {
+        guard entriesIndex == nil else { return }
+        rebuildIndex()
+    }
+
+    private func rebuildIndex() {
+        indexRebuildObserver?()
+        var index: [DiskCacheEntryIndexKey: [MLXServerPersistedDiskKVCacheEntry]] = [:]
+        for entry in persistedEntriesFromDisk() {
+            index[indexKey(for: entry.metadata), default: []].append(entry)
+        }
+        entriesIndex = index
+    }
+
+    private func indexKey(
+        for metadata: MLXServerPersistedDiskKVCacheMetadata
+    ) -> DiskCacheEntryIndexKey {
+        DiskCacheEntryIndexKey(
+            modelID: metadata.modelID,
+            runtimeKind: metadata.runtimeKind,
+            cacheLayoutSignature: metadata.cacheLayoutSignature
+        )
+    }
+
+    private func upsertIndexedEntry(
+        _ entry: MLXServerPersistedDiskKVCacheEntry
+    ) {
+        guard entriesIndex != nil else {
+            return
+        }
+
+        removeIndexedEntry(
+            cacheURL: entry.cacheURL,
+            metadataURL: entry.metadataURL,
+            entryKey: entry.metadata.entryKey
+        )
+        entriesIndex?[indexKey(for: entry.metadata), default: []].append(entry)
+    }
+
+    private func removeIndexedEntry(
+        cacheURL: URL,
+        metadataURL: URL,
+        entryKey: String? = nil
+    ) {
+        guard entriesIndex != nil else {
+            return
+        }
+
+        let standardizedCacheURL = cacheURL.standardizedFileURL
+        let standardizedMetadataURL = metadataURL.standardizedFileURL
+        let keys = entriesIndex.map { Array($0.keys) } ?? []
+        for key in keys {
+            entriesIndex?[key]?.removeAll { entry in
+                entry.cacheURL.standardizedFileURL == standardizedCacheURL
+                    || entry.metadataURL.standardizedFileURL == standardizedMetadataURL
+                    || entry.metadata.entryKey == entryKey
+            }
+            if entriesIndex?[key]?.isEmpty == true {
+                entriesIndex?[key] = nil
+            }
+        }
+    }
+
     init(
         configuration: MLXServerDiskKVCacheConfiguration,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        indexRebuildObserver: (@Sendable () -> Void)? = nil
     ) {
         self.configuration = configuration
         self.fileManager = fileManager
+        self.indexRebuildObserver = indexRebuildObserver
     }
 
     var isEnabled: Bool {
@@ -153,6 +249,13 @@ final class MLXServerDiskKVCacheStore {
             metadata.lastAccessedAt = Date()
             metadata.byteCount = byteCount(of: urls.cacheURL)
             saveMetadata(metadata, to: urls.metadataURL)
+            upsertIndexedEntry(
+                MLXServerPersistedDiskKVCacheEntry(
+                    metadataURL: urls.metadataURL,
+                    cacheURL: urls.cacheURL,
+                    metadata: metadata
+                )
+            )
             return cache
         } catch {
             removeEntry(cacheURL: urls.cacheURL, metadataURL: urls.metadataURL)
@@ -167,7 +270,12 @@ final class MLXServerDiskKVCacheStore {
             return nil
         }
 
-        let candidates = persistedEntries()
+        rebuildIndexIfNeeded()
+        let candidates = diskCacheEntries(
+            modelID: query.modelID,
+            runtimeKind: query.runtimeKind.rawValue,
+            cacheLayoutSignature: query.cacheLayoutSignature
+        )
             .compactMap { entry -> MLXServerDiskKVCachePrefixCandidate? in
                 entry.metadata.reusablePromptPrefixCandidate(
                     for: query,
@@ -217,6 +325,13 @@ final class MLXServerDiskKVCacheStore {
                 metadata.lastAccessedAt = Date()
                 metadata.byteCount = byteCount(of: candidate.cacheURL)
                 saveMetadata(metadata, to: candidate.metadataURL)
+                upsertIndexedEntry(
+                    MLXServerPersistedDiskKVCacheEntry(
+                        metadataURL: candidate.metadataURL,
+                        cacheURL: candidate.cacheURL,
+                        metadata: metadata
+                    )
+                )
                 return MLXServerDiskKVCachePrefixMatch(
                     cache: cache,
                     promptTokenCount: candidate.reusablePromptTokenCount,
@@ -275,6 +390,13 @@ final class MLXServerDiskKVCacheStore {
             lastAccessedAt: now
         )
         saveMetadata(metadata, to: target.metadataURL)
+        upsertIndexedEntry(
+            MLXServerPersistedDiskKVCacheEntry(
+                metadataURL: target.metadataURL,
+                cacheURL: target.cacheURL,
+                metadata: metadata
+            )
+        )
         enforceDiskLimit(preserving: target.cacheURL)
     }
 
@@ -355,7 +477,8 @@ final class MLXServerDiskKVCacheStore {
             return
         }
 
-        let entries = persistedEntries()
+        rebuildIndexIfNeeded()
+        let entries = diskCacheEntries()
         let totalByteCount = entries.reduce(Int64(0)) { partial, entry in
             partial + max(entry.metadata.byteCount, 0)
         }
@@ -388,7 +511,7 @@ final class MLXServerDiskKVCacheStore {
         }
     }
 
-    private func persistedEntries() -> [MLXServerPersistedDiskKVCacheEntry] {
+    private func persistedEntriesFromDisk() -> [MLXServerPersistedDiskKVCacheEntry] {
         guard
             fileManager.fileExists(atPath: configuration.directory.path),
             let enumerator = fileManager.enumerator(
@@ -440,6 +563,7 @@ final class MLXServerDiskKVCacheStore {
     ) {
         try? fileManager.removeItem(at: cacheURL)
         try? fileManager.removeItem(at: metadataURL)
+        removeIndexedEntry(cacheURL: cacheURL, metadataURL: metadataURL)
     }
 
     private func byteCount(of url: URL) -> Int64 {

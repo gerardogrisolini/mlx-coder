@@ -60,6 +60,7 @@ public final class TerminalChat: @unchecked Sendable {
     public let voiceRecordingService = TerminalVoiceRecordingService()
     public var activeVoiceRecordingSession: TerminalVoiceRecordingSession?
     public var lastAssistantResponseText: String?
+    var optionalCommandAvailability = TerminalOptionalCommandAvailability.load()
 
     public let statusBar: TerminalStatusBar
 
@@ -245,27 +246,25 @@ public final class TerminalChat: @unchecked Sendable {
             generationTask = Task {
                 let result: TerminalChatGenerationResult
                 do {
-                    result = .success(
-                        try await self.generateResponse(attempt: attempt),
-                        attempt.origin
-                    )
+                    result = .success(try await self.generateResponse(attempt: attempt))
                 } catch is CancellationError {
                     result = .failure(
                         TerminalChatGenerationFailure(
                             message: "",
                             isCancellation: true,
                             retryPrompt: nil,
-                            origin: attempt.origin
+                            origin: attempt.origin,
+                            fileChangeSummary: nil
                         )
                     )
                 } catch {
+                    let failure = TerminalChatGenerationFailure(
+                        error: error,
+                        retryPrompt: attempt.retryPrompt,
+                        origin: attempt.origin
+                    )
                     result = .failure(
-                        TerminalChatGenerationFailure(
-                            message: error.localizedDescription,
-                            isCancellation: false,
-                            retryPrompt: attempt.retryPrompt,
-                            origin: attempt.origin
-                        )
+                        failure
                     )
                 }
                 await eventQueue.send(.generationCompleted(result))
@@ -690,9 +689,9 @@ public final class TerminalChat: @unchecked Sendable {
             ) {
                 promptTask.cancel()
             }
-            let response: DirectAgentResponse
+            let success: TerminalChatGenerationSuccess
             do {
-                response = try await promptTask.value
+                success = try await promptTask.value
             } catch {
                 if let stopMonitor {
                     stopMonitor.cancel()
@@ -704,12 +703,11 @@ public final class TerminalChat: @unchecked Sendable {
                 stopMonitor.cancel()
                 await stopMonitor.value
             }
-            await finishPromptResult(.success(response, attempt.origin))
+            await finishPromptResult(.success(success))
         } catch {
             let failure = TerminalChatGenerationFailure(
-                message: error.localizedDescription,
-                isCancellation: error is CancellationError,
-                retryPrompt: error is CancellationError ? nil : attempt.retryPrompt,
+                error: error,
+                retryPrompt: attempt.retryPrompt,
                 origin: attempt.origin
             )
             await finishPromptResult(.failure(failure))
@@ -718,7 +716,7 @@ public final class TerminalChat: @unchecked Sendable {
 
     private func generateResponse(
         attempt: TerminalPromptAttempt
-    ) async throws -> DirectAgentResponse {
+    ) async throws -> TerminalChatGenerationSuccess {
         if attempt.restoresBaseBeforeRun {
             await sessionRunner.resetSession(id: sessionID)
             activeSessionCacheKey = attempt.baseCacheKey
@@ -783,6 +781,8 @@ public final class TerminalChat: @unchecked Sendable {
                         }
                     case let .modelLoadedDetails(details):
                         self.printLoadedModelDetails(details)
+                    case let .modelRuntime(runtime):
+                        _ = self.statusBar.update(modelRuntime: runtime)
                     case let .metrics(metrics):
                         self.didReceiveMetricsForCurrentPrompt = true
                         self.writeMetricsStatus(metrics)
@@ -833,7 +833,7 @@ public final class TerminalChat: @unchecked Sendable {
             activeSessionTranscript.append(
                 contentsOf: await transcriptTurn.messages(finalResponseText: response.text)
             )
-            let fileChangeSummary = await publishFileChangeSummaryIfNeeded(from: fileChanges)
+            let fileChangeSummary = await collectFileChangeSummaryIfNeeded(from: fileChanges)
             if let telegramProgressReporter = telegramProgressReporter,
                let summary = fileChangeSummary {
                 await telegramProgressReporter.enqueue(
@@ -842,10 +842,14 @@ public final class TerminalChat: @unchecked Sendable {
             }
             await publishSubAgentOverviewIfVisible()
             await telegramProgressReporter?.flush()
-            return response
+            return TerminalChatGenerationSuccess(
+                response: response,
+                origin: attempt.origin,
+                fileChangeSummary: fileChangeSummary
+            )
         } catch {
             activeSessionTranscript.append(contentsOf: await transcriptTurn.messages())
-            let fileChangeSummary = await publishFileChangeSummaryIfNeeded(from: fileChanges)
+            let fileChangeSummary = await collectFileChangeSummaryIfNeeded(from: fileChanges)
             if let telegramProgressReporter = telegramProgressReporter,
                let summary = fileChangeSummary {
                 await telegramProgressReporter.enqueue(
@@ -854,13 +858,17 @@ public final class TerminalChat: @unchecked Sendable {
             }
             await publishSubAgentOverviewIfVisible()
             await telegramProgressReporter?.flush()
-            throw error
+            throw TerminalChatGenerationRunError(
+                underlying: error,
+                fileChangeSummary: fileChangeSummary
+            )
         }
     }
 
     private func finishPromptResult(_ result: TerminalChatGenerationResult) async {
         switch result {
-        case let .success(response, origin):
+        case let .success(success):
+            let response = success.response
             lastFailedPrompt = nil
             finishThoughtOutputIfNeeded()
             finishAssistantContentFormatting()
@@ -872,10 +880,13 @@ public final class TerminalChat: @unchecked Sendable {
                 writeChatOutput("Done.")
             }
             writeChatOutput("\n")
-            if origin.isTelegramVoice {
-                await sendTelegramVoiceCompletionIfLinked(completionText, origin: origin)
+            if let summary = success.fileChangeSummary {
+                writeFileChangeSummary(summary, includeDiff: false)
+            }
+            if success.origin.isTelegramVoice {
+                await sendTelegramVoiceCompletionIfLinked(completionText, origin: success.origin)
             } else {
-                await sendTelegramCompletionIfLinked(completionText, origin: origin)
+                await sendTelegramCompletionIfLinked(completionText, origin: success.origin)
             }
         case let .failure(failure):
             finishThoughtOutputIfNeeded()
@@ -893,6 +904,9 @@ public final class TerminalChat: @unchecked Sendable {
                     "mlx-coder failed: \(failure.message)",
                     origin: failure.origin
                 )
+            }
+            if let summary = failure.fileChangeSummary {
+                writeFileChangeSummary(summary, includeDiff: false)
             }
         }
     }
@@ -936,6 +950,49 @@ struct TerminalChatGenerationFailure: Sendable {
     let isCancellation: Bool
     let retryPrompt: TerminalRetryPrompt?
     let origin: TerminalPromptOrigin
+    let fileChangeSummary: TurnFileChangeSummary?
+
+    init(
+        message: String,
+        isCancellation: Bool,
+        retryPrompt: TerminalRetryPrompt?,
+        origin: TerminalPromptOrigin,
+        fileChangeSummary: TurnFileChangeSummary?
+    ) {
+        self.message = message
+        self.isCancellation = isCancellation
+        self.retryPrompt = retryPrompt
+        self.origin = origin
+        self.fileChangeSummary = fileChangeSummary
+    }
+
+    init(
+        error: Error,
+        retryPrompt: TerminalRetryPrompt?,
+        origin: TerminalPromptOrigin
+    ) {
+        let runError = error as? TerminalChatGenerationRunError
+        let underlying = runError?.underlying ?? error
+        let isCancellation = underlying is CancellationError
+        self.init(
+            message: underlying.localizedDescription,
+            isCancellation: isCancellation,
+            retryPrompt: isCancellation ? nil : retryPrompt,
+            origin: origin,
+            fileChangeSummary: runError?.fileChangeSummary
+        )
+    }
+}
+
+struct TerminalChatGenerationSuccess: Sendable {
+    let response: DirectAgentResponse
+    let origin: TerminalPromptOrigin
+    let fileChangeSummary: TurnFileChangeSummary?
+}
+
+struct TerminalChatGenerationRunError: Error, Sendable {
+    let underlying: Error
+    let fileChangeSummary: TurnFileChangeSummary?
 }
 
 enum TerminalPromptOrigin: Sendable, Equatable {
@@ -1105,7 +1162,7 @@ private actor TerminalSessionTranscriptTurn {
 }
 
 enum TerminalChatGenerationResult: Sendable {
-    case success(DirectAgentResponse, TerminalPromptOrigin)
+    case success(TerminalChatGenerationSuccess)
     case failure(TerminalChatGenerationFailure)
 }
 

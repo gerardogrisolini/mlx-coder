@@ -70,7 +70,7 @@ Important options:
 - `--model MODEL_ID`: override the agent-selected model for this run. Accepted forms include a model id, `remoteapimodel:<uuid>`, or `remoteapi:<uuid>`.
 - `--cwd PATH`: working directory for local tools. Defaults to the current directory, or home when launched from the executable directory.
 - `--skills LIST`: initial skill selection by name/number, `all`, or `none`.
-- `--max-tool-rounds N`: maximum model/tool loop rounds per prompt. Default: `100`.
+- `--max-tool-rounds N`: maximum model/tool loop rounds per prompt. The default is shown by `mlx-coder --help`.
 - `--max-output-tokens N`: maximum generated tokens per model call. Default: model default.
 - `--verbose`: show status/tool progress on stderr. Default chat output is quiet.
 

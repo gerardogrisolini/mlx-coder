@@ -142,6 +142,8 @@ extension MLXCoderACPBridge {
                                 ]
                             ]))
                         }
+                    case .modelRuntime:
+                        break
                     case .metrics:
                         break
                     case let .contextWindow(status):

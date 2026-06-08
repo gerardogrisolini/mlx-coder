@@ -20,6 +20,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
 
     private struct GenerationTurn {
         var visibleText: String
+        var historyVisibleText: String
         var reasoningText: String
         var toolCalls: [ToolCall]
         var completionInfo: GenerateCompletionInfo?
@@ -281,6 +282,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
                 await onEvent(.diagnostic(Self.compactionDiagnostic(from: result)))
             }
             let request = await generationRequest(for: session)
+            await onEvent(.modelRuntime(request.runtimeKind.rawValue))
             let turn = try await runGenerationTurn(
                 request: request,
                 onEvent: onEvent
@@ -446,6 +448,10 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
                 from: rawText,
                 startsInThinking: request.emitsThinking
             ),
+            historyVisibleText: MLXServerChatSessionTranscriptText.visibleAssistantContentForHistory(
+                from: rawText,
+                startsInThinking: request.emitsThinking
+            ),
             reasoningText: MLXServerChatSessionTranscriptText.reasoningContent(
                 from: rawText,
                 startsInThinking: request.emitsThinking
@@ -468,21 +474,25 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
                 )
             )
         }
+        let historyReasoningText = session.preserveThinking ? turn.reasoningText : nil
+        let hasHistoryReasoningText = historyReasoningText?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty == false
         let structuredToolCalls = zip(turn.toolCalls, directToolCalls).map { toolCall, directToolCall in
             MLXServerChatToolCall(id: directToolCall.id, toolCall: toolCall)
         }
-        if !turn.visibleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if !turn.historyVisibleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !structuredToolCalls.isEmpty {
             session.messages.append(
                 .assistant(
-                    turn.visibleText,
-                    reasoningContent: turn.reasoningText,
+                    turn.historyVisibleText,
+                    reasoningContent: historyReasoningText,
                     toolCalls: structuredToolCalls
                 )
             )
         }
-        if turn.visibleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           turn.reasoningText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        if turn.historyVisibleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !hasHistoryReasoningText,
            turn.toolCalls.isEmpty {
             session.messages.append(.assistant(""))
         }

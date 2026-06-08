@@ -29,11 +29,16 @@ extension DirectToolExecutor {
         ) {
             return output
         }
-                if await mcpRuntime.canExecute(
+        if await mcpRuntime.canExecute(
             toolName: toolCall.name,
             allowedToolNames: allowedToolNames
         ) {
             return try await mcpRuntime.execute(toolCall: toolCall)
+        }
+        if DirectMCPToolRuntime.isXcodeToolName(toolCall.name) {
+            throw DirectToolError.permissionDenied(
+                "Xcode MCP is not connected for this session. Re-enable Xcode from /tools, approve Xcode's MCP prompt once, then retry."
+            )
         }
         if let toolExecutor = toolProviderRegistry.executor(for: toolCall.name) {
             return try await toolExecutor(

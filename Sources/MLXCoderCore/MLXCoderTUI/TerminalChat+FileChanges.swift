@@ -11,12 +11,22 @@ extension TerminalChat {
     public func publishFileChangeSummaryIfNeeded(
         from coordinator: TurnFileChangeCoordinator
     ) async -> TurnFileChangeSummary? {
+        guard let summary = await collectFileChangeSummaryIfNeeded(from: coordinator) else {
+            return nil
+        }
+
+        writeFileChangeSummary(summary, includeDiff: false)
+        return summary
+    }
+
+    public func collectFileChangeSummaryIfNeeded(
+        from coordinator: TurnFileChangeCoordinator
+    ) async -> TurnFileChangeSummary? {
         guard let summary = await coordinator.publishSummaryIfNeeded() else {
             return nil
         }
 
         lastFileChangeSummary = summary
-        writeFileChangeSummary(summary, includeDiff: false)
         return summary
     }
 
@@ -55,6 +65,18 @@ extension TerminalChat {
         _ summary: TurnFileChangeSummary,
         includeDiff: Bool
     ) {
+        writeFileChangeSummaryMessage(Self.renderFileChangeSummary(summary))
+
+        guard includeDiff else {
+            return
+        }
+
+        writeFileChangeDiffs(summary)
+    }
+
+    public static func renderFileChangeSummary(
+        _ summary: TurnFileChangeSummary
+    ) -> String {
         let title = summary.fileCount == 1
             ? "1 modified file"
             : "\(summary.fileCount) modified files"
@@ -62,20 +84,10 @@ extension TerminalChat {
             ? "Use /undo to revert, /changes diff to show patches."
             : "Undo is not available for this summary."
 
-        var lines = [
-            "",
-            "\(title)  +\(summary.totalAdditions) -\(summary.totalDeletions)"
-        ]
+        var lines = ["", "Changed files: \(title)  +\(summary.totalAdditions) -\(summary.totalDeletions)"]
         lines.append(contentsOf: summary.entries.map(Self.renderFileChangeEntry))
         lines.append(undoText)
-
-        writeSystemMessage(lines.joined(separator: "\n") + "\n")
-
-        guard includeDiff else {
-            return
-        }
-
-        writeFileChangeDiffs(summary)
+        return lines.joined(separator: "\n") + "\n"
     }
 
     public static func renderFileChangeEntry(

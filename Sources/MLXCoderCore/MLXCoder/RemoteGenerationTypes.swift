@@ -5,7 +5,7 @@
 
 import Foundation
 
-public struct RemoteStreamResult {
+public struct RemoteStreamResult: Sendable {
     public let text: String
     public let stopReason: String
     public let toolCalls: [DirectAgentToolCall]
@@ -24,7 +24,7 @@ public struct RemoteStreamResult {
     }
 }
 
-public struct RemoteGenerationStats {
+public struct RemoteGenerationStats: Sendable {
     public let usage: RemoteGenerationUsage?
     public let requestStartedAt: Date
     public let firstDeltaAt: Date?
@@ -58,7 +58,7 @@ public struct RemoteGenerationStats {
     }
 }
 
-public struct RemoteGenerationUsage {
+public struct RemoteGenerationUsage: Sendable {
     public let promptTokens: Int?
     public let completionTokens: Int?
     public let totalTokens: Int?

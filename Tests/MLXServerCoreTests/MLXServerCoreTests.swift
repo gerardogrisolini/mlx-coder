@@ -42,7 +42,25 @@ func transcriptKeepsDirectAnswerVisibleWhenThinkingWasRequested() {
         ) == text
     )
     #expect(
+        MLXServerChatSessionTranscriptText.visibleAssistantContentForHistory(
+            from: text,
+            startsInThinking: true
+        ).isEmpty
+    )
+    #expect(
         MLXServerChatSessionTranscriptText.reasoningContent(
+            from: text,
+            startsInThinking: true
+        ).isEmpty
+    )
+}
+
+@Test
+func transcriptDoesNotPersistUnclosedInitialThinkingAsAssistantHistory() {
+    let text = "Analisi lunga senza tag di chiusura."
+
+    #expect(
+        MLXServerChatSessionTranscriptText.visibleAssistantContentForHistory(
             from: text,
             startsInThinking: true
         ).isEmpty
@@ -55,6 +73,12 @@ func transcriptStillSeparatesExplicitThinkingBlock() {
 
     #expect(
         MLXServerChatSessionTranscriptText.visibleAssistantContent(
+            from: text,
+            startsInThinking: false
+        ) == "Risposta."
+    )
+    #expect(
+        MLXServerChatSessionTranscriptText.visibleAssistantContentForHistory(
             from: text,
             startsInThinking: false
         ) == "Risposta."
@@ -73,6 +97,12 @@ func transcriptSeparatesImplicitThinkingBlockClosedByEndTag() {
 
     #expect(
         MLXServerChatSessionTranscriptText.visibleAssistantContent(
+            from: text,
+            startsInThinking: true
+        ) == "Risposta."
+    )
+    #expect(
+        MLXServerChatSessionTranscriptText.visibleAssistantContentForHistory(
             from: text,
             startsInThinking: true
         ) == "Risposta."
@@ -208,7 +238,7 @@ func savesAndLoadsServerSettingsJSON() throws {
 }
 
 @Test
-func serverSettingsRejectsJSONWithoutCurrentSchema() {
+func serverSettingsLoadsOlderJSONWithoutHuggingFaceCache() throws {
     let data = Data(
         """
         {
@@ -223,9 +253,24 @@ func serverSettingsRejectsJSONWithoutCurrentSchema() {
         """.utf8
     )
 
-    #expect(throws: DecodingError.self) {
-        try JSONDecoder().decode(MLXServerSettings.self, from: data)
-    }
+    let settings = try JSONDecoder().decode(MLXServerSettings.self, from: data).validated()
+
+    #expect(settings.huggingFaceCache.directoryPath == nil)
+    #expect(settings.huggingFaceCache.bookmark == nil)
+    #expect(settings.kvCache.mode == .standard)
+    #expect(settings.webServerThreadCount == MLXServerSettings.defaultWebServerThreadCount)
+}
+
+@Test
+func kvCacheSettingsLoadPartialJSONWithDefaults() throws {
+    let data = Data(#"{"mode":"quantized"}"#.utf8)
+
+    let settings = try JSONDecoder().decode(MLXServerKVCacheSettings.self, from: data)
+
+    #expect(settings.mode == .quantized)
+    #expect(settings.quantizedBits == MLXServerKVCacheSettings.defaultQuantizedBits)
+    #expect(settings.quantizedGroupSize == MLXServerKVCacheSettings.defaultQuantizedGroupSize)
+    #expect(settings.quantizedStart == MLXServerKVCacheSettings.defaultQuantizedStart)
 }
 
 @Test
@@ -309,6 +354,111 @@ func diskKVCacheEvictsLeastRecentlyUsedEntries() throws {
     #expect(!FileManager.default.fileExists(atPath: firstTarget.metadataURL.path))
     #expect(FileManager.default.fileExists(atPath: secondTarget.cacheURL.path))
     #expect(FileManager.default.fileExists(atPath: secondTarget.metadataURL.path))
+}
+
+@Test
+func diskKVCacheKeepsWarmIndexAcrossCommits() throws {
+    let indexProbe = DiskKVCacheIndexRebuildProbe()
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("mlx-server-index-\(UUID().uuidString)", isDirectory: true)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let store = MLXServerDiskKVCacheStore(
+        configuration: MLXServerDiskKVCacheConfiguration(
+            directory: directory,
+            limitBytes: 1_000_000
+        ),
+        indexRebuildObserver: {
+            indexProbe.recordRebuild()
+        }
+    )
+    let firstIdentity = MLXServerDiskKVCacheIdentity(
+        modelID: "mlx-community/test-a",
+        runtimeKind: .llm,
+        cacheLayoutSignature: "standard",
+        promptTokenDigest: "first",
+        promptTokenCount: 2,
+        promptTokenIDs: [1, 2]
+    )
+    let secondIdentity = MLXServerDiskKVCacheIdentity(
+        modelID: "mlx-community/test-a",
+        runtimeKind: .llm,
+        cacheLayoutSignature: "standard",
+        promptTokenDigest: "second",
+        promptTokenCount: 2,
+        promptTokenIDs: [3, 4]
+    )
+
+    let firstTarget = try #require(try store.preparePersistenceTarget(for: firstIdentity))
+    try Data(repeating: 1, count: 16).write(to: firstTarget.temporaryURL)
+    try store.commitPersistedCache(identity: firstIdentity, target: firstTarget)
+    let rebuildsAfterFirstCommit = indexProbe.rebuildCount
+    #expect(rebuildsAfterFirstCommit == 1)
+
+    let secondTarget = try #require(try store.preparePersistenceTarget(for: secondIdentity))
+    try Data(repeating: 2, count: 16).write(to: secondTarget.temporaryURL)
+    try store.commitPersistedCache(identity: secondIdentity, target: secondTarget)
+
+    #expect(indexProbe.rebuildCount == rebuildsAfterFirstCommit)
+    #expect(FileManager.default.fileExists(atPath: firstTarget.cacheURL.path))
+    #expect(FileManager.default.fileExists(atPath: secondTarget.cacheURL.path))
+}
+
+@Test
+func diskKVCacheWarmIndexUpdatesRewrittenEntryByteCount() throws {
+    let indexProbe = DiskKVCacheIndexRebuildProbe()
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("mlx-server-index-rewrite-\(UUID().uuidString)", isDirectory: true)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let store = MLXServerDiskKVCacheStore(
+        configuration: MLXServerDiskKVCacheConfiguration(
+            directory: directory,
+            limitBytes: 96
+        ),
+        indexRebuildObserver: {
+            indexProbe.recordRebuild()
+        }
+    )
+    let firstIdentity = MLXServerDiskKVCacheIdentity(
+        modelID: "mlx-community/test-a",
+        runtimeKind: .llm,
+        cacheLayoutSignature: "standard",
+        promptTokenDigest: "first",
+        promptTokenCount: 2,
+        promptTokenIDs: [1, 2]
+    )
+    let secondIdentity = MLXServerDiskKVCacheIdentity(
+        modelID: "mlx-community/test-a",
+        runtimeKind: .llm,
+        cacheLayoutSignature: "standard",
+        promptTokenDigest: "second",
+        promptTokenCount: 2,
+        promptTokenIDs: [3, 4]
+    )
+
+    let firstTarget = try #require(try store.preparePersistenceTarget(for: firstIdentity))
+    try Data(repeating: 1, count: 32).write(to: firstTarget.temporaryURL)
+    try store.commitPersistedCache(identity: firstIdentity, target: firstTarget)
+    let rebuildsAfterFirstCommit = indexProbe.rebuildCount
+
+    let secondTarget = try #require(try store.preparePersistenceTarget(for: secondIdentity))
+    try Data(repeating: 2, count: 32).write(to: secondTarget.temporaryURL)
+    try store.commitPersistedCache(identity: secondIdentity, target: secondTarget)
+    #expect(indexProbe.rebuildCount == rebuildsAfterFirstCommit)
+
+    let rewrittenFirstTarget = try #require(try store.preparePersistenceTarget(for: firstIdentity))
+    try Data(repeating: 3, count: 96).write(to: rewrittenFirstTarget.temporaryURL)
+    try store.commitPersistedCache(identity: firstIdentity, target: rewrittenFirstTarget)
+
+    #expect(indexProbe.rebuildCount == rebuildsAfterFirstCommit)
+    #expect(FileManager.default.fileExists(atPath: firstTarget.cacheURL.path))
+    #expect(!FileManager.default.fileExists(atPath: secondTarget.cacheURL.path))
+    #expect(!FileManager.default.fileExists(atPath: secondTarget.metadataURL.path))
 }
 
 @Test
@@ -500,6 +650,25 @@ func selectsVLMRuntimeWhenMediaIsAttached() throws {
 
     #expect(request.requiresVisionRuntime)
     #expect(request.runtimeKind == .vlm)
+}
+
+private final class DiskKVCacheIndexRebuildProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _rebuildCount = 0
+
+    var rebuildCount: Int {
+        lock.lock()
+        defer {
+            lock.unlock()
+        }
+        return _rebuildCount
+    }
+
+    func recordRebuild() {
+        lock.lock()
+        _rebuildCount += 1
+        lock.unlock()
+    }
 }
 
 private func testModel(

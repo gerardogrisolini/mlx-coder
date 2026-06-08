@@ -638,6 +638,7 @@ private actor AgentCorePromptTurnRecorder {
              .diagnostic,
              .modelLoaded,
              .modelLoadedDetails,
+             .modelRuntime,
              .metrics,
              .contextWindow,
              .sessionSnapshot,

@@ -36,7 +36,7 @@ public struct AgentCoreSessionConfiguration: Sendable {
         allowedToolNames: Set<String>? = nil,
         configuredContextWindowLimit: Int? = nil,
         generationParameterOverrides: AgentGenerationParameterOverrides = AgentGenerationParameterOverrides(),
-        maxToolRounds: Int = 100,
+        maxToolRounds: Int = AgentToolRoundPolicy.defaultMaxToolRounds,
         maxOutputTokens: Int? = nil,
         verboseLogging: Bool = false,
         appMode: Bool = false,
@@ -61,7 +61,7 @@ public struct AgentCoreSessionConfiguration: Sendable {
             min(max($0, 1), 1_048_576)
         }
         self.generationParameterOverrides = generationParameterOverrides.normalized()
-        self.maxToolRounds = max(1, maxToolRounds)
+        self.maxToolRounds = AgentToolRoundPolicy.normalizedMaxToolRounds(maxToolRounds)
         self.maxOutputTokens = maxOutputTokens.map { max(1, $0) }
         self.verboseLogging = verboseLogging
         self.appMode = appMode
@@ -81,7 +81,7 @@ public struct AgentCoreSessionConfiguration: Sendable {
         allowedToolNames: Set<String>? = nil,
         configuredContextWindowLimit: Int? = nil,
         generationParameterOverrides: AgentGenerationParameterOverrides = AgentGenerationParameterOverrides(),
-        maxToolRounds: Int = 100,
+        maxToolRounds: Int = AgentToolRoundPolicy.defaultMaxToolRounds,
         maxOutputTokens: Int? = nil,
         verboseLogging: Bool = false,
         appMode: Bool = false,

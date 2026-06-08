@@ -7,10 +7,16 @@ import Foundation
 
 extension SwiftFeatureRuntime {
     public func descriptors(
-        allowedToolNames: Set<String>? = nil
+        allowedToolNames: Set<String>? = nil,
+        excludingFeatureIDs: Set<String> = []
     ) async -> [DirectToolDescriptor] {
         var resolvedTools: [ToolDescriptor] = []
-        for feature in features where feature.isRelevant(allowedToolNames: allowedToolNames) {
+        for feature in features {
+            guard !excludingFeatureIDs.contains(feature.id),
+                  feature.isRelevant(allowedToolNames: allowedToolNames) else {
+                continue
+            }
+
             if allowedToolNames == nil, feature.discoversToolsAtRuntime {
                 resolvedTools.append(contentsOf: feature.tools)
             } else {

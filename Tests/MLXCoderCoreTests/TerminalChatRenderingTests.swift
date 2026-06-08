@@ -138,6 +138,42 @@ struct TerminalChatRenderingTests {
     }
 
     @Test
+    func fileChangeSummaryRenderingUsesDistinctHeaderAndSpacing() {
+        let summary = TurnFileChangeSummary(
+            entries: [
+                TurnFileChangeSummary.Entry(
+                    path: "Sources/App.swift",
+                    additions: 12,
+                    deletions: 2,
+                    status: .modified,
+                    isBinary: false,
+                    existedBefore: true,
+                    beforeDataBase64: Data("before".utf8).base64EncodedString(),
+                    patch: nil
+                )
+            ]
+        )
+
+        let rendered = TerminalChat.renderFileChangeSummary(summary)
+
+        #expect(rendered.hasPrefix("\nChanged files: 1 modified file  +12 -2\n"))
+        #expect(rendered.contains("  modified Sources/App.swift  +12 -2\n"))
+        #expect(rendered.contains("Use /undo to revert, /changes diff to show patches.\n"))
+    }
+
+    @Test
+    func fileChangeSummaryColoringHighlightsNonBlankLines() {
+        let rendered = TerminalChat.fileChangeSummaryColorApplied(
+            to: "\nChanged files: 1 modified file  +12 -2\n  modified Sources/App.swift  +12 -2\n",
+            isEnabled: true
+        )
+
+        #expect(rendered.hasPrefix("\n\u{1B}[1;38;5;214mChanged files:"))
+        #expect(rendered.contains("\u{1B}[1;38;5;214m  modified Sources/App.swift  +12 -2\u{1B}[0m\n"))
+        #expect(rendered.hasSuffix("\n"))
+    }
+
+    @Test
     func compactEditToolLinesIncludeFileTarget() {
         let toolCall = DirectAgentToolCall(
             id: "call_1",
@@ -152,8 +188,27 @@ struct TerminalChatRenderingTests {
 
         let lines = TerminalChat.compactToolLines(for: toolCall, statusIcon: "⏳")
 
-        #expect(lines.contains("⚙️  Edit:"))
+        #expect(lines.contains("✏️  Edit:"))
         #expect(lines.contains { $0.contains("Sources/App.swift") })
+    }
+
+    @Test
+    func toolIconsFollowConfiguredFamilies() {
+        #expect(MLXCoderACPBridge.toolIcon(for: "local.exec") == "💻")
+        #expect(MLXCoderACPBridge.toolIcon(for: "local.readFile") == "📄")
+        #expect(MLXCoderACPBridge.toolIcon(for: "local.editFile") == "✏️")
+        #expect(MLXCoderACPBridge.toolIcon(for: "local.delete") == "🗑️")
+        #expect(MLXCoderACPBridge.toolIcon(for: "local.move") == "↔️")
+        #expect(MLXCoderACPBridge.toolIcon(for: "memory.read") == "🧠")
+        #expect(MLXCoderACPBridge.toolIcon(for: "agent.create") == "👥")
+        #expect(MLXCoderACPBridge.toolIcon(for: "task.create") == "👥")
+        #expect(MLXCoderACPBridge.toolIcon(for: "git.diff") == "🔀")
+        #expect(MLXCoderACPBridge.toolIcon(for: "web.fetch") == "🌐")
+        #expect(MLXCoderACPBridge.toolIcon(for: "search.grep") == "🔎")
+        #expect(MLXCoderACPBridge.toolIcon(for: "xcode.BuildProject") == "🛠️")
+        #expect(MLXCoderACPBridge.toolIcon(for: "figma.get") == "🎨")
+        #expect(MLXCoderACPBridge.toolIcon(for: "jira.search") == "📋")
+        #expect(MLXCoderACPBridge.toolIcon(for: "unknown.tool") == "🔨")
     }
 
     @Test
@@ -205,6 +260,7 @@ struct TerminalChatRenderingTests {
 
         let lines = TerminalChat.detailedToolCallStartedLines(for: toolCall)
 
+        #expect(lines.contains("📄  Read /tmp/project/Sources/App.swift ⏳"))
         #expect(lines.contains("status: in_progress"))
         #expect(lines.contains("kind: read"))
         #expect(lines.contains("location: /tmp/project/Sources/App.swift"))

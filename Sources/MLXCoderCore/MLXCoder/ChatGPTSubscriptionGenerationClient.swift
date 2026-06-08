@@ -228,6 +228,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
 
     private static let sessionStoreUserDefaultsKey =
         "ChatGPTSubscriptionGenerationClient.sessionIDsByIdentity.v1"
+    static let compactionReserveTokenCount = 20_000
 
     private let configuration: AgentRuntimeConfiguration
     private let urlSession: URLSession
@@ -455,7 +456,9 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         )
         let reasoningEffort = session.thinkingSelection
             .flatMap(Self.chatGPTReasoningEffort(for:))
-        let maxContextWindowTokens = CodexAgentModel.contextWindowTokenLimit(forLLMID: modelLLMID)
+        let maxContextWindowTokens = resolvedContextWindowTokenLimit(
+            forLLMID: modelLLMID
+        )
 
         session.messages.append(
             RemoteGenerationClient.remoteMessage(
@@ -469,6 +472,14 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         var generationStats: [RemoteGenerationStats] = []
 
         for round in 0..<configuration.maxToolRounds {
+            if let result = compactSessionIfNeeded(
+                &session,
+                maxTokens: maxContextWindowTokens,
+                maxOutputTokens: configuration.maxOutputTokens,
+                sessionIdentity: sessionIdentity
+            ) {
+                await onEvent(.diagnostic(Self.compactionDiagnostic(from: result)))
+            }
             let toolCatalog = RemoteToolWireCatalog(
                 descriptors: await toolExecutor.descriptors(
                     allowedToolNames: session.allowedToolNames
@@ -521,7 +532,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                 instructions: instructions,
                 reasoningEffort: reasoningEffort,
                 textVerbosity: "low",
-                sessionID: chatGPTSessionID,
+                sessionID: session.chatGPTSessionID ?? chatGPTSessionID,
                 cachedWebSocketInput: requestPayload.cachedWebSocketInput.map {
                     JSONValue.acpValue(from: $0)
                 },
@@ -703,6 +714,86 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
 
         sessions[sessionID] = session
         throw ChatGPTSubscriptionGenerationError.tooManyToolRounds(configuration.maxToolRounds)
+    }
+
+    private func compactSessionIfNeeded(
+        _ session: inout AgentSession,
+        maxTokens: Int?,
+        maxOutputTokens: Int?,
+        sessionIdentity: SessionIdentity
+    ) -> AgentConversationCompactionResult? {
+        let result = Self.compactedMessagesIfNeeded(
+            session.messages,
+            maxTokens: maxTokens,
+            maxOutputTokens: maxOutputTokens
+        )
+
+        guard result.wasCompacted else {
+            return nil
+        }
+
+        session.messages = RemoteGenerationClient.remoteMessages(
+            compactionResult: result,
+            preservingRecentFrom: session.messages
+        )
+        resetContinuationAfterCompaction(
+            session: &session,
+            sessionIdentity: sessionIdentity
+        )
+        return result
+    }
+
+    private func resetContinuationAfterCompaction(
+        session: inout AgentSession,
+        sessionIdentity: SessionIdentity
+    ) {
+        session.continuation = nil
+        if let chatGPTSessionID = session.chatGPTSessionID {
+            webSocketPool.closeSession(sessionID: chatGPTSessionID)
+        }
+        let replacementSessionID = UUID().uuidString
+        session.chatGPTSessionID = replacementSessionID
+        storeSessionID(replacementSessionID, for: sessionIdentity)
+    }
+
+    static func compactedMessagesIfNeeded(
+        _ messages: [[String: Any]],
+        maxTokens: Int?,
+        maxOutputTokens: Int? = nil
+    ) -> AgentConversationCompactionResult {
+        let compactionLimit = compactionPolicyMaxTokens(
+            for: maxTokens,
+            maxOutputTokens: maxOutputTokens
+        )
+        return AgentConversationCompactionSupport.compactedMessagesIfNeeded(
+            RemoteGenerationClient.agentRuntimeMessages(from: messages),
+            maxTokens: compactionLimit
+        )
+    }
+
+    static func compactionPolicyMaxTokens(
+        for maxTokens: Int?,
+        maxOutputTokens: Int? = nil
+    ) -> Int? {
+        guard let maxTokens, maxTokens > 0 else {
+            return nil
+        }
+        let outputReserve = max(maxOutputTokens ?? 0, compactionReserveTokenCount)
+        let usableTokens = max(1, maxTokens - outputReserve)
+        let adjustedMaxTokens = Double(usableTokens)
+            / AgentConversationCompactionPolicy.triggerFraction
+        return max(1, Int(adjustedMaxTokens.rounded(.up)))
+    }
+
+    private static func compactionDiagnostic(
+        from result: AgentConversationCompactionResult
+    ) -> String {
+        "Compacted conversation history from \(result.originalEstimatedTokenCount) to \(result.estimatedTokenCount) estimated tokens."
+    }
+
+    private func resolvedContextWindowTokenLimit(forLLMID modelLLMID: String) -> Int? {
+        configuration.configuredContextWindowLimit
+            ?? CodexAgentModel.contextWindowTokenLimit(forLLMID: modelLLMID)
     }
 
     private static func publishChatGPTSubscriptionMetrics(
@@ -1515,7 +1606,7 @@ public struct ChatGPTSubscriptionResponsesClient {
     private static let maxRetries = 3
     private static let baseRetryDelayNanoseconds: UInt64 = 1_000_000_000
     private static let webSocketBetaHeader = "responses_websockets=2026-02-06"
-    private static let webSocketIdleTimeoutNanoseconds: UInt64 = 30_000_000_000
+    private static let webSocketIdleTimeoutNanoseconds: UInt64 = 60_000_000_000
 
     public init(
         credentials: CodexAgentCredentials,

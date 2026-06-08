@@ -501,7 +501,7 @@ struct MLXServerMain {
             )
             turnResults.append(result.metrics)
             messages.append(.user(trimmedUserText))
-            messages.append(.assistant(result.visibleAssistantText))
+            messages.append(.assistant(result.historyAssistantText))
             turnIndex += 1
 
         }
@@ -559,10 +559,22 @@ struct MLXServerMain {
             throw MLXServerMainError.generationMissingMetrics
         }
 
+        let cacheEvent = await runtime.consumeLastChatCacheEvent()
         print("\(label) promptTokens: \(completionInfo.promptTokenCount)")
         print("\(label) generationTokens: \(completionInfo.generationTokenCount)")
         print("\(label) prefill: \(formattedRate(completionInfo.promptTokensPerSecond)) tok/s")
         print("\(label) generation: \(formattedRate(completionInfo.tokensPerSecond)) tok/s")
+        if let cacheEvent {
+            let cachedPromptTokenCount = cacheEvent.cachedPromptTokenCount ?? 0
+            let restoredPromptPrefixTokenCount = cacheEvent.restoredPromptPrefixTokenCount ?? 0
+            print(
+                """
+                \(label) cache: status=\(cacheEvent.status.rawValue) cachedPromptTokens=\(cachedPromptTokenCount) restoredPromptPrefixTokens=\(restoredPromptPrefixTokenCount) priorTranscriptTokens=\(cacheEvent.priorTranscriptCount) bestCommonPrefixTokens=\(cacheEvent.bestCommonPrefixCount) memorySessions=\(cacheEvent.cachedSessionCount) modelSessions=\(cacheEvent.modelSessionCount)
+                """
+            )
+        } else {
+            print("\(label) cache: status=unknown")
+        }
 
         if output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             print("\(label) warning: empty output")
@@ -570,6 +582,10 @@ struct MLXServerMain {
 
         return MLXServerChatTurnOutput(
             visibleAssistantText: MLXServerChatSessionTranscriptText.visibleAssistantContent(
+                from: output,
+                startsInThinking: request.emitsThinking
+            ),
+            historyAssistantText: MLXServerChatSessionTranscriptText.visibleAssistantContentForHistory(
                 from: output,
                 startsInThinking: request.emitsThinking
             ),
@@ -626,7 +642,7 @@ private struct MLXServerCoderOptions {
         var workingDirectoryPath = ProcessInfo.processInfo.environment["PWD"]
             ?? FileManager.default.currentDirectoryPath
         var initialSkillSelection: String?
-        var maxToolRounds = 100
+        var maxToolRounds = AgentToolRoundPolicy.defaultMaxToolRounds
         var maxOutputTokens: Int?
         var verboseLogging = false
         var acp = false
@@ -651,10 +667,11 @@ private struct MLXServerCoderOptions {
                 initialSkillSelection = try Self.requiredValue(after: argument, in: arguments, index: &index)
             case "--max-tool-rounds":
                 let value = try Self.requiredValue(after: argument, in: arguments, index: &index)
-                guard let parsed = Int(value), parsed > 0 else {
+                guard let parsed = Int(value),
+                      AgentToolRoundPolicy.isValidMaxToolRounds(parsed) else {
                     throw MLXServerMainError.invalidArgument(argument, value)
                 }
-                maxToolRounds = parsed
+                maxToolRounds = AgentToolRoundPolicy.normalizedMaxToolRounds(parsed)
             case "--max-output-tokens":
                 let value = try Self.requiredValue(after: argument, in: arguments, index: &index)
                 guard let parsed = Int(value), parsed > 0 else {
@@ -680,7 +697,7 @@ private struct MLXServerCoderOptions {
             rawValue: workingDirectoryPath
         )
         self.initialSkillSelection = initialSkillSelection
-        self.maxToolRounds = maxToolRounds
+        self.maxToolRounds = AgentToolRoundPolicy.normalizedMaxToolRounds(maxToolRounds)
         self.maxOutputTokens = maxOutputTokens
         self.verboseLogging = verboseLogging
         self.acp = acp
@@ -767,6 +784,7 @@ private struct MLXServerChatOptions {
 
 private struct MLXServerChatTurnOutput {
     var visibleAssistantText: String
+    var historyAssistantText: String
     var metrics: MLXServerChatTurnResult
 }
 

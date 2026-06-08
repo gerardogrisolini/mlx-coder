@@ -66,7 +66,7 @@ extension MLXCoderACPBridge {
         let sessionID = "swiftmlx-\(UUID().uuidString.lowercased())"
         let cacheKey = (params["sessionKey"] as? String)
             ?? (params["cacheKey"] as? String)
-        let allowedToolNames = Self.allowedToolNames(from: params["allowedTools"])
+        let allowedToolNames = Self.allowedToolNames(from: params)
             ?? configuration.selectedAgent?.allowedToolNames()
         let systemPrompt = resolvedSystemPrompt(
             providedSystemPrompt: params["systemPrompt"] as? String,

@@ -21,6 +21,25 @@ enum TerminalChatCommandAvailability: Sendable, Equatable {
     case voiceSynthesisEnabled
 }
 
+struct TerminalOptionalCommandAvailability: Sendable, Equatable {
+    var telegramEnabled: Bool
+    var voiceEnabled: Bool
+    var voiceSynthesisEnabled: Bool
+
+    static func load() -> Self {
+        from(manifest: AgentSettingsManifestStore.load())
+    }
+
+    static func from(manifest: AgentSettingsManifest?) -> Self {
+        let voiceEnabled = manifest?.voice?.isConfigured == true
+        return Self(
+            telegramEnabled: manifest?.telegram?.isEnabled == true,
+            voiceEnabled: voiceEnabled,
+            voiceSynthesisEnabled: voiceEnabled && AgentVoiceSynthesisService.isSupported
+        )
+    }
+}
+
 enum TerminalSubmittedLineRole: Sendable, Equatable {
     case empty
     case prompt
@@ -108,11 +127,12 @@ extension TerminalChat {
     }
 
     func visibleCommandDescriptorsForCurrentAgent() -> [TerminalChatCommandDescriptor] {
-        Self.visibleCommandDescriptors(
+        let availability = optionalCommandAvailability
+        return Self.visibleCommandDescriptors(
             builderAgentEnabled: AgentProfileStore.isBuilderAgent(selectedAgent),
-            telegramEnabled: isTelegramConfigured(),
-            voiceEnabled: isVoiceConfigured(),
-            voiceSynthesisEnabled: isVoiceSynthesisConfigured()
+            telegramEnabled: availability.telegramEnabled,
+            voiceEnabled: availability.voiceEnabled,
+            voiceSynthesisEnabled: availability.voiceSynthesisEnabled
         )
     }
 
@@ -143,7 +163,7 @@ extension TerminalChat {
     }
 
     func isTelegramConfigured() -> Bool {
-        AgentSettingsManifestStore.load()?.telegram?.isEnabled == true
+        optionalCommandAvailability.telegramEnabled
     }
 
     func isTelegramCommandVisible() -> Bool {
@@ -151,7 +171,7 @@ extension TerminalChat {
     }
 
     func isVoiceConfigured() -> Bool {
-        AgentSettingsManifestStore.load()?.voice?.isConfigured == true
+        optionalCommandAvailability.voiceEnabled
     }
 
     func isVoiceCommandVisible() -> Bool {
@@ -159,7 +179,7 @@ extension TerminalChat {
     }
 
     func isVoiceSynthesisConfigured() -> Bool {
-        isVoiceConfigured() && AgentVoiceSynthesisService.isSupported
+        optionalCommandAvailability.voiceSynthesisEnabled
     }
 
     static func commandToken(from line: String) -> String? {

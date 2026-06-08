@@ -118,6 +118,49 @@ struct TelegramTUITests {
     }
 
     @Test
+    func optionalCommandAvailabilityUsesLoadedManifestSnapshot() {
+        let unavailable = TerminalOptionalCommandAvailability.from(manifest: nil)
+        let tokenOnlyTelegram = TerminalOptionalCommandAvailability.from(
+            manifest: AgentSettingsManifest(
+                models: [],
+                telegram: AgentTelegramSettingsManifest(
+                    enabled: true,
+                    botToken: "123456:ABCDEF"
+                )
+            )
+        )
+        let configuredTelegramAndVoice = TerminalOptionalCommandAvailability.from(
+            manifest: AgentSettingsManifest(
+                models: [],
+                telegram: AgentTelegramSettingsManifest(
+                    enabled: true,
+                    botToken: "123456:ABCDEF",
+                    linkedChatID: 42
+                ),
+                voice: AgentVoiceSettingsManifest(
+                    enabled: true,
+                    modelID: "tiny",
+                    executablePath: "/usr/local/bin/mlx-voice-transcriber"
+                )
+            )
+        )
+
+        #expect(unavailable == TerminalOptionalCommandAvailability(
+            telegramEnabled: false,
+            voiceEnabled: false,
+            voiceSynthesisEnabled: false
+        ))
+        #expect(tokenOnlyTelegram.telegramEnabled == false)
+        #expect(tokenOnlyTelegram.voiceEnabled == false)
+        #expect(configuredTelegramAndVoice.telegramEnabled)
+        #expect(configuredTelegramAndVoice.voiceEnabled)
+        #expect(
+            configuredTelegramAndVoice.voiceSynthesisEnabled
+                == AgentVoiceSynthesisService.isSupported
+        )
+    }
+
+    @Test
     func builderCommandVisibilityRemainsIndependentFromTelegram() {
         let commands = TerminalChat.visibleCommandDescriptors(
             builderAgentEnabled: true,

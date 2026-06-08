@@ -170,6 +170,7 @@ public enum DirectAgentEvent: Sendable {
     case thought(String)
     case modelLoaded(String)
     case modelLoadedDetails(DirectAgentLoadedModelDetails)
+    case modelRuntime(String)
     case metrics(DirectAgentGenerationMetrics)
     case contextWindow(DirectAgentContextWindowStatus)
     case content(String)

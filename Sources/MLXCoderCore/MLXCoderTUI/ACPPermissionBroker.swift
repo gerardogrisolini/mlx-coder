@@ -130,8 +130,23 @@ public actor ACPPermissionBroker {
             request.sessionID ?? "",
             request.toolName,
             request.workingDirectory,
-            request.command
+            permissionCommandIdentity(for: request)
         ].joined(separator: "\u{1f}")
+    }
+
+    private func permissionCommandIdentity(for request: AgentToolAuthorizationRequest) -> String {
+        Self.permissionCacheCommandIdentity(for: request)
+    }
+
+    static func permissionCacheCommandIdentity(
+        for request: AgentToolAuthorizationRequest
+    ) -> String {
+        guard request.toolName == "local.exec" else {
+            return request.command
+        }
+        return LocalExecPermissionAuthorizer.persistedCommandPermissionIdentity(
+            for: request.command
+        ) ?? request.command
     }
 
     static func permissionOptionID(from result: JSONValue?) -> String? {

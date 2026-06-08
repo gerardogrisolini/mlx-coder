@@ -348,6 +348,10 @@ public actor MLXServerRuntime {
     private var containers: [LoadedModelKey: ModelContainer] = [:]
     private var loadingTasks: [LoadedModelKey: ModelLoadingTask] = [:]
     private var promptPrefixCaches: [PromptPrefixCacheKey: [PromptPrefixCacheState]] = [:]
+    /// Secondary index: modelID -> set of cache keys that exist for that model.
+    /// Kept in sync with `promptPrefixCaches` to avoid O(n) reduce scans
+    /// when probing per-model cache states.
+    private var modelPromptPrefixKeys: [String: Set<PromptPrefixCacheKey>] = [:]
     private var promptPrefixCacheGeneration: UInt64 = 0
     private let generationGate = MLXServerGenerationGate()
     private let retentionPolicy: MLXServerModelRetentionPolicy
@@ -406,6 +410,7 @@ public actor MLXServerRuntime {
         containers.removeAll(keepingCapacity: true)
         loadingTasks.removeAll(keepingCapacity: true)
         promptPrefixCaches.removeAll(keepingCapacity: true)
+        modelPromptPrefixKeys.removeAll(keepingCapacity: true)
         logUnloadedModels(unloadedModelIDs)
         await generationLease.release()
     }
@@ -753,6 +758,7 @@ public actor MLXServerRuntime {
         let unloadedModelIDs = Set(containers.keys.filter { $0 != key }.map(\.modelID)).sorted()
         containers = containers.filter { $0.key == key }
         promptPrefixCaches.removeAll(keepingCapacity: true)
+        modelPromptPrefixKeys.removeAll(keepingCapacity: true)
         for (loadingKey, loadingTask) in loadingTasks where loadingKey != key {
             loadingTask.task.cancel()
         }
@@ -903,14 +909,14 @@ public actor MLXServerRuntime {
         promptTokenIDs: [Int]
     ) -> PromptPrefixCacheProbe {
         let sameKeyStates = promptPrefixCaches[key] ?? []
-        let sameModelStates = promptPrefixCaches.reduce(into: [PromptPrefixCacheState]()) {
-            result, entry in
-            let (candidateKey, states) = entry
-            if candidateKey.modelID == key.modelID,
-               candidateKey.runtimeKind == key.runtimeKind {
-                result.append(contentsOf: states)
+        let sameModelStates: [PromptPrefixCacheState] = {
+            guard let candidateKeys = modelPromptPrefixKeys[key.modelID] else {
+                return []
             }
-        }
+            return candidateKeys
+                .filter { $0.runtimeKind == key.runtimeKind }
+                .flatMap { promptPrefixCaches[$0] ?? [] }
+        }()
 
         var bestCommonPrefixCount = 0
         var bestCachedTokenCount = 0
@@ -1030,6 +1036,16 @@ public actor MLXServerRuntime {
         )
         states.sort { $0.lastAccessGeneration > $1.lastAccessGeneration }
         promptPrefixCaches[key] = Array(states.prefix(8))
+
+        // Maintain the per-model secondary index
+        if !states.isEmpty {
+            modelPromptPrefixKeys[key.modelID, default: []].insert(key)
+        } else {
+            modelPromptPrefixKeys[key.modelID]?.remove(key)
+            if modelPromptPrefixKeys[key.modelID]?.isEmpty == true {
+                modelPromptPrefixKeys[key.modelID] = nil
+            }
+        }
 
         await persistDiskPromptCacheIfNeeded(
             cache: cache,
@@ -1421,6 +1437,24 @@ public enum MLXServerChatSessionTranscriptText {
         }
 
         return visible
+    }
+
+    public static func visibleAssistantContentForHistory(
+        from generatedText: String,
+        startsInThinking: Bool
+    ) -> String {
+        guard startsInThinking else {
+            return visibleAssistantContent(from: generatedText, startsInThinking: false)
+        }
+        guard let closeRange = generatedText.range(of: closeTag) else {
+            return ""
+        }
+
+        let visibleStartIndex = closeRange.upperBound
+        return visibleAssistantContent(
+            from: String(generatedText[visibleStartIndex...]),
+            startsInThinking: false
+        )
     }
 
     public static func reasoningContent(from generatedText: String, startsInThinking: Bool) -> String {

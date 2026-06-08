@@ -55,15 +55,17 @@ public actor LocalExecPermissionAuthorizer {
     }
 
     static func commandPermissionIdentity(for command: String) -> String? {
-        guard let words = shellWords(command), let executable = words.first else {
+        let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let firstWord = trimmedCommand
+            .split(whereSeparator: \.isWhitespace)
+            .first else {
             return nil
         }
-        return executable
+        return String(firstWord)
     }
 
     static func persistedCommandPermissionIdentity(for command: String) -> String? {
         commandPermissionIdentity(for: command)
-            ?? normalizedCommandIdentity(for: command)
     }
 
     static func isCommandPersistentlyAllowed(
@@ -83,63 +85,6 @@ public actor LocalExecPermissionAuthorizer {
         }
         persistAllowedCommandIdentity(commandIdentity)
     }
-
-
-    private static func shellWords(_ command: String) -> [String]? {
-        let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedCommand.isEmpty,
-              !trimmedCommand.contains(where: { "\n;&|><`()$".contains($0) }) else {
-            return nil
-        }
-
-        var words: [String] = []
-        var current = ""
-        var quote: Character?
-        var isEscaped = false
-        for character in trimmedCommand {
-            if isEscaped {
-                current.append(character)
-                isEscaped = false
-                continue
-            }
-            if character == "\\" {
-                isEscaped = true
-                continue
-            }
-            if let activeQuote = quote {
-                if character == activeQuote {
-                    quote = nil
-                } else {
-                    current.append(character)
-                }
-                continue
-            }
-            if character == "'" || character == "\"" {
-                quote = character
-                continue
-            }
-            if character.isWhitespace {
-                if !current.isEmpty {
-                    words.append(current)
-                    current = ""
-                }
-                continue
-            }
-            current.append(character)
-        }
-        guard quote == nil, !isEscaped else {
-            return nil
-        }
-        if !current.isEmpty {
-            words.append(current)
-        }
-        return words
-    }
-
-    private static func normalizedCommandIdentity(for command: String) -> String? {
-        command.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
-    }
-
 
     private func permissionCacheKey(for request: AgentToolAuthorizationRequest) -> String {
         [
@@ -185,9 +130,9 @@ public actor LocalExecPermissionAuthorizer {
 
     private static func persistedPermissions() -> AgentPermissionsManifest? {
         let permissions = AgentPermissionsManifestStore.load()
-        guard let legacyCommands = AgentSettingsManifestStore.load()?.localExecAllowedCommands,
-              !legacyCommands.isEmpty else {
-            return permissions
+        let legacyCommands = AgentSettingsManifestStore.load()?.localExecAllowedCommands ?? []
+        guard permissions != nil || !legacyCommands.isEmpty else {
+            return nil
         }
 
         let migrated = AgentPermissionsManifest(

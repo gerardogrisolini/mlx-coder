@@ -842,6 +842,135 @@ struct SwiftFeatureRuntimeTests {
     }
 
     @Test
+    func directToolExecutorDoesNotDiscoverXcodeThroughSwiftFeatureRuntime() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-xcode-feature-discovery-skip-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: rootURL)
+        }
+        try FileManager.default.createDirectory(
+            at: rootURL,
+            withIntermediateDirectories: true
+        )
+        let markerURL = rootURL.appendingPathComponent("xcode-feature-discovered")
+        let executableURL = rootURL.appendingPathComponent("xcode-feature")
+        try """
+        #!/bin/sh
+        if [ "$1" = "--list-tools" ]; then
+          printf x >> "\(markerURL.path)"
+          printf '{"tools":[{"name":"xcode.BuildProject","description":"Dynamic Xcode build","inputSchema":"{}"}]}\\n'
+          exit 0
+        fi
+        cat >/dev/null
+        printf '{"ok":true,"output":"feature-xcode-output"}\\n'
+        """.write(to: executableURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: executableURL.path
+        )
+
+        let runtime = SwiftFeatureRuntime(
+            features: [
+                SwiftFeatureBundle(
+                    id: "mlx-xcode-tools",
+                    executableURL: executableURL,
+                    tools: [],
+                    toolNamePrefixes: ["xcode."],
+                    toolNameAliases: ["BuildProject"],
+                    discoversToolsAtRuntime: true,
+                    source: .bundled
+                )
+            ]
+        )
+        let executor = DirectToolExecutor(
+            outputLimit: 24_000,
+            swiftFeatureRuntime: runtime,
+            subAgentBackendFactory: { TestAgentRuntimeBackend() }
+        )
+
+        let descriptors = await executor.descriptors(
+            allowedToolNames: ["xcode."]
+        )
+
+        #expect(descriptors.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: markerURL.path))
+    }
+
+    @Test
+    func directToolExecutorUsesExistingMCPXcodeDescriptorsWithoutFeatureDiscovery() async throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-xcode-mcp-descriptor-reuse-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: rootURL)
+        }
+        try FileManager.default.createDirectory(
+            at: rootURL,
+            withIntermediateDirectories: true
+        )
+        let markerURL = rootURL.appendingPathComponent("xcode-feature-discovered")
+        let executableURL = rootURL.appendingPathComponent("xcode-feature")
+        try """
+        #!/bin/sh
+        if [ "$1" = "--list-tools" ]; then
+          printf x >> "\(markerURL.path)"
+          printf '{"tools":[{"name":"xcode.BuildProject","description":"Dynamic Xcode build","inputSchema":"{}"}]}\\n'
+          exit 0
+        fi
+        cat >/dev/null
+        printf '{"ok":true,"output":"feature-xcode-output"}\\n'
+        """.write(to: executableURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: executableURL.path
+        )
+
+        let runtime = SwiftFeatureRuntime(
+            features: [
+                SwiftFeatureBundle(
+                    id: "mlx-xcode-tools",
+                    executableURL: executableURL,
+                    tools: [],
+                    toolNamePrefixes: ["xcode."],
+                    toolNameAliases: ["BuildProject"],
+                    discoversToolsAtRuntime: true,
+                    source: .bundled
+                )
+            ]
+        )
+        let mcpRuntime = DirectMCPToolRuntime()
+        let xcodeExecutor = XcodeToolExecutor(
+            configuration: MCPServerConfiguration(
+                executablePath: "/usr/bin/false",
+                arguments: [],
+                environment: [:]
+            )
+        )
+        await mcpRuntime.installBorrowedXcodeExecutor(
+            xcodeExecutor,
+            tools: [
+                ToolDescriptor(
+                    name: "BuildProject",
+                    description: "Builds an Xcode project",
+                    inputSchema: "{}"
+                )
+            ]
+        )
+        let executor = DirectToolExecutor(
+            outputLimit: 24_000,
+            mcpRuntime: mcpRuntime,
+            swiftFeatureRuntime: runtime,
+            subAgentBackendFactory: { TestAgentRuntimeBackend() }
+        )
+
+        let descriptors = await executor.descriptors(
+            allowedToolNames: ["xcode."]
+        )
+
+        #expect(descriptors.map(\.name) == ["xcode.BuildProject"])
+        #expect(!FileManager.default.fileExists(atPath: markerURL.path))
+    }
+
+    @Test
     func defaultFeatureStatusesIncludeBundledPackagesEvenWhenManaged() {
         let ids = Set(
             SwiftFeatureRuntime.defaultFeatureStatuses(

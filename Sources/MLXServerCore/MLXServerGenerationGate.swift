@@ -63,3 +63,43 @@ struct MLXServerGenerationLease: Sendable {
         await gate.release(id: id)
     }
 }
+// MARK: - Per-model generation gate
+
+/// An actor that maintains one `MLXServerGenerationGate` per model,
+/// allowing concurrent generation for different models while preserving
+/// serialization within the same model.
+actor MLXServerPerModelGenerationGate {
+    private var gates: [String: MLXServerGenerationGate] = [:]
+
+    func acquire(modelID: String) async throws -> MLXServerGenerationLease {
+        let gate = gates[modelID] ?? {
+            let g = MLXServerGenerationGate()
+            gates[modelID] = g
+            return g
+        }()
+        return try await gate.acquire()
+    }
+
+    /// Acquires every per-model gate that exists at the time of the call.
+    /// Uses a snapshot to avoid deadlocks between concurrent `acquireAll()` calls.
+    func acquireAll() async throws -> MLXServerGenerationLeaseSet {
+        let snapshotIDs = Array(gates.keys)
+        var leases: [MLXServerGenerationLease] = []
+        for modelID in snapshotIDs {
+            let lease = try await gates[modelID]!.acquire()
+            leases.append(lease)
+        }
+        return MLXServerGenerationLeaseSet(leases: leases)
+    }
+}
+
+/// A collection of leases that is released atomically (one by one).
+struct MLXServerGenerationLeaseSet: Sendable {
+    fileprivate let leases: [MLXServerGenerationLease]
+
+    func releaseAll() async {
+        for lease in leases {
+            await lease.release()
+        }
+    }
+}

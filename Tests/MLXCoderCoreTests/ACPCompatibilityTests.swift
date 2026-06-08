@@ -13,6 +13,90 @@ struct ACPCompatibilityTests {
     }
 
     @Test
+    func allowedToolsAcceptACPAliasesAndSelectionNames() {
+        let allowedTools = MLXCoderACPBridge.allowedToolNames(from: [
+            "allowed_tools": ["xcode", "shell"] as [String]
+        ])
+
+        #expect(allowedTools?.contains("xcode.") == true)
+        #expect(allowedTools?.contains("local.exec") == true)
+    }
+
+    @Test
+    func allowedToolsAcceptDescriptorObjects() {
+        let allowedTools = MLXCoderACPBridge.allowedToolNames(from: [
+            "tools": [
+                ["name": "xcode.BuildProject"],
+                ["toolName": "git.status"]
+            ] as [[String: Any]]
+        ])
+
+        #expect(allowedTools == ["git.status", "xcode.BuildProject"])
+    }
+
+    @Test
+    func newSessionConsumesAllowedToolsFromACPParams() async throws {
+        let backend = CapturingACPBackend()
+        let bridge = try makeBridge(
+            models: [
+                AgentSettingsModelManifest(
+                    id: "test-model",
+                    kind: .remoteAPI,
+                    modelID: "local/test-model"
+                )
+            ],
+            backendFactory: { _, _ in backend }
+        )
+
+        try await bridge.newSession(id: nil, params: [
+            "cwd": "/tmp/acp-tools-workspace",
+            "allowed_tools": ["xcode", "shell"] as [String]
+        ])
+
+        let configuration = try #require(await bridge.testOnlySessionConfigurations().first)
+        let allowedToolNames = try #require(configuration.allowedToolNames)
+
+        #expect(allowedToolNames.contains("xcode."))
+        #expect(allowedToolNames.contains("local.exec"))
+        try await bridge.prompt(id: nil, params: [
+            "sessionId": configuration.sessionID,
+            "prompt": "verify tools"
+        ])
+        #expect(await backend.createdAllowedToolNames() == allowedToolNames)
+    }
+
+    @Test
+    func parsedACPXcodeSelectionExposesBorrowedXcodeDescriptors() async throws {
+        let allowedTools = try #require(MLXCoderACPBridge.allowedToolNames(from: [
+            "allowed_tools": ["xcode"] as [String]
+        ]))
+        let mcpRuntime = DirectMCPToolRuntime()
+        let xcodeExecutor = XcodeToolExecutor(
+            configuration: MCPServerConfiguration(
+                executablePath: "/usr/bin/false",
+                arguments: [],
+                environment: [:]
+            )
+        )
+        await mcpRuntime.installBorrowedXcodeExecutor(
+            xcodeExecutor,
+            tools: [
+                ToolDescriptor(
+                    name: "BuildProject",
+                    description: "Builds an Xcode project",
+                    inputSchema: "{}"
+                )
+            ]
+        )
+
+        let descriptors = await mcpRuntime.descriptors(
+            allowedToolNames: allowedTools
+        )
+
+        #expect(descriptors.map(\.name) == ["xcode.BuildProject"])
+    }
+
+    @Test
     func acpSessionStoreRoundTripsRuntimeSnapshot() throws {
         let supportURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("mlx-acp-session-store-\(UUID().uuidString)", isDirectory: true)
@@ -153,7 +237,7 @@ struct ACPCompatibilityTests {
         }
     }
 
-    @Test
+            @Test
     func cancelledPermissionOutcomeDoesNotSelectOption() {
         let value = JSONValue.object([
             "outcome": .object([
@@ -162,6 +246,41 @@ struct ACPCompatibilityTests {
         ])
 
         #expect(ACPPermissionBroker.permissionOptionID(from: value) == nil)
+    }
+
+    @Test
+    func acpLocalExecAlwaysPermissionUsesExecutableOnly() {
+        let localExecRequest = AgentToolAuthorizationRequest(
+            sessionID: "session",
+            toolCallID: "call_exec",
+            toolName: "local.exec",
+            title: "Run swift test --filter One",
+            kind: "execute",
+            command: "swift test --filter One",
+            workingDirectory: "/tmp/project"
+        )
+        let secondLocalExecRequest = AgentToolAuthorizationRequest(
+            sessionID: "session",
+            toolCallID: "call_exec_2",
+            toolName: "local.exec",
+            title: "Run swift test --filter Two",
+            kind: "execute",
+            command: "swift test --filter Two",
+            workingDirectory: "/tmp/project"
+        )
+        let nonLocalRequest = AgentToolAuthorizationRequest(
+            sessionID: "session",
+            toolCallID: "call_custom",
+            toolName: "custom.tool",
+            title: "Run custom tool",
+            kind: "execute",
+            command: "swift test --filter One",
+            workingDirectory: "/tmp/project"
+        )
+
+        #expect(ACPPermissionBroker.permissionCacheCommandIdentity(for: localExecRequest) == "swift")
+        #expect(ACPPermissionBroker.permissionCacheCommandIdentity(for: secondLocalExecRequest) == "swift")
+        #expect(ACPPermissionBroker.permissionCacheCommandIdentity(for: nonLocalRequest) == "swift test --filter One")
     }
 
     @Test
@@ -291,7 +410,8 @@ private extension ACPCompatibilityTests {
     }
 
     func makeBridge(
-        models: [AgentSettingsModelManifest]
+        models: [AgentSettingsModelManifest],
+        backendFactory: AgentRuntimeBackendFactory? = nil
     ) throws -> MLXCoderACPBridge {
         let configuration = try AgentConfiguration(
             hostedModelID: models.first?.id ?? "model",
@@ -299,11 +419,19 @@ private extension ACPCompatibilityTests {
             runMode: .acp,
             workingDirectory: FileManager.default.temporaryDirectory
         )
-        return MLXCoderACPBridge(configuration: configuration, writer: ACPWriter())
+        return MLXCoderACPBridge(
+            configuration: configuration,
+            writer: ACPWriter(),
+            backendFactory: backendFactory
+        )
     }
 }
 
 private extension MLXCoderACPBridge {
+    func testOnlySessionConfigurations() -> [AgentCoreSessionConfiguration] {
+        sessions.values.map(\.configuration)
+    }
+
     func installTestSession(_ configuration: AgentCoreSessionConfiguration) {
         sessions[configuration.sessionID] = sessionState(configuration: configuration)
     }
@@ -338,3 +466,78 @@ private extension MLXCoderACPBridge {
     }
 }
 
+private actor CapturingACPBackend: AgentRuntimeBackend {
+    private var allowedToolNames: Set<String>?
+
+    func createSession(
+        id _: String,
+        cwd _: String,
+        systemPrompt _: String?,
+        history _: [AgentRuntimeMessage],
+        cacheKey _: String?,
+        allowedToolNames: Set<String>?,
+        thinkingSelection _: AgentThinkingSelection?,
+        preserveThinking _: Bool
+    ) {
+        self.allowedToolNames = allowedToolNames
+    }
+
+    func createSessionIfNeeded(
+        id: String,
+        cwd: String,
+        systemPrompt: String?,
+        history: [AgentRuntimeMessage],
+        cacheKey: String?,
+        allowedToolNames: Set<String>?,
+        thinkingSelection: AgentThinkingSelection?,
+        preserveThinking: Bool
+    ) {
+        createSession(
+            id: id,
+            cwd: cwd,
+            systemPrompt: systemPrompt,
+            history: history,
+            cacheKey: cacheKey,
+            allowedToolNames: allowedToolNames,
+            thinkingSelection: thinkingSelection,
+            preserveThinking: preserveThinking
+        )
+    }
+
+    func updateSessionOptions(
+        id _: String,
+        systemPrompt _: String?,
+        allowedToolNames: Set<String>?,
+        thinkingSelection _: AgentThinkingSelection?,
+        preserveThinking _: Bool
+    ) {
+        self.allowedToolNames = allowedToolNames
+    }
+
+    func closeSession(id _: String) {}
+
+    func shutdown() async {}
+
+    func preloadModel(
+        onEvent _: @escaping @Sendable (DirectAgentEvent) async -> Void
+    ) async throws -> String {
+        "test-model"
+    }
+
+    func activeToolDescriptors() async -> [DirectToolDescriptor] {
+        []
+    }
+
+    func sendPrompt(
+        sessionID _: String,
+        prompt _: String,
+        attachments _: [AgentRuntimeAttachment],
+        onEvent _: @escaping @Sendable (DirectAgentEvent) async -> Void
+    ) async throws -> DirectAgentResponse {
+        DirectAgentResponse(text: "", stopReason: "end_turn", modelID: "test-model")
+    }
+
+    func createdAllowedToolNames() -> Set<String>? {
+        allowedToolNames
+    }
+}

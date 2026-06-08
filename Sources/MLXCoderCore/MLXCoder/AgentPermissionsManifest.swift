@@ -48,8 +48,8 @@ public struct AgentPermissionsManifest: Codable, Equatable, Sendable {
     private static func normalizedLocalExecAllowedCommands(_ commands: [String]) -> [String] {
         var seen = Set<String>()
         return commands.compactMap { command in
-            let normalized = command.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalized.isEmpty else {
+            guard let normalized = LocalExecPermissionAuthorizer
+                .persistedCommandPermissionIdentity(for: command) else {
                 return nil
             }
             let key = normalized.lowercased()

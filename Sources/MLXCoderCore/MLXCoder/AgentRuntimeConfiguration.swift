@@ -199,7 +199,7 @@ public struct AgentRuntimeConfiguration: Sendable {
             min(max($0, 1), 1_048_576)
         }
         self.generationParameterOverrides = generationParameterOverrides.normalized()
-        self.maxToolRounds = maxToolRounds
+        self.maxToolRounds = AgentToolRoundPolicy.normalizedMaxToolRounds(maxToolRounds)
         self.maxOutputTokens = maxOutputTokens
         self.verboseLogging = verboseLogging
         self.appMode = appMode

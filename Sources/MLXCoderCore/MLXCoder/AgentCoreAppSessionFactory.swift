@@ -35,7 +35,7 @@ public struct AgentCoreAppSessionRequest: Sendable {
         allowedToolNames: Set<String>? = nil,
         selectedToolKeys: Set<String>? = nil,
         selectedSkillIDs: Set<String> = [],
-        maxToolRounds: Int = 100,
+        maxToolRounds: Int = AgentToolRoundPolicy.defaultMaxToolRounds,
         maxOutputTokens: Int? = nil,
         verboseLogging: Bool = false,
         thinkingSelection: AgentThinkingSelection? = nil,
@@ -52,7 +52,7 @@ public struct AgentCoreAppSessionRequest: Sendable {
         self.allowedToolNames = allowedToolNames
         self.selectedToolKeys = selectedToolKeys
         self.selectedSkillIDs = selectedSkillIDs
-        self.maxToolRounds = maxToolRounds
+        self.maxToolRounds = AgentToolRoundPolicy.normalizedMaxToolRounds(maxToolRounds)
         self.maxOutputTokens = maxOutputTokens
         self.verboseLogging = verboseLogging
         self.thinkingSelection = thinkingSelection
@@ -160,7 +160,7 @@ public enum AgentCoreAppSessionFactory {
             "--cwd",
             request.workingDirectory.path,
             "--max-tool-rounds",
-            "\(max(1, request.maxToolRounds))"
+            "\(AgentToolRoundPolicy.normalizedMaxToolRounds(request.maxToolRounds))"
         ]
 
         if let modelID = request.modelID?.nilIfBlank {

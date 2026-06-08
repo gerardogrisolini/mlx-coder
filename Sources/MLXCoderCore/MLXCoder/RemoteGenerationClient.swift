@@ -419,7 +419,7 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
         return "{}"
     }
 
-    private static func remoteMessages(
+    static func remoteMessages(
         compactionResult: AgentConversationCompactionResult,
         preservingRecentFrom messages: [[String: Any]]
     ) -> [[String: Any]] {

@@ -50,9 +50,13 @@ extension RemoteGenerationClient {
         thinkingSelection: AgentThinkingSelection?,
         onEvent: @escaping @Sendable (DirectAgentEvent) async -> Void
     ) async throws -> RemoteStreamResult {
+        let toolDescriptors = await toolExecutor.descriptors(
+            allowedToolNames: allowedToolNames
+        )
+        let toolCatalog = RemoteToolWireCatalog(descriptors: toolDescriptors)
         var body: [String: Any] = [
             "model": provider.modelID,
-            "messages": messages,
+            "messages": toolCatalog.wireMessages(from: messages),
             "stream": true,
             "stream_options": [
                 "include_usage": true
@@ -62,10 +66,7 @@ extension RemoteGenerationClient {
         if provider.chatEndpoint.usesSessionID {
             body["session_id"] = sessionID
         }
-        let toolDescriptors = await toolExecutor.descriptors(
-            allowedToolNames: allowedToolNames
-        )
-        let toolPayloads = Self.chatCompletionToolPayloads(from: toolDescriptors)
+        let toolPayloads = toolCatalog.chatCompletionToolPayloads
         if !toolPayloads.isEmpty {
             body["tools"] = toolPayloads
             body["tool_choice"] = "auto"
@@ -74,11 +75,17 @@ extension RemoteGenerationClient {
             body["max_tokens"] = maxTokens
         }
 
-        return try await streamRequest(
+        let result = try await streamRequest(
             path: provider.chatEndpoint.path,
             body: body,
             onEvent: onEvent,
             eventParser: Self.parseChatCompletionStreamEvent
+        )
+        return RemoteStreamResult(
+            text: result.text,
+            stopReason: result.stopReason,
+            toolCalls: result.toolCalls.map(toolCatalog.localToolCall),
+            stats: result.stats
         )
     }
 
@@ -89,7 +96,13 @@ extension RemoteGenerationClient {
         thinkingSelection: AgentThinkingSelection?,
         onEvent: @escaping @Sendable (DirectAgentEvent) async -> Void
     ) async throws -> RemoteStreamResult {
-        let normalizedInput = Self.responsesInputPayload(from: messages)
+        let toolDescriptors = await toolExecutor.descriptors(
+            allowedToolNames: allowedToolNames
+        )
+        let toolCatalog = RemoteToolWireCatalog(descriptors: toolDescriptors)
+        let normalizedInput = Self.responsesInputPayload(
+            from: toolCatalog.wireMessages(from: messages)
+        )
         var body: [String: Any] = [
             "model": provider.modelID,
             "input": normalizedInput.input,
@@ -105,10 +118,7 @@ extension RemoteGenerationClient {
         if provider.chatEndpoint.usesSessionID {
             body["session_id"] = sessionID
         }
-        let toolDescriptors = await toolExecutor.descriptors(
-            allowedToolNames: allowedToolNames
-        )
-        let toolPayloads = Self.responsesToolPayloads(from: toolDescriptors)
+        let toolPayloads = toolCatalog.responsesToolPayloads
         if !toolPayloads.isEmpty {
             body["tools"] = toolPayloads
             body["tool_choice"] = "auto"
@@ -117,11 +127,17 @@ extension RemoteGenerationClient {
             body["max_output_tokens"] = maxTokens
         }
 
-        return try await streamRequest(
+        let result = try await streamRequest(
             path: provider.chatEndpoint.path,
             body: body,
             onEvent: onEvent,
             eventParser: Self.parseResponsesStreamEvent
+        )
+        return RemoteStreamResult(
+            text: result.text,
+            stopReason: result.stopReason,
+            toolCalls: result.toolCalls.map(toolCatalog.localToolCall),
+            stats: result.stats
         )
     }
 

@@ -415,6 +415,15 @@ extension TerminalChat {
         )
     }
 
+    func writeFileChangeSummaryMessage(_ text: String) {
+        writeChatError(
+            Self.fileChangeSummaryColorApplied(
+                to: text,
+                isEnabled: AgentOutput.standardErrorIsTerminal
+            )
+        )
+    }
+
     func writeOperationalMessage(_ text: String) {
         writeChatError(
             Self.operationalMessageColorApplied(
@@ -481,6 +490,23 @@ extension TerminalChat {
     }
 
     private static let systemMessageANSIColor = "\u{1B}[38;5;179m"
+
+    static func fileChangeSummaryColorApplied(to text: String, isEnabled: Bool) -> String {
+        guard isEnabled, !text.isEmpty else {
+            return text
+        }
+
+        let color = fileChangeSummaryANSIColor
+        let reset = "\u{1B}[0m"
+        return text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in
+                line.isEmpty ? "" : "\(color)\(line)\(reset)"
+            }
+            .joined(separator: "\n")
+    }
+
+    private static let fileChangeSummaryANSIColor = "\u{1B}[1;38;5;214m"
 
     static func failureMessageColorApplied(to text: String, isEnabled: Bool) -> String {
         guard isEnabled, !text.isEmpty else {
@@ -690,19 +716,20 @@ extension TerminalChat {
         contentInsetWidth: Int = 0
     ) -> [String] {
         let title = MLXCoderACPBridge.toolTitle(for: toolCall)
+        let icon = MLXCoderACPBridge.toolIcon(for: toolCall.name)
         guard let target = MLXCoderACPBridge.displayToolTarget(for: toolCall),
               title.hasSuffix(target) else {
-            return [compactToolHeaderLine("⚙️  \(title) \(statusIcon)")]
+            return [compactToolHeaderLine("\(icon)  \(title) \(statusIcon)")]
         }
 
         let action = title
             .dropLast(target.count)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !action.isEmpty else {
-            return [compactToolHeaderLine("⚙️  \(title) \(statusIcon)")]
+            return [compactToolHeaderLine("\(icon)  \(title) \(statusIcon)")]
         }
         return [
-            compactToolHeaderLine("⚙️  \(action):"),
+            compactToolHeaderLine("\(icon)  \(action):"),
             compactToolStatusLine(
                 target: target,
                 statusIcon: statusIcon,
@@ -847,8 +874,9 @@ extension TerminalChat {
     ) -> [String] {
         let title = MLXCoderACPBridge.toolTitle(for: toolCall)
         let kind = MLXCoderACPBridge.toolKind(for: toolCall.name)
+        let icon = MLXCoderACPBridge.toolIcon(for: toolCall.name)
         var lines = [
-            "⚙️  \(title) \(statusIcon)",
+            "\(icon)  \(title) \(statusIcon)",
             "status: \(status)",
             "kind: \(kind)"
         ]

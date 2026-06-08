@@ -237,6 +237,20 @@ public nonisolated struct RemoteToolWireCatalog {
         public let descriptor: DirectToolDescriptor
         public let wireName: String
 
+        public var chatCompletionToolPayload: [String: Any]? {
+            guard let schema = descriptor.schemaObject else {
+                return nil
+            }
+            return [
+                "type": "function",
+                "function": [
+                    "name": wireName,
+                    "description": descriptor.description,
+                    "parameters": schema
+                ]
+            ]
+        }
+
         public var responsesToolPayload: [String: Any]? {
             guard let schema = descriptor.schemaObject,
                   let parameters = RemoteToolSchemaCompatibility.responsesFunctionParameters(
@@ -299,6 +313,10 @@ public nonisolated struct RemoteToolWireCatalog {
 
     public var responsesToolPayloads: [[String: Any]] {
         bindings.compactMap(\.responsesToolPayload)
+    }
+
+    public var chatCompletionToolPayloads: [[String: Any]] {
+        bindings.compactMap(\.chatCompletionToolPayload)
     }
 
     public func wireMessages(from messages: [[String: Any]]) -> [[String: Any]] {

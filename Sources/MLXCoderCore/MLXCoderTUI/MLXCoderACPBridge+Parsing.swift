@@ -42,16 +42,45 @@ extension MLXCoderACPBridge {
         ])
     }
 
+    public static func allowedToolNames(from params: [String: Any]) -> Set<String>? {
+        for key in allowedToolParameterKeys {
+            if let names = allowedToolNames(from: params[key]) {
+                return names
+            }
+        }
+
+        if let config = params["config"] as? [String: Any],
+           let names = allowedToolNames(from: config) {
+            return names
+        }
+
+        return nil
+    }
+
     public static func allowedToolNames(from value: Any?) -> Set<String>? {
-        guard let names = value as? [String] else {
+        if let names = value as? [String] {
+            return expandedAllowedToolNames(from: names)
+        }
+
+        if let values = value as? [Any] {
+            return expandedAllowedToolNames(
+                from: values.compactMap(allowedToolName)
+            )
+        }
+
+        if let object = value as? [String: Any] {
+            for key in allowedToolParameterKeys + ["names", "enabled", "items"] {
+                if let names = allowedToolNames(from: object[key]) {
+                    return names
+                }
+            }
+            if let name = allowedToolName(object) {
+                return expandedAllowedToolNames(from: [name])
+            }
             return nil
         }
 
-        return Set(
-            names
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-        )
+        return nil
     }
 
     public static func memoryToolEnabled(_ allowedToolNames: Set<String>?) -> Bool {
@@ -81,6 +110,72 @@ extension MLXCoderACPBridge {
             }
         }
         return nil
+    }
+
+    private static let allowedToolParameterKeys = [
+        "allowedTools",
+        "allowed_tools",
+        "toolNames",
+        "tool_names",
+        "enabledTools",
+        "enabled_tools",
+        "tools"
+    ]
+
+    private static func allowedToolName(_ value: Any) -> String? {
+        if let string = value as? String {
+            return string.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank
+        }
+
+        guard let object = value as? [String: Any] else {
+            return nil
+        }
+
+        return stringValue(from: object, keys: [
+            "name",
+            "tool",
+            "toolName",
+            "tool_name",
+            "id",
+            "value"
+        ])
+    }
+
+    private static func expandedAllowedToolNames(from rawNames: [String]) -> Set<String> {
+        let names = rawNames
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !names.isEmpty else {
+            return []
+        }
+
+        let items = TerminalToolSelectionCatalog.items(featureStatuses: [])
+        var selectedKeys = Set<String>()
+        var allowedToolNames = Set<String>()
+        for name in names {
+            if name.contains(".") {
+                allowedToolNames.insert(name)
+                continue
+            }
+
+            let matchingKeys = TerminalToolSelectionCatalog.selectionKeys(
+                for: name,
+                items: items
+            )
+            if matchingKeys.isEmpty {
+                allowedToolNames.insert(name)
+            } else {
+                selectedKeys.formUnion(matchingKeys)
+            }
+        }
+
+        allowedToolNames.formUnion(
+            TerminalToolSelectionCatalog.allowedToolNames(
+                for: selectedKeys,
+                items: items
+            )
+        )
+        return allowedToolNames
     }
 
     public func resolvedSystemPrompt(
