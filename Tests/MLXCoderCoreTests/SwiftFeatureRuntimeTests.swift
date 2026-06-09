@@ -1032,6 +1032,122 @@ struct SwiftFeatureRuntimeTests {
     }
 
     @Test
+    func bundledExecutableCandidatesIncludeReleaseFeaturesDirectoryNextToBinary() throws {
+        let binaryDirectoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-feature-release-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: binaryDirectoryURL)
+        }
+        try FileManager.default.createDirectory(
+            at: binaryDirectoryURL,
+            withIntermediateDirectories: true
+        )
+
+        let candidates = SwiftFeatureRuntime.bundledExecutableCandidateURLs(
+            named: "mlx-web-tools-feature",
+            fileManager: .default,
+            pathEnvironment: nil,
+            commandLineArgument: nil,
+            executableDirectoryURLs: [binaryDirectoryURL]
+        )
+        let expectedURL = binaryDirectoryURL
+            .appendingPathComponent("features", isDirectory: true)
+            .appendingPathComponent("mlx-web-tools-feature")
+            .standardizedFileURL
+
+        #expect(candidates.contains { $0.path == expectedURL.path })
+    }
+
+    @Test
+    func bundledExecutableCandidatesIncludeInstallerFeatureDirectoryNextToBinary() throws {
+        let binaryDirectoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-feature-install-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: binaryDirectoryURL)
+        }
+        try FileManager.default.createDirectory(
+            at: binaryDirectoryURL,
+            withIntermediateDirectories: true
+        )
+
+        let candidates = SwiftFeatureRuntime.bundledExecutableCandidateURLs(
+            named: "mlx-git-tools-feature",
+            fileManager: .default,
+            pathEnvironment: nil,
+            commandLineArgument: nil,
+            executableDirectoryURLs: [binaryDirectoryURL]
+        )
+        let expectedURL = binaryDirectoryURL
+            .appendingPathComponent("mlx-server-features", isDirectory: true)
+            .appendingPathComponent("mlx-git-tools-feature")
+            .standardizedFileURL
+
+        #expect(candidates.contains { $0.path == expectedURL.path })
+    }
+
+    @Test
+    func bundledExecutableCandidatesIncludeHomebrewLibexecFeatures() throws {
+        let formulaRootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-feature-homebrew-\(UUID().uuidString)", isDirectory: true)
+        let binaryDirectoryURL = formulaRootURL
+            .appendingPathComponent("bin", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: formulaRootURL)
+        }
+        try FileManager.default.createDirectory(
+            at: binaryDirectoryURL,
+            withIntermediateDirectories: true
+        )
+
+        let candidates = SwiftFeatureRuntime.bundledExecutableCandidateURLs(
+            named: "mlx-xcode-tools-feature",
+            fileManager: .default,
+            pathEnvironment: nil,
+            commandLineArgument: nil,
+            executableDirectoryURLs: [binaryDirectoryURL]
+        )
+        let expectedURL = formulaRootURL
+            .appendingPathComponent("libexec", isDirectory: true)
+            .appendingPathComponent("features", isDirectory: true)
+            .appendingPathComponent("mlx-xcode-tools-feature")
+            .standardizedFileURL
+
+        #expect(candidates.contains { $0.path == expectedURL.path })
+    }
+
+    @Test
+    func bundledExecutableCandidatesResolveInvocationThroughPath() throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-feature-path-\(UUID().uuidString)", isDirectory: true)
+        let binaryDirectoryURL = rootURL.appendingPathComponent("bin", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: rootURL)
+        }
+        try FileManager.default.createDirectory(
+            at: binaryDirectoryURL,
+            withIntermediateDirectories: true
+        )
+        let coderURL = binaryDirectoryURL.appendingPathComponent("mlx-coder")
+        try "#!/bin/sh\n".write(to: coderURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: coderURL.path
+        )
+
+        let candidates = SwiftFeatureRuntime.bundledExecutableCandidateURLs(
+            named: "mlx-figma-tools-feature",
+            fileManager: .default,
+            pathEnvironment: binaryDirectoryURL.path,
+            commandLineArgument: "mlx-coder"
+        )
+        let expectedURL = binaryDirectoryURL
+            .appendingPathComponent("mlx-figma-tools-feature")
+            .standardizedFileURL
+
+        #expect(candidates.contains { $0.path == expectedURL.path })
+    }
+
+    @Test
     func directToolExecutorRoutesMatchingToolToSwiftFeature() async throws {
         let rootURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("mlx-swift-feature-routing-\(UUID().uuidString)", isDirectory: true)

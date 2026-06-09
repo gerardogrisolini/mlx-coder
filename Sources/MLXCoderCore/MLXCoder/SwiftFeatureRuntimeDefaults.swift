@@ -391,25 +391,18 @@ extension SwiftFeatureRuntime {
     static func bundledExecutableCandidateURLs(
         named executableName: String,
         fileManager: FileManager,
-        workingDirectoryURL explicitWorkingDirectoryURL: URL? = nil
+        workingDirectoryURL explicitWorkingDirectoryURL: URL? = nil,
+        pathEnvironment: String? = ProcessInfo.processInfo.environment["PATH"],
+        commandLineArgument: String? = CommandLine.arguments.first,
+        executableDirectoryURLs explicitExecutableDirectoryURLs: [URL]? = nil
     ) -> [URL] {
         var seenPaths = Set<String>()
-        let baseDirectories = [
-            Bundle.main.executableURL?.deletingLastPathComponent(),
-            Bundle.main.executableURL?
-                .resolvingSymlinksInPath()
-                .deletingLastPathComponent(),
-            CommandLine.arguments.first.map {
-                URL(fileURLWithPath: $0)
-                    .standardizedFileURL
-                    .deletingLastPathComponent()
-            },
-            CommandLine.arguments.first.map {
-                URL(fileURLWithPath: $0)
-                    .resolvingSymlinksInPath()
-                    .deletingLastPathComponent()
-            }
-        ].compactMap { $0 }
+        let executableDirectories = explicitExecutableDirectoryURLs
+            ?? defaultExecutableDirectoryURLs(
+                pathEnvironment: pathEnvironment,
+                commandLineArgument: commandLineArgument,
+                fileManager: fileManager
+            )
         let workingDirectoryURL = explicitWorkingDirectoryURL?.standardizedFileURL
             ?? URL(
                 fileURLWithPath: fileManager.currentDirectoryPath,
@@ -427,7 +420,10 @@ extension SwiftFeatureRuntime {
                 fileManager: fileManager
             )
         }
-        let candidateDirectories = baseDirectories.flatMap { directoryURL in
+        let installedFeatureDirectories = executableDirectories.flatMap {
+            bundledFeatureInstallDirectories(binaryDirectoryURL: $0)
+        }
+        let ancestorDirectories = executableDirectories.flatMap { directoryURL in
             var directories = [directoryURL]
             var parentURL = directoryURL
             for _ in 0..<4 {
@@ -435,7 +431,10 @@ extension SwiftFeatureRuntime {
                 directories.append(parentURL)
             }
             return directories
-        } + buildProductDirectories
+        }
+        let candidateDirectories = installedFeatureDirectories
+            + ancestorDirectories
+            + buildProductDirectories
 
         return candidateDirectories.compactMap { directoryURL in
             let executableURL = directoryURL
@@ -446,6 +445,89 @@ extension SwiftFeatureRuntime {
             }
             return executableURL
         }
+    }
+
+    private static func defaultExecutableDirectoryURLs(
+        pathEnvironment: String?,
+        commandLineArgument: String?,
+        fileManager: FileManager
+    ) -> [URL] {
+        let bundleDirectories = [
+            Bundle.main.executableURL?.deletingLastPathComponent(),
+            Bundle.main.executableURL?
+                .resolvingSymlinksInPath()
+                .deletingLastPathComponent()
+        ].compactMap { $0 }
+        let commandLineDirectories = commandLineArgument.map {
+            commandLineExecutableDirectoryURLs(
+                argument: $0,
+                pathEnvironment: pathEnvironment,
+                fileManager: fileManager
+            )
+        } ?? []
+        return bundleDirectories + commandLineDirectories
+    }
+
+    private static func commandLineExecutableDirectoryURLs(
+        argument: String,
+        pathEnvironment: String?,
+        fileManager: FileManager
+    ) -> [URL] {
+        guard !argument.isEmpty else {
+            return []
+        }
+        if argument.contains("/") {
+            let executableURL = URL(fileURLWithPath: argument)
+            return [
+                executableURL.standardizedFileURL.deletingLastPathComponent(),
+                executableURL.resolvingSymlinksInPath().deletingLastPathComponent()
+            ]
+        }
+
+        for directoryURL in executableSearchPathDirectories(pathEnvironment: pathEnvironment) {
+            let executableURL = directoryURL.appendingPathComponent(argument)
+            guard fileManager.isExecutableFile(atPath: executableURL.path) else {
+                continue
+            }
+            return [
+                directoryURL.standardizedFileURL,
+                executableURL.resolvingSymlinksInPath().deletingLastPathComponent()
+            ]
+        }
+        return []
+    }
+
+    private static func executableSearchPathDirectories(
+        pathEnvironment: String?
+    ) -> [URL] {
+        guard let pathEnvironment else {
+            return []
+        }
+        return pathEnvironment
+            .split(separator: ":", omittingEmptySubsequences: true)
+            .map {
+                URL(fileURLWithPath: String($0), isDirectory: true)
+                    .standardizedFileURL
+            }
+    }
+
+    private static func bundledFeatureInstallDirectories(
+        binaryDirectoryURL: URL
+    ) -> [URL] {
+        let binaryDirectoryURL = binaryDirectoryURL.standardizedFileURL
+        let packageDirectoryURL = binaryDirectoryURL.deletingLastPathComponent()
+        return [
+            binaryDirectoryURL,
+            binaryDirectoryURL.appendingPathComponent("features", isDirectory: true),
+            binaryDirectoryURL.appendingPathComponent("mlx-server-features", isDirectory: true),
+            packageDirectoryURL.appendingPathComponent("features", isDirectory: true),
+            packageDirectoryURL.appendingPathComponent("mlx-server-features", isDirectory: true),
+            packageDirectoryURL.appendingPathComponent("libexec", isDirectory: true)
+                .appendingPathComponent("features", isDirectory: true),
+            packageDirectoryURL.appendingPathComponent("share", isDirectory: true)
+                .appendingPathComponent("mlx-server", isDirectory: true)
+                .appendingPathComponent("features", isDirectory: true)
+        ]
     }
 
     private static func sourcePackageRootURL(fileManager: FileManager) -> URL? {
