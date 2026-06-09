@@ -80,7 +80,9 @@ public enum AgentCoreAppSessionFactory {
         )
         let thinkingSelection = resolvedThinkingSelection(
             request.thinkingSelection,
-            modelID: effectiveModelID
+            explicitModelID: request.modelID,
+            agentModelID: agentConfiguration.selectedAgent?.modelID,
+            agentThinkingSelection: agentConfiguration.selectedAgent?.thinkingSelection
         )
         let cacheKey = scopedCacheKey(
             request.cacheKey,
@@ -187,10 +189,10 @@ public enum AgentCoreAppSessionFactory {
         explicitAllowedToolNames: Set<String>?,
         selectedAgent: AgentProfile?
     ) -> Set<String>? {
+        let resolvedToolNames: Set<String>?
         if let explicitAllowedToolNames {
-            return explicitAllowedToolNames
-        }
-        if let selectedToolKeys {
+            resolvedToolNames = explicitAllowedToolNames
+        } else if let selectedToolKeys {
             let normalizedKeys = selectedToolKeys
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
@@ -200,9 +202,11 @@ public enum AgentCoreAppSessionFactory {
                 items: items
             )
             allowedToolNames.formUnion(intrinsicAllowedToolNames(for: selectedAgent))
-            return allowedToolNames
+            resolvedToolNames = allowedToolNames
+        } else {
+            resolvedToolNames = selectedAgent?.allowedToolNames()
         }
-        return selectedAgent?.allowedToolNames()
+        return ExternalToolAvailability.resolvedAllowedToolNames(resolvedToolNames)
     }
 
     private static func intrinsicAllowedToolNames(for selectedAgent: AgentProfile?) -> Set<String> {
@@ -211,18 +215,20 @@ public enum AgentCoreAppSessionFactory {
             : []
     }
 
-    private static func resolvedThinkingSelection(
+    static func resolvedThinkingSelection(
         _ requestedSelection: AgentThinkingSelection?,
-        modelID: String?
+        explicitModelID: String?,
+        agentModelID: String?,
+        agentThinkingSelection: AgentThinkingSelection? = nil,
+        manifest: AgentSettingsManifest? = AgentSettingsManifestStore.load()
     ) -> AgentThinkingSelection? {
-        if let modelID = modelID?.nilIfBlank,
-           let model = AgentSettingsStore.availableModels().first(where: { $0.matches(modelID) }) {
-            return model.thinkingSelection(for: requestedSelection)
-        }
-        return requestedSelection
-            ?? AgentSettingsStore.defaultSelection(
-                explicitModelID: modelID
-            )?.thinkingSelection
+        AgentSettingsStore.thinkingSelection(
+            requestedSelection: requestedSelection,
+            explicitModelID: explicitModelID,
+            agentModelID: agentModelID,
+            agentThinkingSelection: agentThinkingSelection,
+            manifest: manifest
+        )
     }
 
     private static func scopedCacheKey(

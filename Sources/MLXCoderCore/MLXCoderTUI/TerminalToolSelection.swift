@@ -212,7 +212,7 @@ public enum TerminalToolSelectionCatalog {
             return []
         }
 
-        return Set(
+        let matchedKeys = Set(
             items.compactMap { item in
                 let lookupKeys = Set(
                     ([item.key, item.title] + Array(item.aliases))
@@ -223,6 +223,49 @@ public enum TerminalToolSelectionCatalog {
                     return item.key
                 }
                 return nil
+            }
+        )
+        if !matchedKeys.isEmpty {
+            return matchedKeys
+        }
+
+        return externalConnectorSelectionKeys(
+            for: trimmedToken,
+            items: items
+        )
+    }
+
+    private static func externalConnectorSelectionKeys(
+        for rawToken: String,
+        items: [TerminalToolSelectionItem]
+    ) -> Set<String> {
+        let normalizedToken = normalizedLookupKey(rawToken)
+        if normalizedToken == "xcode" || DirectMCPToolRuntime.isXcodeToolName(rawToken) {
+            return featurePackageSelectionKeys(
+                matchingAllowedToolNames: { name in
+                    name == "Xcode" || name.hasPrefix("xcode.")
+                },
+                items: items
+            )
+        }
+
+        if normalizedToken == "figma" || rawToken.hasPrefix("figma.") {
+            return featurePackageSelectionKeys(
+                matchingAllowedToolNames: { $0.hasPrefix("figma.") },
+                items: items
+            )
+        }
+
+        return []
+    }
+
+    private static func featurePackageSelectionKeys(
+        matchingAllowedToolNames isMatch: (String) -> Bool,
+        items: [TerminalToolSelectionItem]
+    ) -> Set<String> {
+        Set(
+            items.compactMap { item in
+                item.allowedToolNames.contains(where: isMatch) ? item.key : nil
             }
         )
     }

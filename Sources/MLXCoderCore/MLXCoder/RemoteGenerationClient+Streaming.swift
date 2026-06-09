@@ -29,9 +29,14 @@ extension RemoteGenerationClient {
         case .openRouterReasoning:
             body["reasoning"] = thinkingSelection.openRouterReasoningPayload
         case .chatTemplateKwargs:
-            body["chat_template_kwargs"] = [
-                "enable_thinking": thinkingSelection.isEnabled
+            var kwargs: [String: Any] = [
+                "enable_thinking": thinkingSelection.isEnabled,
+                "thinking": thinkingSelection.isEnabled
             ]
+            if let reasoningEffort = thinkingSelection.chatTemplateReasoningEffort {
+                kwargs["reasoning_effort"] = reasoningEffort
+            }
+            body["chat_template_kwargs"] = kwargs
         }
     }
 
@@ -47,11 +52,13 @@ extension RemoteGenerationClient {
         messages: [[String: Any]],
         sessionID: String,
         allowedToolNames: Set<String>?,
+        preferredWorkspaceRootURL: URL? = nil,
         thinkingSelection: AgentThinkingSelection?,
         onEvent: @escaping @Sendable (DirectAgentEvent) async -> Void
     ) async throws -> RemoteStreamResult {
         let toolDescriptors = await toolExecutor.descriptors(
-            allowedToolNames: allowedToolNames
+            allowedToolNames: allowedToolNames,
+            preferredWorkspaceRootURL: preferredWorkspaceRootURL
         )
         let toolCatalog = RemoteToolWireCatalog(descriptors: toolDescriptors)
         var body: [String: Any] = [
@@ -93,11 +100,13 @@ extension RemoteGenerationClient {
         messages: [[String: Any]],
         sessionID: String,
         allowedToolNames: Set<String>?,
+        preferredWorkspaceRootURL: URL? = nil,
         thinkingSelection: AgentThinkingSelection?,
         onEvent: @escaping @Sendable (DirectAgentEvent) async -> Void
     ) async throws -> RemoteStreamResult {
         let toolDescriptors = await toolExecutor.descriptors(
-            allowedToolNames: allowedToolNames
+            allowedToolNames: allowedToolNames,
+            preferredWorkspaceRootURL: preferredWorkspaceRootURL
         )
         let toolCatalog = RemoteToolWireCatalog(descriptors: toolDescriptors)
         let normalizedInput = Self.responsesInputPayload(

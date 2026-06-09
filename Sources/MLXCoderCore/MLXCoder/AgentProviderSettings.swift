@@ -375,6 +375,51 @@ public enum AgentSettingsStore {
         return model.thinkingSelection(for: manifest.selectedThinkingSelection)
     }
 
+    public static func thinkingSelection(
+        requestedSelection: AgentThinkingSelection?,
+        explicitModelID: String?,
+        agentModelID: String?,
+        agentThinkingSelection: AgentThinkingSelection? = nil,
+        manifest: AgentSettingsManifest? = AgentSettingsManifestStore.load()
+    ) -> AgentThinkingSelection? {
+        let preferredSelection = requestedSelection ?? agentThinkingSelection
+        if let explicitModelID = explicitModelID?.nilIfBlank {
+            guard let model = manifest?.models.first(where: {
+                manifestModel($0, matches: explicitModelID)
+            }) else {
+                return preferredSelection
+            }
+            return model.thinkingSelection(for: preferredSelection)
+        }
+
+        if let agentModelID = agentModelID?.nilIfBlank,
+           let model = manifest?.models.first(where: {
+               manifestModel($0, matches: agentModelID)
+           }) {
+            return model.thinkingSelection(for: preferredSelection)
+        }
+
+        guard let manifest else {
+            return preferredSelection
+        }
+
+        if let selectedModelID = manifest.selectedModelID?.nilIfBlank,
+           let model = manifest.models.first(where: { $0.matches(selectedModelID) }) {
+            return model.thinkingSelection(
+                for: preferredSelection ?? manifest.selectedThinkingSelection
+            )
+        }
+
+        if manifest.models.count == 1,
+           let model = manifest.models.first {
+            return model.thinkingSelection(
+                for: preferredSelection ?? manifest.selectedThinkingSelection
+            )
+        }
+
+        return preferredSelection
+    }
+
     public static func generationParameterOverrides(
         forModelID modelID: String?
     ) -> AgentGenerationParameterOverrides? {

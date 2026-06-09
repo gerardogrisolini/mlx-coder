@@ -29,21 +29,28 @@ public actor MLXCoderACPBridge {
     public let writer: ACPWriter
     public let permissionBroker: ACPPermissionBroker
     public let sessionRunner: AgentCoreSessionRunner
+    public let xcodeIsRunning: @Sendable () -> Bool
     public var sessions: [String: SessionState] = [:]
 
     public init(
         configuration: AgentConfiguration,
         writer: ACPWriter,
-        backendFactory: AgentRuntimeBackendFactory? = nil
+        backendFactory: AgentRuntimeBackendFactory? = nil,
+        mcpRuntime: DirectMCPToolRuntime = DirectMCPToolRuntime(),
+        xcodeIsRunning: @escaping @Sendable () -> Bool = {
+            MCPServerConfiguration.isXcodeRunning()
+        }
     ) {
         self.configuration = configuration
         self.writer = writer
+        self.xcodeIsRunning = xcodeIsRunning
         let permissionBroker = ACPPermissionBroker(writer: writer)
         self.permissionBroker = permissionBroker
         self.sessionRunner = AgentCoreSessionRunner(
             defaultToolAuthorizationHandler: { request in
                 await permissionBroker.authorize(request)
             },
+            mcpRuntime: mcpRuntime,
             backendFactory: backendFactory
         )
     }

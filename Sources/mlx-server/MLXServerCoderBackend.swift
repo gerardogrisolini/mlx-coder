@@ -50,6 +50,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
             outputLimit: 24_000,
             authorizationHandler: configuration.toolAuthorizationHandler,
             mcpRuntime: mcpRuntime,
+            preferredWorkspaceRootURL: configuration.workingDirectory,
             subAgentBackendFactory: {
                 MLXServerCoderBackend(
                     configuration: configuration,
@@ -220,7 +221,13 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
     }
 
     func activeToolDescriptors() async -> [DirectToolDescriptor] {
-        await toolExecutor.descriptors()
+        guard let session = sessions.values.first else {
+            return await toolExecutor.descriptors(allowedToolNames: [])
+        }
+        return await toolExecutor.descriptors(
+            allowedToolNames: session.allowedToolNames,
+            preferredWorkspaceRootURL: session.cwd
+        )
     }
 
     func subAgentSnapshots() async -> [DirectSubAgentRuntime.AgentSnapshot] {
@@ -336,7 +343,10 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
             model: model,
             messages: session.messages,
             parameters: generationParameters(),
-            tools: await toolSpecs(allowedToolNames: session.allowedToolNames),
+            tools: await toolSpecs(
+                allowedToolNames: session.allowedToolNames,
+                preferredWorkspaceRootURL: session.cwd
+            ),
             additionalContext: additionalContext,
             retainsReasoningInHistory: session.preserveThinking && thinkingSelection.isEnabled
         )
@@ -389,10 +399,12 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
     }
 
     private func toolSpecs(
-        allowedToolNames: Set<String>?
+        allowedToolNames: Set<String>?,
+        preferredWorkspaceRootURL: URL
     ) async -> [ToolSpec]? {
         let descriptors = await toolExecutor.descriptors(
-            allowedToolNames: allowedToolNames
+            allowedToolNames: allowedToolNames,
+            preferredWorkspaceRootURL: preferredWorkspaceRootURL
         )
         guard !descriptors.isEmpty else {
             return nil

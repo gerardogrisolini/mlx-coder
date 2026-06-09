@@ -328,19 +328,25 @@ public actor TerminalWorkspaceToolAccessStore {
     }
 
     private static func requestTerminalConsent(for workspaceURL: URL) -> Bool {
-        AgentOutput.standardError.writeString(
+        let prompt =
             """
             mlx-coder requires permission to read, edit, and execute files here.
 
             Directory:
             \(workspaceURL.path)
 
-            Trust this folder? [Y/n]:
             """
+            + "Trust this folder? [Y/n]: "
+        let answer = TerminalInteractiveLineReader().readLine(
+            prompt: prompt
         )
-        guard let answer = readLine() else {
+        guard let answer else {
             return false
         }
+        return terminalConsentAllowsAccess(answer)
+    }
+
+    static func terminalConsentAllowsAccess(_ answer: String) -> Bool {
         switch answer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "", "y", "yes":
             return true

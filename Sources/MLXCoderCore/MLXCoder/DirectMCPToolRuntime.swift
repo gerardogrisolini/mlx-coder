@@ -8,6 +8,27 @@
 import Foundation
 
 public actor DirectMCPToolRuntime {
+    public struct XcodeDiscovery: Sendable {
+        public let executor: XcodeToolExecutor
+        public let tools: [ToolDescriptor]
+        public let workspaceContexts: [XcodeWorkspaceContext]
+        public let ownsExecutor: Bool
+
+        public init(
+            executor: XcodeToolExecutor,
+            tools: [ToolDescriptor],
+            workspaceContexts: [XcodeWorkspaceContext],
+            ownsExecutor: Bool = true
+        ) {
+            self.executor = executor
+            self.tools = tools
+            self.workspaceContexts = workspaceContexts
+            self.ownsExecutor = ownsExecutor
+        }
+    }
+
+    public typealias XcodeDiscoveryProvider = @Sendable () async -> XcodeDiscovery?
+
     private enum ServerFamily: Hashable {
         case xcode
         case figma
@@ -41,6 +62,7 @@ public actor DirectMCPToolRuntime {
         let toolPrefix: String
         let backend: Backend
         let descriptors: [DirectToolDescriptor]
+        let workspaceRootPath: String?
         let ownsBackend: Bool
 
         func disconnectIfOwned() async {
@@ -55,9 +77,14 @@ public actor DirectMCPToolRuntime {
     private var didAttemptFigmaDiscovery = false
     private var servers: [Server] = []
     private let autoDiscoverExternalConnectors: Bool
+    private let xcodeDiscoveryProvider: XcodeDiscoveryProvider
 
-    public init(autoDiscoverExternalConnectors: Bool = false) {
+    public init(
+        autoDiscoverExternalConnectors: Bool = false,
+        xcodeDiscoveryProvider: @escaping XcodeDiscoveryProvider = DirectMCPToolRuntime.defaultXcodeDiscovery
+    ) {
         self.autoDiscoverExternalConnectors = autoDiscoverExternalConnectors
+        self.xcodeDiscoveryProvider = xcodeDiscoveryProvider
     }
 
     deinit {
@@ -115,33 +142,54 @@ public actor DirectMCPToolRuntime {
                 toolPrefix: "xcode.",
                 backend: .xcode(executor),
                 descriptors: descriptors,
+                workspaceRootPath: nil,
                 ownsBackend: false
             )
         )
     }
 
     public func descriptors(
-        allowedToolNames: Set<String>? = nil
-    ) async -> [DirectToolDescriptor] {
-        await discoverIfNeeded(allowedToolNames: allowedToolNames)
-        return knownDescriptors(allowedToolNames: allowedToolNames)
-    }
-
-    public func discoverDescriptors(
-        allowedToolNames: Set<String>? = nil
+        allowedToolNames: Set<String>? = nil,
+        preferredWorkspaceRootURL: URL? = nil
     ) async -> [DirectToolDescriptor] {
         await discoverIfNeeded(
             allowedToolNames: allowedToolNames,
+            preferredWorkspaceRootURL: preferredWorkspaceRootURL
+        )
+        return knownDescriptors(
+            allowedToolNames: allowedToolNames,
+            preferredWorkspaceRootURL: preferredWorkspaceRootURL
+        )
+    }
+
+    public func discoverDescriptors(
+        allowedToolNames: Set<String>? = nil,
+        preferredWorkspaceRootURL: URL? = nil
+    ) async -> [DirectToolDescriptor] {
+        await discoverIfNeeded(
+            allowedToolNames: allowedToolNames,
+            preferredWorkspaceRootURL: preferredWorkspaceRootURL,
             force: true
         )
-        return knownDescriptors(allowedToolNames: allowedToolNames)
+        return knownDescriptors(
+            allowedToolNames: allowedToolNames,
+            preferredWorkspaceRootURL: preferredWorkspaceRootURL
+        )
     }
 
     public func knownDescriptors(
-        allowedToolNames: Set<String>? = nil
+        allowedToolNames: Set<String>? = nil,
+        preferredWorkspaceRootURL: URL? = nil
     ) -> [DirectToolDescriptor] {
         guard let allowedToolNames else {
-            return servers.flatMap(\.descriptors)
+            return servers
+                .filter {
+                    serverMatchesPreferredWorkspace(
+                        $0,
+                        preferredWorkspaceRootURL: preferredWorkspaceRootURL
+                    )
+                }
+                .flatMap(\.descriptors)
         }
 
         guard !allowedToolNames.isEmpty else {
@@ -157,19 +205,29 @@ public actor DirectMCPToolRuntime {
 
         return servers
             .filter { requestedFamilies.contains($0.family) }
+            .filter {
+                serverMatchesPreferredWorkspace(
+                    $0,
+                    preferredWorkspaceRootURL: preferredWorkspaceRootURL
+                )
+            }
             .flatMap(\.descriptors)
     }
 
-        public func canExecute(
+    public func canExecute(
         toolName: String,
-        allowedToolNames: Set<String>? = nil
+        allowedToolNames: Set<String>? = nil,
+        preferredWorkspaceRootURL: URL? = nil
     ) async -> Bool {
         let discoveryToolNames = allowedToolNames ?? [toolName]
-        await discoverIfNeeded(allowedToolNames: discoveryToolNames)
+        await discoverIfNeeded(
+            allowedToolNames: discoveryToolNames,
+            preferredWorkspaceRootURL: preferredWorkspaceRootURL
+        )
         return serverAndToolName(for: toolName) != nil
     }
 
-        public func execute(toolCall: DirectAgentToolCall) async throws -> String {
+    public func execute(toolCall: DirectAgentToolCall) async throws -> String {
         guard let (server, rawToolName) = serverAndToolName(for: toolCall.name) else {
             throw DirectMCPToolRuntimeError.unknownTool(toolCall.name)
         }
@@ -192,10 +250,15 @@ public actor DirectMCPToolRuntime {
 
     private func discoverIfNeeded(
         allowedToolNames: Set<String>? = nil,
+        preferredWorkspaceRootURL: URL? = nil,
         force: Bool = false
     ) async {
         for family in Self.discoveryServerFamilies(allowedToolNames: allowedToolNames) {
-            await discoverFamilyIfNeeded(family, force: force)
+            await discoverFamilyIfNeeded(
+                family,
+                preferredWorkspaceRootURL: preferredWorkspaceRootURL,
+                force: force
+            )
         }
     }
 
@@ -252,6 +315,7 @@ public actor DirectMCPToolRuntime {
 
     private func discoverFamilyIfNeeded(
         _ family: ServerFamily,
+        preferredWorkspaceRootURL: URL?,
         force: Bool
     ) async {
         guard force || autoDiscoverExternalConnectors else {
@@ -260,14 +324,25 @@ public actor DirectMCPToolRuntime {
 
         switch family {
         case .xcode:
-            guard force || !didAttemptXcodeDiscovery else {
+            if let existingServer = servers.first(where: { $0.family == .xcode }),
+               serverMatchesPreferredWorkspace(
+                   existingServer,
+                   preferredWorkspaceRootURL: preferredWorkspaceRootURL
+               ) {
                 return
             }
-            guard !servers.contains(where: { $0.family == .xcode }) else {
+            let previousXcodeServers = servers.filter { $0.family == .xcode }
+            guard force || !didAttemptXcodeDiscovery || !previousXcodeServers.isEmpty else {
                 return
             }
+            servers.removeAll { $0.family == .xcode }
             didAttemptXcodeDiscovery = true
-            if let xcodeServer = await discoverXcodeServer() {
+            for server in previousXcodeServers {
+                await server.disconnectIfOwned()
+            }
+            if let xcodeServer = await discoverXcodeServer(
+                preferredWorkspaceRootURL: preferredWorkspaceRootURL
+            ) {
                 servers.append(xcodeServer)
             }
         case .figma:
@@ -284,39 +359,45 @@ public actor DirectMCPToolRuntime {
         }
     }
 
-    private func discoverXcodeServer() async -> Server? {
-        guard MCPServerConfiguration.isXcodeRunning(),
-              let configuration = MCPServerConfiguration.xcodeFromEnvironment() else {
+    private func discoverXcodeServer(
+        preferredWorkspaceRootURL: URL?
+    ) async -> Server? {
+        guard let discovery = await xcodeDiscoveryProvider() else {
             return nil
         }
 
-        let executor = XcodeToolExecutor(configuration: configuration)
-        do {
-            let tools = ToolDescriptor.canonicalized(
-                try await executor.loadTools()
-            )
-            guard !tools.isEmpty else {
-                await executor.disconnect()
-                return nil
+        let tools = ToolDescriptor.canonicalized(discovery.tools)
+        guard !tools.isEmpty else {
+            if discovery.ownsExecutor {
+                await discovery.executor.disconnect()
             }
-
-            return Server(
-                family: .xcode,
-                toolPrefix: "xcode.",
-                backend: .xcode(executor),
-                descriptors: tools.map { tool in
-                    DirectToolDescriptor(
-                        name: "xcode.\(tool.name)",
-                        description: "Xcode: \(tool.description)",
-                        inputSchema: tool.inputSchema
-                    )
-                },
-                ownsBackend: true
-            )
-        } catch {
-            await executor.disconnect()
             return nil
         }
+
+        guard let matchedWorkspaceContext = matchedXcodeWorkspaceContext(
+            in: discovery.workspaceContexts,
+            preferredWorkspaceRootURL: preferredWorkspaceRootURL
+        ) else {
+            if discovery.ownsExecutor {
+                await discovery.executor.disconnect()
+            }
+            return nil
+        }
+
+        return Server(
+            family: .xcode,
+            toolPrefix: "xcode.",
+            backend: .xcode(discovery.executor),
+            descriptors: tools.map { tool in
+                DirectToolDescriptor(
+                    name: "xcode.\(tool.name)",
+                    description: "Xcode: \(tool.description)",
+                    inputSchema: tool.inputSchema
+                )
+            },
+            workspaceRootPath: matchedWorkspaceContext.normalizedWorkspaceRootPath,
+            ownsBackend: discovery.ownsExecutor
+        )
     }
 
     private func discoverFigmaServer() async -> Server? {
@@ -348,12 +429,78 @@ public actor DirectMCPToolRuntime {
                         inputSchema: tool.inputSchema
                     )
                 },
+                workspaceRootPath: nil,
                 ownsBackend: true
             )
         } catch {
             await executor.disconnect()
             return nil
         }
+    }
+
+    public static func defaultXcodeDiscovery() async -> XcodeDiscovery? {
+        guard MCPServerConfiguration.isXcodeRunning(),
+              let configuration = MCPServerConfiguration.xcodeFromEnvironment() else {
+            return nil
+        }
+
+        let executor = XcodeToolExecutor(configuration: configuration)
+        do {
+            let tools = try await executor.loadTools()
+            let workspaceContexts = try await executor.loadWorkspaceContexts()
+            return XcodeDiscovery(
+                executor: executor,
+                tools: tools,
+                workspaceContexts: workspaceContexts
+            )
+        } catch {
+            await executor.disconnect()
+            return nil
+        }
+    }
+
+    private func matchedXcodeWorkspaceContext(
+        in contexts: [XcodeWorkspaceContext],
+        preferredWorkspaceRootURL: URL?
+    ) -> XcodeWorkspaceContext? {
+        guard let preferredWorkspaceRootURL else {
+            return contexts.first ?? XcodeWorkspaceContext(
+                workspacePath: nil,
+                defaultTabIdentifier: nil
+            )
+        }
+
+        let preferredRootPath = preferredWorkspaceRootURL
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+        return contexts.first { context in
+            XcodeWorkspaceContext.workspaceRootPath(
+                context.normalizedWorkspaceRootPath,
+                matchesPreferredRootPath: preferredRootPath
+            )
+        }
+    }
+
+    private func serverMatchesPreferredWorkspace(
+        _ server: Server,
+        preferredWorkspaceRootURL: URL?
+    ) -> Bool {
+        guard server.family == .xcode else {
+            return true
+        }
+        guard let preferredWorkspaceRootURL,
+              let workspaceRootPath = server.workspaceRootPath else {
+            return true
+        }
+        let preferredRootPath = preferredWorkspaceRootURL
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+        return XcodeWorkspaceContext.workspaceRootPath(
+            workspaceRootPath,
+            matchesPreferredRootPath: preferredRootPath
+        )
     }
 
     private func serverAndToolName(for toolName: String) -> (Server, String)? {

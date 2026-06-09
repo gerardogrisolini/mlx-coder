@@ -158,6 +158,9 @@ extension TerminalChat {
         if let modelID = agent.modelID {
             parts.append("model: \(modelID)")
         }
+        if let thinkingSelection = agent.thinkingSelection {
+            parts.append("thinking: \(thinkingSelection.displayTitle)")
+        }
         if !agent.skills.isEmpty {
             parts.append("skills: \(agent.skills.count)")
         }

@@ -34,10 +34,11 @@ public final class TerminalStatusBar: @unchecked Sendable {
     private var isResizePending = false
     private var inputPanelState: InputPanelState?
     private var latestModelID: String?
+    private var latestThinkingSelection: AgentThinkingSelection?
     private var latestModelRuntime: String?
     private var latestMetrics: DirectAgentGenerationMetrics?
     private var latestContextWindow: DirectAgentContextWindowStatus?
-        private static let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    private static let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
     private static let inputPanelChromeRows = 3
     private static let minimumScrollableRows = 2
     private static let standaloneStatusRows = 3
@@ -144,6 +145,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
         latestMetrics = nil
         latestContextWindow = nil
         latestModelID = nil
+        latestThinkingSelection = nil
         latestModelRuntime = nil
         isProcessing = false
         spinnerIndex = 0
@@ -183,6 +185,19 @@ public final class TerminalStatusBar: @unchecked Sendable {
             latestModelRuntime = nil
         }
         latestModelID = modelID
+        guard isStarted else {
+            return false
+        }
+        renderLocked()
+        return true
+    }
+
+    @discardableResult
+    public func update(thinkingSelection: AgentThinkingSelection?) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        latestThinkingSelection = thinkingSelection
         guard isStarted else {
             return false
         }
@@ -530,7 +545,12 @@ public final class TerminalStatusBar: @unchecked Sendable {
             ?? latestMetrics?.totalTokenCount
         var fragments: [String] = []
         if let latestModelID {
-            fragments.append(Self.modelDisplayName(latestModelID))
+            fragments.append(
+                Self.modelStatusFragment(
+                    modelID: latestModelID,
+                    thinkingSelection: latestThinkingSelection
+                )
+            )
         }
         if isProcessing {
             var loader = Self.spinnerFrames[spinnerIndex % Self.spinnerFrames.count]
@@ -541,7 +561,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
         } else if let latestModelRuntime {
             fragments.append(latestModelRuntime)
         }
-                if tokensUsed != nil || latestContextWindow?.maxTokens != nil {
+        if tokensUsed != nil || latestContextWindow?.maxTokens != nil {
             let contextText = Self.tokenWindowText(
                 usedTokens: latestContextWindow?.usedTokens,
                 metricUsedTokens: tokensUsed,
@@ -562,6 +582,17 @@ public final class TerminalStatusBar: @unchecked Sendable {
             fragments.append("pro \(Self.rateText(promptRate)) tok/s")
         }
         return fragments.joined(separator: " | ")
+    }
+
+    static func modelStatusFragment(
+        modelID: String,
+        thinkingSelection: AgentThinkingSelection?
+    ) -> String {
+        let modelName = modelDisplayName(modelID)
+        guard let thinkingSelection else {
+            return modelName
+        }
+        return "\(modelName) · \(thinkingSelection.displayTitle)"
     }
 
     private static func modelDisplayName(_ modelID: String) -> String {

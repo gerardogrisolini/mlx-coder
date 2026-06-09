@@ -104,7 +104,7 @@ extension MCPClient {
                 (String(data: initializePayload, encoding: .utf8) ?? "<non-utf8>")
             )
             _ = try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation(isolation: self) { continuation in
+                try await withCheckedThrowingContinuation { continuation in
                     pendingResponses[initializeRequestID] = continuation
 
                     do {
@@ -217,7 +217,7 @@ extension MCPClient {
         log("Request \(requestID) -> \(method): \(String(data: payload, encoding: .utf8) ?? "<non-utf8>")")
 
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation(isolation: self) { continuation in
+            try await withCheckedThrowingContinuation { continuation in
                 pendingResponses[requestID] = continuation
 
                 do {

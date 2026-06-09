@@ -37,7 +37,7 @@ public nonisolated final class MCPBrowserOAuthCallbackServer: @unchecked Sendabl
 
     public func start() async throws {
         try await withCheckedThrowingContinuation { continuation in
-            queue.async {
+            queue.async { [self] in
                 self.readinessContinuation = continuation
                 self.listener.stateUpdateHandler = { [weak self] state in
                     self?.handleListenerState(state)

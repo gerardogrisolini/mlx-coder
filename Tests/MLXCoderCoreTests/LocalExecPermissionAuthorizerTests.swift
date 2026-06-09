@@ -59,6 +59,17 @@ struct LocalExecPermissionAuthorizerTests {
     }
 
     @Test
+    func terminalWorkspaceConsentAcceptsOnlyAffirmativeAnswers() {
+        #expect(TerminalWorkspaceToolAccessStore.terminalConsentAllowsAccess(""))
+        #expect(TerminalWorkspaceToolAccessStore.terminalConsentAllowsAccess("y"))
+        #expect(TerminalWorkspaceToolAccessStore.terminalConsentAllowsAccess("YES"))
+        #expect(TerminalWorkspaceToolAccessStore.terminalConsentAllowsAccess("  yes  \r"))
+        #expect(!TerminalWorkspaceToolAccessStore.terminalConsentAllowsAccess("n"))
+        #expect(!TerminalWorkspaceToolAccessStore.terminalConsentAllowsAccess("no"))
+        #expect(!TerminalWorkspaceToolAccessStore.terminalConsentAllowsAccess("maybe"))
+    }
+
+    @Test
     func settingsManifestDecodesButDoesNotEncodeLegacyLocalExecPermissions() throws {
         let manifest = AgentSettingsManifest(
             models: [],

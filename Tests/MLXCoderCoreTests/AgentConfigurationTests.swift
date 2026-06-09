@@ -55,6 +55,146 @@ struct AgentConfigurationTests {
     }
 
     @Test
+    func xcodeToolReferencesSelectRuntimePackageBeforeDiscovery() throws {
+        let items = TerminalChat.toolSelectionItems(
+            featureStatuses: [
+                featureStatus(
+                    id: "mlx-xcode-tools",
+                    source: .bundled,
+                    tools: [],
+                    toolNamePrefixes: ["xcode.", "Xcode"],
+                    discoversToolsAtRuntime: true
+                )
+            ]
+        )
+        let xcodeKey = TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-xcode-tools")
+
+        let selectedKeys = TerminalChat.toolSelectionKeys(
+            from: ["xcode", "xcode.", "xcode.BuildProject", "XcodeBuildProject"],
+            items: items
+        )
+        let discoveryPrefixes = TerminalToolSelectionCatalog.externalDiscoveryPrefixes(
+            for: selectedKeys,
+            items: items
+        )
+
+        #expect(selectedKeys == Set([xcodeKey]))
+        #expect(discoveryPrefixes.contains("xcode."))
+    }
+
+    @Test
+    func agentAllowedToolNamesNormalizeDirectXcodeReferences() {
+        let profile = AgentProfile(
+            id: "xcode-agent",
+            name: "Xcode Agent",
+            tools: ["xcode", "xcode.BuildProject"]
+        )
+
+        let allowedToolNames = profile.allowedToolNames()
+
+        #expect(DirectMCPToolRuntime.discoveryFamilies(allowedToolNames: allowedToolNames).contains("xcode"))
+        #expect(DirectToolExecutor.isAllowed("xcode.BuildProject", allowedToolNames: allowedToolNames))
+    }
+
+    @Test
+    func unavailableXcodeStaysSelectedButIsNotDiscoverable() {
+        let requestedToolNames = Set([
+            "local.exec",
+            "xcode.",
+            "xcode.BuildProject",
+            "Xcode",
+            "figma."
+        ])
+
+        let allowedToolNames = ExternalToolAvailability.resolvedAllowedToolNames(requestedToolNames)
+        let discoverableToolNames = ExternalToolAvailability.discoverableToolPrefixes(
+            requestedToolNames,
+            xcodeIsRunning: false
+        )
+
+        #expect(allowedToolNames?.contains("local.exec") == true)
+        #expect(allowedToolNames?.contains("figma.") == true)
+        #expect(allowedToolNames?.contains("xcode.") == true)
+        #expect(allowedToolNames?.contains("xcode.BuildProject") == true)
+        #expect(allowedToolNames?.contains("Xcode") == true)
+        #expect(discoverableToolNames.contains("xcode.") == false)
+        #expect(discoverableToolNames.contains("xcode.BuildProject") == false)
+        #expect(discoverableToolNames.contains("Xcode") == false)
+    }
+
+    @Test
+    func xcodeWorkspaceRootMatchesNestedWorkingDirectoryButRejectsSiblings() {
+        #expect(
+            XcodeWorkspaceContext.workspaceRootPath(
+                "/tmp/XcodeApp",
+                matchesPreferredRootPath: "/tmp/XcodeApp/Modules/Feature"
+            )
+        )
+        #expect(
+            XcodeWorkspaceContext.workspaceRootPath(
+                "/tmp/XcodeApp/XcodeApp.xcodeproj",
+                matchesPreferredRootPath: "/tmp/XcodeApp"
+            )
+        )
+        #expect(
+            !XcodeWorkspaceContext.workspaceRootPath(
+                "/tmp/OtherApp",
+                matchesPreferredRootPath: "/tmp/XcodeApp"
+            )
+        )
+    }
+
+    @Test
+    func xcodeDiscoveryRejectsDifferentWorkspace() async {
+        let runtime = DirectMCPToolRuntime(
+            xcodeDiscoveryProvider: {
+                Self.xcodeDiscovery(workspacePath: "/tmp/OtherApp/OtherApp.xcodeproj")
+            }
+        )
+
+        let descriptors = await runtime.discoverDescriptors(
+            allowedToolNames: ["xcode."],
+            preferredWorkspaceRootURL: URL(fileURLWithPath: "/tmp/XcodeApp")
+        )
+
+        #expect(descriptors.isEmpty)
+    }
+
+    @Test
+    func xcodeDiscoveryAcceptsWorkspaceContainingWorkingDirectory() async {
+        let runtime = DirectMCPToolRuntime(
+            xcodeDiscoveryProvider: {
+                Self.xcodeDiscovery(workspacePath: "/tmp/XcodeApp/XcodeApp.xcodeproj")
+            }
+        )
+
+        let descriptors = await runtime.discoverDescriptors(
+            allowedToolNames: ["xcode."],
+            preferredWorkspaceRootURL: URL(fileURLWithPath: "/tmp/XcodeApp/Modules/Feature")
+        )
+
+        #expect(descriptors.map(\.name) == ["xcode.BuildProject"])
+    }
+
+    @Test
+    func appSessionConfigurationKeepsClosedXcodeSelection() throws {
+        let xcodeAgent = AgentProfile(
+            id: "xcode-agent",
+            name: "Xcode Agent",
+            tools: ["shell", "xcode"]
+        )
+
+        let allowedToolNames = AgentCoreAppSessionFactory.resolvedAllowedToolNames(
+            selectedToolKeys: nil,
+            explicitAllowedToolNames: nil,
+            selectedAgent: xcodeAgent
+        )
+
+        #expect(allowedToolNames?.contains("local.exec") == true)
+        #expect(allowedToolNames?.contains("xcode.") == true)
+    }
+
+    @Test
     func groupedModelTitlesOmitRedundantProviderFallback() throws {
         let providerID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
         let fallbackTitleModel = AgentSettingsModelManifestFactory.remoteAPIModel(
@@ -160,13 +300,37 @@ struct AgentConfigurationTests {
                 TerminalToolSelectionCatalog.featurePackageKey(id: "mlx-git-tools"),
                 "custom.tool"
             ],
-            modelID: "mlx-community/custom"
+            modelID: "mlx-community/custom",
+            thinkingSelection: .high
         )
         let customDetail = TerminalChat.agentSelectionDetail(customAgent)
 
         #expect(customDetail.contains("Tools: shell, git, 1 custom"))
         #expect(customDetail.contains("model: mlx-community/custom"))
+        #expect(customDetail.contains("thinking: High"))
         #expect(!customDetail.contains("feature:mlx-git-tools"))
+    }
+
+    @Test
+    func agentProfileRoundTripsThinkingSelection() throws {
+        let profile = AgentProfile(
+            id: "custom",
+            name: "Custom",
+            tools: ["shell"],
+            modelID: "mlx-community/custom",
+            thinkingSelection: .high
+        )
+        let normalized = AgentProfileStore.normalizedAgentForSave(profile)
+        let data = try JSONEncoder().encode(
+            AgentProfileManifest(agents: [normalized])
+        )
+        let decoded = try JSONDecoder().decode(
+            AgentProfileManifest.self,
+            from: data
+        )
+
+        #expect(normalized.thinkingSelection == .high)
+        #expect(decoded.agents.first?.thinkingSelection == .high)
     }
 
     @Test
@@ -776,6 +940,74 @@ struct AgentConfigurationTests {
     }
 
     @Test
+    func terminalDefaultThinkingUsesSettingsSelection() {
+        let manifest = thinkingSelectionManifest(selectedThinkingSelection: .high)
+
+        let thinkingSelection = TerminalChat.effectiveThinkingSelection(
+            manualThinkingSelectionOverride: nil,
+            hostedModel: nil,
+            explicitModelID: nil,
+            agentModelID: nil,
+            manifest: manifest
+        )
+
+        #expect(thinkingSelection == .high)
+    }
+
+    @Test
+    func appSessionDefaultThinkingUsesSettingsSelection() {
+        let manifest = thinkingSelectionManifest(selectedThinkingSelection: .high)
+
+        let thinkingSelection = AgentCoreAppSessionFactory.resolvedThinkingSelection(
+            nil,
+            explicitModelID: nil,
+            agentModelID: nil,
+            manifest: manifest
+        )
+
+        #expect(thinkingSelection == .high)
+    }
+
+    @Test
+    func agentThinkingOverridesSettingsSelection() {
+        let manifest = thinkingSelectionManifest(selectedThinkingSelection: .high)
+
+        let terminalThinkingSelection = TerminalChat.effectiveThinkingSelection(
+            manualThinkingSelectionOverride: nil,
+            hostedModel: nil,
+            explicitModelID: nil,
+            agentModelID: "mlx-community/qwen3",
+            agentThinkingSelection: .low,
+            manifest: manifest
+        )
+        let appSessionThinkingSelection = AgentCoreAppSessionFactory.resolvedThinkingSelection(
+            nil,
+            explicitModelID: nil,
+            agentModelID: "mlx-community/qwen3",
+            agentThinkingSelection: .low,
+            manifest: manifest
+        )
+
+        #expect(terminalThinkingSelection == .low)
+        #expect(appSessionThinkingSelection == .low)
+    }
+
+    @Test
+    func hostedAgentThinkingOverridesHostedModelDefault() {
+        let hostedModel = thinkingSelectionManifest(selectedThinkingSelection: .medium).models[0]
+
+        let thinkingSelection = TerminalChat.effectiveThinkingSelection(
+            manualThinkingSelectionOverride: nil,
+            hostedModel: hostedModel,
+            explicitModelID: nil,
+            agentModelID: hostedModel.id,
+            agentThinkingSelection: .high
+        )
+
+        #expect(thinkingSelection == .high)
+    }
+
+    @Test
     func terminalSessionConfigurationUsesSessionIDCacheKeyByDefault() throws {
         let workingDirectory = URL(
             fileURLWithPath: "/tmp/mlx-coder-cache-project",
@@ -851,6 +1083,54 @@ struct AgentConfigurationTests {
             build: nil,
             generated: nil,
             issue: nil
+        )
+    }
+
+    private func thinkingSelectionManifest(
+        selectedThinkingSelection: AgentThinkingSelection
+    ) -> AgentSettingsManifest {
+        let provider = AgentRemoteProvider(
+            name: "mlx-server",
+            baseURL: "http://127.0.0.1",
+            modelID: "mlx-community/qwen3"
+        )
+        let model = AgentSettingsModelManifest(
+            kind: .remoteAPI,
+            modelID: "mlx-community/qwen3",
+            provider: provider,
+            thinkingOptions: [.off, .low, .medium, .high],
+            defaultThinkingSelection: .medium
+        )
+        return AgentSettingsManifest(
+            models: [model],
+            selectedModelID: model.id,
+            selectedThinkingSelection: selectedThinkingSelection
+        )
+    }
+
+    private static func xcodeDiscovery(workspacePath: String) -> DirectMCPToolRuntime.XcodeDiscovery {
+        DirectMCPToolRuntime.XcodeDiscovery(
+            executor: XcodeToolExecutor(
+                configuration: MCPServerConfiguration(
+                    executablePath: "/usr/bin/false",
+                    arguments: [],
+                    environment: [:]
+                )
+            ),
+            tools: [
+                ToolDescriptor(
+                    name: "BuildProject",
+                    description: "Builds an Xcode project.",
+                    inputSchema: "{}"
+                )
+            ],
+            workspaceContexts: [
+                XcodeWorkspaceContext(
+                    workspacePath: workspacePath,
+                    defaultTabIdentifier: nil
+                )
+            ],
+            ownsExecutor: false
         )
     }
 }

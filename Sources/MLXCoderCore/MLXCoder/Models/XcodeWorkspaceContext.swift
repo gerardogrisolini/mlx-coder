@@ -21,7 +21,7 @@ public nonisolated struct XcodeWorkspaceContext: Hashable, Sendable {
 
     public var normalizedWorkspaceRootPath: String? {
         XcodeWorkspaceContext.normalizedProjectRootPath(
-            explicitPath: workspacePath,
+            explicitPath: nil,
             workspacePath: workspacePath
         )
     }
@@ -328,15 +328,59 @@ public nonisolated struct XcodeWorkspaceContext: Hashable, Sendable {
         return lhs == rhs
     }
 
+    public static func workspaceRootPath(
+        _ workspaceRootPath: String?,
+        matchesPreferredRootPath preferredRootPath: String?
+    ) -> Bool {
+        guard let workspaceRootPath = standardizedRootPath(workspaceRootPath),
+              let preferredRootPath = standardizedRootPath(preferredRootPath) else {
+            return false
+        }
+
+        let workspaceComponents = URL(fileURLWithPath: workspaceRootPath)
+            .standardizedFileURL
+            .pathComponents
+        let preferredComponents = URL(fileURLWithPath: preferredRootPath)
+            .standardizedFileURL
+            .pathComponents
+
+        return workspaceComponents == preferredComponents
+            || pathComponents(workspaceComponents, arePrefixOf: preferredComponents)
+            || pathComponents(preferredComponents, arePrefixOf: workspaceComponents)
+    }
+
     private static func standardizedRootName(_ rawPath: String?) -> String? {
-        guard let rawPath = normalizedPath(rawPath) else {
+        guard let rawPath = standardizedRootPath(rawPath) else {
             return nil
         }
 
         let name = URL(fileURLWithPath: rawPath)
-            .standardizedFileURL
             .lastPathComponent
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return name.isEmpty ? nil : name
+    }
+
+    private static func standardizedRootPath(_ rawPath: String?) -> String? {
+        guard let rawPath = normalizedPath(rawPath) else {
+            return nil
+        }
+
+        let path = URL(fileURLWithPath: rawPath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.isEmpty ? nil : path
+    }
+
+    private static func pathComponents(
+        _ candidatePrefix: [String],
+        arePrefixOf path: [String]
+    ) -> Bool {
+        guard !candidatePrefix.isEmpty,
+              candidatePrefix.count < path.count else {
+            return false
+        }
+        return zip(candidatePrefix, path).allSatisfy(==)
     }
 }

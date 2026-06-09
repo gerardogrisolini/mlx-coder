@@ -79,6 +79,18 @@ public enum AgentThinkingSelection: String, Codable, CaseIterable, Hashable, Ide
             ]
         }
     }
+
+    public var chatTemplateReasoningEffort: String? {
+        switch self {
+        case .off, .enabled:
+            nil
+        case .minimal, .low, .medium, .high:
+            rawValue
+        case .xhigh:
+            "max"
+        }
+    }
+
 }
 
 public enum AgentThinkingPayloadStyle {

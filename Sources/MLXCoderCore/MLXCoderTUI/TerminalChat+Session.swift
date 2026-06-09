@@ -11,10 +11,12 @@ import Glibc
 import Foundation
 
 extension TerminalChat {
-    public func createCurrentSession() async throws {
+    public func createCurrentSession(
+        discoverExternalTools: Bool = true
+    ) async throws {
         try await sessionRunner.createSession(
             configuration: await currentSessionConfiguration(
-                discoverExternalTools: false
+                discoverExternalTools: discoverExternalTools
             )
         )
     }
@@ -65,6 +67,7 @@ extension TerminalChat {
     }
 
     public func refreshInitialStatusBarContextWindow() {
+        refreshStatusBarThinkingSelection()
         let effectiveModelID = currentEffectiveModelID()
         if let hostedModel = hostedModelManifest(for: effectiveModelID) {
             _ = statusBar.update(modelID: hostedModel.modelID)
@@ -106,16 +109,42 @@ extension TerminalChat {
         )
     }
 
+    @discardableResult
+    func refreshStatusBarThinkingSelection() -> Bool {
+        statusBar.update(thinkingSelection: currentAgentThinkingSelection())
+    }
+
     public func currentAgentThinkingSelection() -> AgentThinkingSelection? {
+        Self.effectiveThinkingSelection(
+            manualThinkingSelectionOverride: manualThinkingSelectionOverride,
+            hostedModel: hostedModelManifest(for: currentEffectiveModelID()),
+            explicitModelID: manualModelIDOverride,
+            agentModelID: selectedAgent?.modelID,
+            agentThinkingSelection: selectedAgent?.thinkingSelection
+        )
+    }
+
+    public static func effectiveThinkingSelection(
+        manualThinkingSelectionOverride: AgentThinkingSelection?,
+        hostedModel: AgentSettingsModelManifest?,
+        explicitModelID: String?,
+        agentModelID: String?,
+        agentThinkingSelection: AgentThinkingSelection? = nil,
+        manifest: AgentSettingsManifest? = AgentSettingsManifestStore.load()
+    ) -> AgentThinkingSelection? {
         if let manualThinkingSelectionOverride {
             return manualThinkingSelectionOverride
         }
-        if let hostedModel = hostedModelManifest(for: currentEffectiveModelID()) {
-            return hostedModel.resolvedDefaultThinkingSelection
+        if let hostedModel {
+            return hostedModel.thinkingSelection(for: agentThinkingSelection)
         }
-        return AgentSettingsStore.defaultSelection(
-            explicitModelID: currentEffectiveModelID()
-        )?.thinkingSelection
+        return AgentSettingsStore.thinkingSelection(
+            requestedSelection: nil,
+            explicitModelID: explicitModelID,
+            agentModelID: agentModelID,
+            agentThinkingSelection: agentThinkingSelection,
+            manifest: manifest
+        )
     }
 
     public func hostedModelManifest(
@@ -145,19 +174,22 @@ extension TerminalChat {
             for: selectedToolKeys,
             items: baseItems
         )
-        let mcpDiscoveryToolNames = Set(
+        let requestedMCPDiscoveryToolNames = Set(
             dynamicToolPrefixes.filter { $0 == "xcode." || $0 == "figma." }
         )
+        let mcpDiscoveryToolNames = ExternalToolAvailability.discoverableToolPrefixes(
+            requestedMCPDiscoveryToolNames
+        )
         let mcpDescriptors: [DirectToolDescriptor]
-        if mcpDiscoveryToolNames.isEmpty {
-            mcpDescriptors = []
-        } else if discoverExternalTools {
+        if discoverExternalTools, !mcpDiscoveryToolNames.isEmpty {
             mcpDescriptors = await sessionRunner.mcpToolDescriptors(
-                allowedToolNames: mcpDiscoveryToolNames
+                allowedToolNames: mcpDiscoveryToolNames,
+                preferredWorkspaceRootURL: configuration.workingDirectory
             )
         } else {
             mcpDescriptors = await sessionRunner.knownMCPToolDescriptors(
-                allowedToolNames: mcpDiscoveryToolNames
+                allowedToolNames: requestedMCPDiscoveryToolNames,
+                preferredWorkspaceRootURL: configuration.workingDirectory
             )
         }
 

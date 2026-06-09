@@ -31,7 +31,8 @@ extension DirectToolExecutor {
         }
         if await mcpRuntime.canExecute(
             toolName: toolCall.name,
-            allowedToolNames: allowedToolNames
+            allowedToolNames: allowedToolNames,
+            preferredWorkspaceRootURL: workingDirectory
         ) {
             return try await mcpRuntime.execute(toolCall: toolCall)
         }

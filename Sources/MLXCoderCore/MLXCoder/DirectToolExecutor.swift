@@ -30,6 +30,7 @@ public actor DirectToolExecutor {
     public let mcpRuntime: DirectMCPToolRuntime
     public let swiftFeatureRuntime: SwiftFeatureRuntime
     public let orchestrationRuntime = DirectOrchestrationRuntime()
+    public let preferredWorkspaceRootURL: URL?
     public var borrowedOrchestrationToolExecutor: AgentBorrowedToolExecutor?
     public var toolProviderRegistry = AgentToolProviderRegistry()
 
@@ -38,6 +39,7 @@ public actor DirectToolExecutor {
         authorizationHandler: AgentToolAuthorizationHandler? = nil,
         mcpRuntime: DirectMCPToolRuntime = DirectMCPToolRuntime(),
         swiftFeatureRuntime: SwiftFeatureRuntime = SwiftFeatureRuntime(),
+        preferredWorkspaceRootURL: URL? = nil,
         borrowedOrchestrationToolExecutor: AgentBorrowedToolExecutor? = nil,
         subAgentBackendFactory: @escaping DirectSubAgentBackendFactory
     ) {
@@ -45,6 +47,7 @@ public actor DirectToolExecutor {
         self.authorizationHandler = authorizationHandler
         self.mcpRuntime = mcpRuntime
         self.swiftFeatureRuntime = swiftFeatureRuntime
+        self.preferredWorkspaceRootURL = preferredWorkspaceRootURL?.standardizedFileURL
         self.borrowedOrchestrationToolExecutor = borrowedOrchestrationToolExecutor
         self.subAgentRuntime = DirectSubAgentRuntime(
             backendFactory: subAgentBackendFactory
@@ -70,11 +73,14 @@ public actor DirectToolExecutor {
     }
 
     public func descriptors(
-        allowedToolNames: Set<String>? = nil
+        allowedToolNames: Set<String>? = nil,
+        preferredWorkspaceRootURL: URL? = nil
     ) async -> [DirectToolDescriptor] {
         if allowedToolNames?.isEmpty == true {
             return []
         }
+        let preferredWorkspaceRootURL = preferredWorkspaceRootURL
+            ?? self.preferredWorkspaceRootURL
 
         let coreDescriptors = Self.filtered(
             Self.canonicalized(
@@ -83,7 +89,8 @@ public actor DirectToolExecutor {
             allowedToolNames: allowedToolNames
         )
         let mcpDescriptors = await mcpRuntime.descriptors(
-            allowedToolNames: allowedToolNames
+            allowedToolNames: allowedToolNames,
+            preferredWorkspaceRootURL: preferredWorkspaceRootURL
         )
         let featureDescriptors = await swiftFeatureRuntime.descriptors(
             allowedToolNames: allowedToolNames,

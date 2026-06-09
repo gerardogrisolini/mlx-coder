@@ -60,20 +60,38 @@ extension MLXCoderACPBridge {
         let rawCwd = Self.workingDirectory(from: params)
             ?? configuration.workingDirectory.path
         let cwd = AgentConfiguration.resolvedWorkingDirectory(rawValue: rawCwd).path
-        let modelID = Self.modelID(from: params)
+        let requestedModelID = Self.modelID(from: params)
+        let modelID = requestedModelID
             ?? configuration.effectiveModelID
 
         let sessionID = "swiftmlx-\(UUID().uuidString.lowercased())"
         let cacheKey = (params["sessionKey"] as? String)
             ?? (params["cacheKey"] as? String)
-        let allowedToolNames = Self.allowedToolNames(from: params)
+        let requestedAllowedToolNames = Self.allowedToolNames(from: params)
             ?? configuration.selectedAgent?.allowedToolNames()
+        let allowedToolNames = await resolvedAllowedToolNames(
+            requestedAllowedToolNames,
+            workingDirectory: URL(fileURLWithPath: cwd)
+        )
         let systemPrompt = resolvedSystemPrompt(
             providedSystemPrompt: params["systemPrompt"] as? String,
             cwd: cwd,
             allowedToolNames: allowedToolNames
         )
-        let thinkingSelection = Self.thinkingSelection(from: params["thinkingSelection"])
+        let requestedThinkingSelection = Self.thinkingSelection(from: params["thinkingSelection"])
+        let hostedManifest = configuration.hostedModels.map { hostedModels in
+            AgentSettingsManifest(
+                models: hostedModels,
+                selectedModelID: modelID
+            )
+        }
+        let thinkingSelection = AgentSettingsStore.thinkingSelection(
+            requestedSelection: requestedThinkingSelection,
+            explicitModelID: requestedModelID ?? configuration.modelID,
+            agentModelID: configuration.selectedAgent?.modelID,
+            agentThinkingSelection: configuration.selectedAgent?.thinkingSelection,
+            manifest: hostedManifest ?? AgentSettingsManifestStore.load()
+        )
         let preserveThinking = (params["preserveThinking"] as? Bool) ?? false
         let configuration = AgentCoreSessionConfiguration(
             sessionID: sessionID,
@@ -103,6 +121,29 @@ extension MLXCoderACPBridge {
             sessionID: sessionID,
             title: URL(fileURLWithPath: cwd).lastPathComponent
         )
+    }
+
+    public func resolvedAllowedToolNames(
+        _ requestedAllowedToolNames: Set<String>?,
+        workingDirectory: URL
+    ) async -> Set<String>? {
+        guard let allowedToolNames = ExternalToolAvailability.resolvedAllowedToolNames(requestedAllowedToolNames) else {
+            return nil
+        }
+
+        guard allowedToolNames.contains(where: DirectMCPToolRuntime.isXcodeToolName) else {
+            return allowedToolNames
+        }
+        guard xcodeIsRunning() else {
+            return allowedToolNames
+        }
+
+        let requestedXcodePrefixes: Set<String> = ["xcode."]
+        _ = await sessionRunner.mcpToolDescriptors(
+            allowedToolNames: requestedXcodePrefixes,
+            preferredWorkspaceRootURL: workingDirectory
+        )
+        return allowedToolNames
     }
 
     public func loadSession(id: JSONValue?, params: [String: Any]) async throws {

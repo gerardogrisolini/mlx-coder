@@ -226,6 +226,162 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         }
     }
 
+    private struct StreamAccumulatorResult {
+        let text: String
+        let reasoningText: String
+        let stopReason: String
+        let toolCalls: [DirectAgentToolCall]
+        let usage: RemoteGenerationUsage?
+        let firstDeltaAt: Date?
+        let latestResponseID: String?
+    }
+
+    private final class StreamAccumulator: @unchecked Sendable {
+        private let lock = NSLock()
+        private var responseText = ""
+        private var responseReasoningText = ""
+        private var stopReason = "end_turn"
+        private var toolCallAccumulator = RemoteToolCallAccumulator()
+        private var requestUsage: RemoteGenerationUsage?
+        private var firstDeltaAt: Date?
+        private var didReceiveContentDelta = false
+        private var latestResponseID: String?
+
+        func ingest(_ object: [String: Any]) throws -> [DirectAgentEvent] {
+            lock.lock()
+            defer {
+                lock.unlock()
+            }
+
+            if let errorMessage = ChatGPTSubscriptionGenerationClient.responseErrorMessage(from: object) {
+                throw ChatGPTSubscriptionGenerationError.responseFailed(errorMessage)
+            }
+
+            if let responseID = ChatGPTSubscriptionGenerationClient.responseID(from: object) {
+                latestResponseID = responseID
+            }
+
+            var events: [DirectAgentEvent] = []
+            var didParseReasoningDeltaFromResponsesEvent = false
+            for event in RemoteGenerationClient.parseResponsesStreamEvent(object) {
+                switch event {
+                case let .content(delta):
+                    guard !delta.isEmpty else {
+                        continue
+                    }
+                    markFirstDelta()
+                    didReceiveContentDelta = true
+                    responseText.append(delta)
+                    events.append(.content(delta))
+                case let .reasoning(delta):
+                    guard !delta.isEmpty else {
+                        continue
+                    }
+                    didParseReasoningDeltaFromResponsesEvent = true
+                    markFirstDelta()
+                    responseReasoningText.append(delta)
+                    events.append(.thought(delta))
+                case let .responseToolCallItem(item, outputIndex):
+                    markFirstDelta()
+                    toolCallAccumulator.ingestResponseToolCallItem(
+                        item,
+                        outputIndex: outputIndex
+                    )
+                case let .responseToolCallArgumentsDelta(event):
+                    markFirstDelta()
+                    toolCallAccumulator.ingestResponseToolCallArgumentsDelta(event)
+                case let .responseToolCallArgumentsDone(event):
+                    markFirstDelta()
+                    toolCallAccumulator.ingestResponseToolCallArgumentsDone(event)
+                case let .stop(reason):
+                    stopReason = reason
+                case let .failure(message):
+                    throw ChatGPTSubscriptionGenerationError.responseFailed(message)
+                case let .usage(remoteUsage):
+                    requestUsage = remoteUsage
+                case .toolCallDelta, .ignored:
+                    continue
+                }
+            }
+
+            let normalizedType = (object["type"] as? String)
+                .map(ChatGPTSubscriptionGenerationClient.normalizedEventType) ?? ""
+            switch normalizedType {
+            case "response_output_text_delta",
+                 "response_content_part_delta":
+                guard !didReceiveContentDelta,
+                      let delta = ChatGPTSubscriptionGenerationClient.responseContentDelta(from: object),
+                      !delta.isEmpty else {
+                    return events
+                }
+                markFirstDelta()
+                didReceiveContentDelta = true
+                responseText.append(delta)
+                events.append(.content(delta))
+            case "response_reasoning_summary_text_delta",
+                 "response_reasoning_text_delta",
+                 "response_reasoning_delta",
+                 "response_reasoning_summary_delta",
+                 "response_reasoning_raw_content_delta":
+                if !didParseReasoningDeltaFromResponsesEvent,
+                   let delta = ChatGPTSubscriptionGenerationClient.responseReasoningDelta(from: object),
+                   !delta.isEmpty {
+                    markFirstDelta()
+                    responseReasoningText.append(delta)
+                    events.append(.thought(delta))
+                }
+            case "response_completed",
+                 "response_done",
+                 "response_incomplete":
+                if !didReceiveContentDelta,
+                   let completedText = ChatGPTSubscriptionGenerationClient.completedResponseText(from: object),
+                   !completedText.isEmpty {
+                    markFirstDelta()
+                    didReceiveContentDelta = true
+                    responseText.append(completedText)
+                    events.append(.content(completedText))
+                }
+            default:
+                break
+            }
+
+            return events
+        }
+
+        func recordCompletionResponseID(_ responseID: String?) {
+            guard let responseID = responseID?.nilIfBlank else {
+                return
+            }
+            lock.lock()
+            latestResponseID = responseID
+            lock.unlock()
+        }
+
+        func result(toolCatalog: RemoteToolWireCatalog) throws -> StreamAccumulatorResult {
+            lock.lock()
+            defer {
+                lock.unlock()
+            }
+
+            let remoteToolCalls = try toolCallAccumulator.finalize()
+            return StreamAccumulatorResult(
+                text: responseText,
+                reasoningText: responseReasoningText,
+                stopReason: stopReason,
+                toolCalls: remoteToolCalls.map(toolCatalog.localToolCall),
+                usage: requestUsage,
+                firstDeltaAt: firstDeltaAt,
+                latestResponseID: latestResponseID
+            )
+        }
+
+        private func markFirstDelta() {
+            if firstDeltaAt == nil {
+                firstDeltaAt = Date()
+            }
+        }
+    }
+
     private static let sessionStoreUserDefaultsKey =
         "ChatGPTSubscriptionGenerationClient.sessionIDsByIdentity.v1"
     static let compactionReserveTokenCount = 20_000
@@ -255,6 +411,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
             outputLimit: 24_000,
             authorizationHandler: configuration.toolAuthorizationHandler,
             mcpRuntime: mcpRuntime,
+            preferredWorkspaceRootURL: configuration.workingDirectory,
             subAgentBackendFactory: {
                 ChatGPTSubscriptionGenerationClient(
                     configuration: configuration,
@@ -386,7 +543,10 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         guard let session = sessions.values.first else {
             return await toolExecutor.descriptors(allowedToolNames: [])
         }
-        return await toolExecutor.descriptors(allowedToolNames: session.allowedToolNames)
+        return await toolExecutor.descriptors(
+            allowedToolNames: session.allowedToolNames,
+            preferredWorkspaceRootURL: URL(fileURLWithPath: session.cwd)
+        )
     }
 
     public func subAgentSnapshots() async -> [DirectSubAgentRuntime.AgentSnapshot] {
@@ -482,7 +642,8 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
             }
             let toolCatalog = RemoteToolWireCatalog(
                 descriptors: await toolExecutor.descriptors(
-                    allowedToolNames: session.allowedToolNames
+                    allowedToolNames: session.allowedToolNames,
+                    preferredWorkspaceRootURL: URL(fileURLWithPath: session.cwd)
                 )
             )
             let requestPayload = ChatGPTSubscriptionRequestBuilder.requestInputPayload(
@@ -510,21 +671,8 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                 )
             }
 
-            var responseText = ""
-            var responseReasoningText = ""
-            var stopReason = "end_turn"
-            var toolCallAccumulator = RemoteToolCallAccumulator()
-            var requestUsage: RemoteGenerationUsage?
             let requestStartedAt = Date()
-            var firstDeltaAt: Date?
-            var didReceiveContentDelta = false
-            var latestResponseID: String?
-
-            func markFirstDelta() {
-                if firstDeltaAt == nil {
-                    firstDeltaAt = Date()
-                }
-            }
+            let streamAccumulator = StreamAccumulator()
 
             let completion = try await client.streamEvents(
                 input: JSONValue.acpValue(from: requestPayload.input),
@@ -541,122 +689,32 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                 maxOutputTokens: configuration.maxOutputTokens
             ) { object in
                 try Task.checkCancellation()
-                if let errorMessage = Self.responseErrorMessage(from: object) {
-                    throw ChatGPTSubscriptionGenerationError.responseFailed(errorMessage)
-                }
-
-                if let responseID = Self.responseID(from: object) {
-                    latestResponseID = responseID
-                }
-
-                var didParseReasoningDeltaFromResponsesEvent = false
-                for event in RemoteGenerationClient.parseResponsesStreamEvent(object) {
-                    switch event {
-                    case let .content(delta):
-                        guard !delta.isEmpty else {
-                            continue
-                        }
-                        markFirstDelta()
-                        didReceiveContentDelta = true
-                        responseText.append(delta)
-                        await onEvent(.content(delta))
-                    case let .reasoning(delta):
-                        guard !delta.isEmpty else {
-                            continue
-                        }
-                        didParseReasoningDeltaFromResponsesEvent = true
-                        markFirstDelta()
-                        responseReasoningText.append(delta)
-                        await onEvent(.thought(delta))
-                    case let .responseToolCallItem(item, outputIndex):
-                        markFirstDelta()
-                        toolCallAccumulator.ingestResponseToolCallItem(
-                            item,
-                            outputIndex: outputIndex
-                        )
-                    case let .responseToolCallArgumentsDelta(event):
-                        markFirstDelta()
-                        toolCallAccumulator.ingestResponseToolCallArgumentsDelta(event)
-                    case let .responseToolCallArgumentsDone(event):
-                        markFirstDelta()
-                        toolCallAccumulator.ingestResponseToolCallArgumentsDone(event)
-                    case let .stop(reason):
-                        stopReason = reason
-                    case let .failure(message):
-                        throw ChatGPTSubscriptionGenerationError.responseFailed(message)
-                    case let .usage(remoteUsage):
-                        requestUsage = remoteUsage
-                    case .toolCallDelta, .ignored:
-                        continue
-                    }
-                }
-
-                let normalizedType = (object["type"] as? String)
-                    .map(Self.normalizedEventType) ?? ""
-                switch normalizedType {
-                case "response_output_text_delta",
-                     "response_content_part_delta":
-                    guard !didReceiveContentDelta,
-                          let delta = Self.responseContentDelta(from: object),
-                          !delta.isEmpty else {
-                        return
-                    }
-                    markFirstDelta()
-                    didReceiveContentDelta = true
-                    responseText.append(delta)
-                    await onEvent(.content(delta))
-                case "response_reasoning_summary_text_delta",
-                     "response_reasoning_text_delta",
-                     "response_reasoning_delta",
-                     "response_reasoning_summary_delta",
-                     "response_reasoning_raw_content_delta":
-                    if !didParseReasoningDeltaFromResponsesEvent,
-                       let delta = Self.responseReasoningDelta(from: object),
-                       !delta.isEmpty {
-                        markFirstDelta()
-                        responseReasoningText.append(delta)
-                        await onEvent(.thought(delta))
-                    }
-                case "response_completed",
-                     "response_done",
-                     "response_incomplete":
-                    if !didReceiveContentDelta,
-                       let completedText = Self.completedResponseText(from: object),
-                       !completedText.isEmpty {
-                        markFirstDelta()
-                        didReceiveContentDelta = true
-                        responseText.append(completedText)
-                        await onEvent(.content(completedText))
-                    }
-                default:
-                    break
+                let events = try streamAccumulator.ingest(object)
+                for event in events {
+                    await onEvent(event)
                 }
             }
 
-            if let responseID = completion.responseID?.nilIfBlank {
-                latestResponseID = responseID
-            }
-
-            let remoteToolCalls = try toolCallAccumulator.finalize()
-            let toolCalls = remoteToolCalls.map(toolCatalog.localToolCall)
+            streamAccumulator.recordCompletionResponseID(completion.responseID)
+            let streamResult = try streamAccumulator.result(toolCatalog: toolCatalog)
             generationStats.append(
                 RemoteGenerationStats(
-                    usage: requestUsage,
+                    usage: streamResult.usage,
                     requestStartedAt: requestStartedAt,
-                    firstDeltaAt: firstDeltaAt,
+                    firstDeltaAt: streamResult.firstDeltaAt,
                     finishedAt: Date(),
-                    generatedCharacterCount: responseText.count
+                    generatedCharacterCount: streamResult.text.count
                 )
             )
-            accumulatedText.append(responseText)
+            accumulatedText.append(streamResult.text)
 
             Self.appendAssistantMessage(
-                text: responseText,
-                reasoningText: responseReasoningText,
-                toolCalls: toolCalls,
+                text: streamResult.text,
+                reasoningText: streamResult.reasoningText,
+                toolCalls: streamResult.toolCalls,
                 to: &session.messages
             )
-            if let responseID = latestResponseID?.nilIfBlank {
+            if let responseID = streamResult.latestResponseID?.nilIfBlank {
                 session.continuation = ChatGPTSubscriptionContinuationState(
                     responseID: responseID,
                     messageCount: session.messages.count,
@@ -670,24 +728,24 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                 await Self.publishChatGPTSubscriptionMetrics(
                     metrics,
                     estimatedContextTokens: estimatedContextTokens,
-                    completionTokens: requestUsage?.completionTokens,
-                    generatedText: responseText,
+                    completionTokens: streamResult.usage?.completionTokens,
+                    generatedText: streamResult.text,
                     maxTokens: maxContextWindowTokens,
                     modelID: modelLLMID,
                     onEvent: onEvent
                 )
             }
 
-            if toolCalls.isEmpty {
+            if streamResult.toolCalls.isEmpty {
                 sessions[sessionID] = session
                 return DirectAgentResponse(
                     text: accumulatedText,
-                    stopReason: stopReason,
+                    stopReason: streamResult.stopReason,
                     modelID: modelLLMID
                 )
             }
 
-            for toolCall in toolCalls {
+            for toolCall in streamResult.toolCalls {
                 await onEvent(.toolCallStarted(toolCall))
                 let result = await toolExecutor.execute(
                     sessionID: session.id,

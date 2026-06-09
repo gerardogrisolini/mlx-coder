@@ -237,6 +237,7 @@ extension TerminalChat {
     }
 
     public func preloadCurrentModel(emitStatus: Bool = true) async throws -> String {
+        refreshStatusBarThinkingSelection()
         let loadedModelID = try await sessionRunner.preloadModel(
             configuration: await currentSessionConfiguration()
         ) { event in
@@ -282,6 +283,7 @@ extension TerminalChat {
             return
         }
         printedModelID = displayTitle
+        refreshStatusBarThinkingSelection()
         _ = statusBar.update(modelID: modelID)
         printLoadedModelDetails(
             DirectAgentLoadedModelDetails(modelID: modelID)
@@ -296,6 +298,7 @@ extension TerminalChat {
 
         let displayTitle = loadedModelDisplayTitle(modelID)
         printedModelID = displayTitle
+        refreshStatusBarThinkingSelection()
         _ = statusBar.update(modelID: modelID)
         _ = statusBar.update(modelRuntime: details.runtime)
 

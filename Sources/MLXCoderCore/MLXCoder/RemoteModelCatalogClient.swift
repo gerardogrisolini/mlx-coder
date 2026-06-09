@@ -15,12 +15,24 @@ public final class RemoteModelCatalogClient {
     public static let defaultResourceTimeout: TimeInterval = 60 * 60 * 8
 
     private let session: URLSession
+    private let huggingFaceBaseURL: String
+    private let enrichesHuggingFaceMetadata: Bool
 
-    public init() {
-        let configuration = URLSessionConfiguration.default
-        configuration.timeoutIntervalForRequest = Self.defaultRequestTimeout
-        configuration.timeoutIntervalForResource = Self.defaultResourceTimeout
-        self.session = URLSession(configuration: configuration)
+    public init(
+        urlSession: URLSession? = nil,
+        huggingFaceBaseURL: String = "https://huggingface.co",
+        enrichesHuggingFaceMetadata: Bool = true
+    ) {
+        self.huggingFaceBaseURL = AgentRemoteProvider.normalizedBaseURL(huggingFaceBaseURL)
+        self.enrichesHuggingFaceMetadata = enrichesHuggingFaceMetadata
+        if let urlSession {
+            self.session = urlSession
+        } else {
+            let configuration = URLSessionConfiguration.default
+            configuration.timeoutIntervalForRequest = Self.defaultRequestTimeout
+            configuration.timeoutIntervalForResource = Self.defaultResourceTimeout
+            self.session = URLSession(configuration: configuration)
+        }
     }
 
     public func fetchModels(
@@ -35,30 +47,10 @@ public final class RemoteModelCatalogClient {
         try validateHTTPResponse(response, data: data)
 
         let catalog = try decodeJSON(RemoteModelCatalogResponse.self, from: data)
-        return catalog.data.compactMap { entry in
-            guard let id = stringValue(entry.values, "id")?.nilIfBlank else {
-                return nil
-            }
-
-            let metadata = modelMetadata(from: entry)
-            return OpenRouterModelInfo(
-                id: id,
-                name: stringValue(entry.values, "name")
-                    ?? stringValue(entry.values, "display_name")
-                    ?? id,
-                contextLength: contextLength(from: entry.values),
-                pricing: pricing(from: entry.values),
-                thinkingSupport: Self.thinkingSupport(
-                    fromModelMetadata: metadata,
-                    baseURL: baseURL,
-                    modelID: id
-                ),
-                generationParameterOverrides: generationParameterOverrides(from: entry.values),
-                installed: boolValue(entry.values, "installed"),
-                loaded: boolValue(entry.values, "loaded"),
-                serverLoaded: boolValue(entry.values, "server_loaded")
-            )
+        let models = catalog.data.compactMap { entry in
+            modelInfo(from: entry, baseURL: baseURL)
         }
+        return try await enrichModelsIfNeeded(models, baseURL: baseURL)
     }
 
     public func fetchModelMetadata(
@@ -85,32 +77,12 @@ public final class RemoteModelCatalogClient {
 
     static func thinkingSupport(
         fromModelMetadata metadata: [String: Any],
-        baseURL: String,
-        modelID: String
+        baseURL _: String,
+        modelID _: String
     ) -> MLXModelThinkingSupport? {
-        if let support = MLXModelThinkingSupport.fromModelMetadata(metadata) {
-            return support
-        }
-
-        guard AgentRemoteProvider.isNVIDIABaseURL(baseURL)
-            || AgentRemoteProvider.isModalDirectBaseURL(baseURL) else {
-            return nil
-        }
-
-        if AgentRemoteProvider.isNVIDIABaseURL(baseURL),
-           let support = inferredNVIDIAThinkingSupport(modelID: modelID) {
-            return support
-        }
-
-        if let sparseSupport = MLXModelThinkingSupport.fromSparseRemoteModelIdentifier(modelID) {
-            return sparseSupport
-        }
-
-        if AgentRemoteProvider.isModalDirectBaseURL(baseURL) {
-            return .generic
-        }
-
-        return nil
+        MLXModelThinkingSupport.fromModelMetadata(
+            metadata.removingSparseIdentifierKeys()
+        )
     }
 }
 
@@ -198,32 +170,282 @@ public enum RemoteModelCatalogClientError: LocalizedError {
 }
 
 private extension RemoteModelCatalogClient {
-    static func inferredNVIDIAThinkingSupport(modelID: String) -> MLXModelThinkingSupport? {
-        let normalizedID = normalizedSparseModelIdentifier(modelID)
-        let hasNVIDIANemotronReasoningShape = [
-            "cosmosreason",
-            "nemotronreasoning",
-            "nemotroncontentreasoning",
-            "nemotronsuper",
-            "nemotronultra",
-            "nemotronnano",
-            "nemotron3super",
-            "nemotron3ultra",
-            "nemotron3nano"
-        ].contains { normalizedID.contains($0) }
+    func modelInfo(
+        from entry: RemoteModelCatalogEntry,
+        baseURL: String
+    ) -> OpenRouterModelInfo? {
+        guard let id = stringValue(entry.values, "id")?.nilIfBlank else {
+            return nil
+        }
 
-        return hasNVIDIANemotronReasoningShape ? .generic : nil
+        let metadata = modelMetadata(from: entry)
+        return OpenRouterModelInfo(
+            id: id,
+            name: stringValue(entry.values, "name")
+                ?? stringValue(entry.values, "display_name")
+                ?? id,
+            contextLength: contextLength(from: entry.values),
+            pricing: pricing(from: entry.values),
+            thinkingSupport: Self.thinkingSupport(
+                fromModelMetadata: metadata,
+                baseURL: baseURL,
+                modelID: id
+            ),
+            generationParameterOverrides: generationParameterOverrides(from: entry.values),
+            installed: boolValue(entry.values, "installed"),
+            loaded: boolValue(entry.values, "loaded"),
+            serverLoaded: boolValue(entry.values, "server_loaded")
+        )
     }
 
-    static func normalizedSparseModelIdentifier(_ value: String) -> String {
-        value
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "")
-            .replacingOccurrences(of: "-", with: "")
-            .replacingOccurrences(of: ".", with: "")
-            .replacingOccurrences(of: "/", with: "")
-            .replacingOccurrences(of: " ", with: "")
+    func enrichModelsIfNeeded(
+        _ models: [OpenRouterModelInfo],
+        baseURL: String
+    ) async throws -> [OpenRouterModelInfo] {
+        guard shouldEnrichWithHuggingFace(baseURL: baseURL) else {
+            return models
+        }
+
+        var enrichedModels: [OpenRouterModelInfo] = []
+        enrichedModels.reserveCapacity(models.count)
+        var metadataByRepositoryID: [String: HuggingFaceModelMetadata] = [:]
+        for model in models {
+            guard model.needsHuggingFaceMetadataEnrichment,
+                  let repositoryID = Self.huggingFaceRepositoryID(from: model.id) else {
+                enrichedModels.append(model)
+                continue
+            }
+
+            let cacheKey = repositoryID.lowercased()
+            let metadata: HuggingFaceModelMetadata?
+            if let cachedMetadata = metadataByRepositoryID[cacheKey] {
+                metadata = cachedMetadata
+            } else {
+                metadata = try await fetchHuggingFaceModelMetadata(repositoryID: repositoryID)
+                if let metadata {
+                    metadataByRepositoryID[cacheKey] = metadata
+                }
+            }
+            enrichedModels.append(model.enriched(with: metadata))
+        }
+        return enrichedModels
+    }
+
+    func shouldEnrichWithHuggingFace(baseURL: String) -> Bool {
+        enrichesHuggingFaceMetadata
+            && !AgentRemoteProvider.isOpenRouterBaseURL(baseURL)
+    }
+
+    static func huggingFaceRepositoryID(from modelID: String) -> String? {
+        let trimmedModelID = AgentRemoteProvider.normalizedModelID(modelID)
+        guard !trimmedModelID.isEmpty else {
+            return nil
+        }
+        let components = trimmedModelID
+            .split(separator: "/")
+            .map(String.init)
+        guard components.count >= 2 else {
+            return nil
+        }
+        let owner = components[0]
+        guard !owner.contains(":") else {
+            return nil
+        }
+        let repositoryName = components[1...].joined(separator: "/")
+        guard !repositoryName.isEmpty else {
+            return nil
+        }
+        return "\(owner)/\(repositoryName)"
+    }
+
+    func fetchHuggingFaceModelMetadata(
+        repositoryID: String
+    ) async throws -> HuggingFaceModelMetadata? {
+        do {
+            let apiResponse = try await fetchHuggingFaceAPIModel(repositoryID: repositoryID)
+            let resolvedRepositoryID = apiResponse.repositoryID.nilIfBlank ?? repositoryID
+                        var metadata = HuggingFaceModelMetadata(
+                contextLength: contextLengthValue(apiResponse.rootValue),
+                thinkingSupport: MLXModelThinkingSupport.fromModelMetadata(
+                    apiResponse.metadata.removingSparseIdentifierKeys()
+                )
+            )
+
+
+            let siblingNames = Set(apiResponse.siblingFilenames.map { $0.lowercased() })
+            if siblingNames.contains("config.json"),
+               let config = try await fetchHuggingFaceJSONFile(
+                   repositoryID: resolvedRepositoryID,
+                   filename: "config.json"
+               ) {
+                metadata.merge(
+                    contextLength: contextLengthValue(config),
+                    thinkingSupport: MLXModelThinkingSupport.fromModelMetadata(config.anyValueDictionary)
+                )
+            }
+            if siblingNames.contains("tokenizer_config.json"),
+               let tokenizerConfig = try await fetchHuggingFaceJSONFile(
+                   repositoryID: resolvedRepositoryID,
+                   filename: "tokenizer_config.json"
+               ) {
+                metadata.merge(
+                    contextLength: contextLengthValue(tokenizerConfig),
+                    thinkingSupport: MLXModelThinkingSupport.fromModelMetadata(tokenizerConfig.anyValueDictionary)
+                )
+            }
+            if siblingNames.contains("generation_config.json"),
+               let generationConfig = try await fetchHuggingFaceJSONFile(
+                   repositoryID: resolvedRepositoryID,
+                   filename: "generation_config.json"
+               ) {
+                metadata.merge(
+                    contextLength: contextLengthValue(generationConfig),
+                    thinkingSupport: MLXModelThinkingSupport.fromModelMetadata(generationConfig.anyValueDictionary)
+                )
+            }
+            if siblingNames.contains("readme.md"),
+               let readme = try await fetchHuggingFaceTextFile(
+                   repositoryID: resolvedRepositoryID,
+                   filename: "README.md"
+               ) {
+                metadata.merge(
+                    contextLength: contextLength(fromText: readme),
+                    thinkingSupport: Self.thinkingSupport(fromHuggingFaceReadme: readme)
+                )
+            }
+
+            return metadata.isEmpty ? nil : metadata
+        } catch {
+            return nil
+        }
+    }
+
+    func fetchHuggingFaceAPIModel(
+        repositoryID: String
+    ) async throws -> HuggingFaceAPIModelResponse {
+        let data = try await fetchHuggingFaceData(path: "api/models/\(repositoryID)", accept: "application/json")
+        let rootValue = try decodeJSON(JSONValue.self, from: data)
+        let response = try decodeJSON(HuggingFaceAPIModelResponse.self, from: data)
+        return HuggingFaceAPIModelResponse(
+            id: response.id,
+            modelID: response.modelID,
+            siblings: response.siblings,
+            rootValue: rootValue
+        )
+    }
+
+    func fetchHuggingFaceJSONFile(
+        repositoryID: String,
+        filename: String
+    ) async throws -> JSONValue? {
+        do {
+            let data = try await fetchHuggingFaceData(
+                path: "\(repositoryID)/raw/main/\(filename)",
+                accept: "application/json"
+            )
+            return try decodeJSON(JSONValue.self, from: data)
+        } catch {
+            return nil
+        }
+    }
+
+    func fetchHuggingFaceTextFile(
+        repositoryID: String,
+        filename: String
+    ) async throws -> String? {
+        do {
+            let data = try await fetchHuggingFaceData(
+                path: "\(repositoryID)/raw/main/\(filename)",
+                accept: "text/plain"
+            )
+            return String(data: data, encoding: .utf8)?.nilIfBlank
+        } catch {
+            return nil
+        }
+    }
+
+    func fetchHuggingFaceData(
+        path: String,
+        accept: String
+    ) async throws -> Data {
+        let url = try huggingFaceURL(path: path)
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue(accept, forHTTPHeaderField: "Accept")
+        request.setValue("mlx-coder", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await session.data(for: request)
+        try validateHTTPResponse(response, data: data)
+        return data
+    }
+
+    func huggingFaceURL(path: String) throws -> URL {
+        let sanitizedPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(huggingFaceBaseURL)/\(sanitizedPath)") else {
+            throw RemoteModelCatalogClientError.invalidURL(huggingFaceBaseURL)
+        }
+        return url
+    }
+
+    static func thinkingSupport(fromHuggingFaceReadme readme: String) -> MLXModelThinkingSupport? {
+        let lowercasedReadme = readme.lowercased()
+        let compactReadme = normalizedMetadataKey(readme)
+        let mentionsThinking = compactReadme.contains("reasoningmode")
+            || compactReadme.contains("thinkingmode")
+            || compactReadme.contains("reasoningeffort")
+            || compactReadme.contains("nonthink")
+            || compactReadme.contains("<think>")
+            || compactReadme.contains("thinkingon")
+            || compactReadme.contains("reasoningon")
+        guard mentionsThinking else {
+            return nil
+        }
+
+        var levels: [MLXThinkingSelection] = []
+        func append(_ selection: MLXThinkingSelection) {
+            guard !levels.contains(selection) else {
+                return
+            }
+            levels.append(selection)
+        }
+
+        if containsWholeWord("minimal", in: lowercasedReadme) {
+            append(.minimal)
+        }
+        if containsWholeWord("low", in: lowercasedReadme) {
+            append(.low)
+        }
+        if containsWholeWord("medium", in: lowercasedReadme) {
+            append(.medium)
+        }
+        if compactReadme.contains("thinkhigh")
+            || compactReadme.contains("reasoningefforthigh")
+            || lowercasedReadme.contains(#"reasoning_effort":"high"#)
+            || lowercasedReadme.contains(#"reasoning_effort="high""#) {
+            append(.high)
+        }
+        if compactReadme.contains("thinkmax")
+            || compactReadme.contains("reasoningeffortmax")
+            || compactReadme.contains("maximumreasoningeffort")
+            || lowercasedReadme.contains(#"reasoning_effort":"max"#)
+            || lowercasedReadme.contains(#"reasoning_effort="max""#) {
+            append(.xhigh)
+        }
+
+        if !levels.isEmpty || compactReadme.contains("reasoningeffort") {
+            return .effort(levels: levels)
+        }
+        return .generic
+    }
+
+    static func containsWholeWord(
+        _ word: String,
+        in text: String
+    ) -> Bool {
+        guard let regex = try? NSRegularExpression(pattern: #"\b"# + NSRegularExpression.escapedPattern(for: word) + #"\b"#) else {
+            return false
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.firstMatch(in: text, range: range) != nil
     }
 
     func endpointURL(
@@ -326,6 +548,99 @@ private struct DynamicCodingKey: CodingKey {
     init?(intValue: Int) {
         self.stringValue = String(intValue)
         self.intValue = intValue
+    }
+}
+
+private struct HuggingFaceModelMetadata {
+    var contextLength: Int?
+    var thinkingSupport: MLXModelThinkingSupport?
+
+    var isEmpty: Bool {
+        contextLength == nil && thinkingSupport == nil
+    }
+
+    mutating func merge(
+        contextLength: Int? = nil,
+        thinkingSupport: MLXModelThinkingSupport? = nil
+    ) {
+        if self.contextLength == nil {
+            self.contextLength = contextLength
+        }
+        if self.thinkingSupport == nil {
+            self.thinkingSupport = thinkingSupport
+        }
+    }
+}
+
+private struct HuggingFaceAPIModelResponse: Decodable {
+    struct Sibling: Decodable {
+        let rfilename: String?
+    }
+
+    let id: String?
+    let modelID: String?
+    let siblings: [Sibling]
+    let rootValue: JSONValue
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case modelID
+        case siblings
+    }
+
+    init(
+        id: String?,
+        modelID: String?,
+        siblings: [Sibling],
+        rootValue: JSONValue
+    ) {
+        self.id = id
+        self.modelID = modelID
+        self.siblings = siblings
+        self.rootValue = rootValue
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decodeIfPresent(String.self, forKey: .id)
+        self.modelID = try container.decodeIfPresent(String.self, forKey: .modelID)
+        self.siblings = try container.decodeIfPresent([Sibling].self, forKey: .siblings) ?? []
+        self.rootValue = .null
+    }
+
+    var repositoryID: String {
+        modelID?.nilIfBlank ?? id?.nilIfBlank ?? ""
+    }
+
+    var metadata: [String: Any] {
+        rootValue.anyValueDictionary
+    }
+
+    var siblingFilenames: [String] {
+        siblings.compactMap { $0.rfilename?.nilIfBlank }
+    }
+}
+
+private extension OpenRouterModelInfo {
+    var needsHuggingFaceMetadataEnrichment: Bool {
+        contextLength == nil || thinkingSupport == nil
+    }
+
+    func enriched(with metadata: HuggingFaceModelMetadata?) -> OpenRouterModelInfo {
+        guard let metadata else {
+            return self
+        }
+        return OpenRouterModelInfo(
+            id: id,
+            name: name,
+            contextLength: contextLength ?? metadata.contextLength,
+            pricing: pricing,
+            thinkingSupport: thinkingSupport ?? metadata.thinkingSupport,
+            generationParameterOverrides: generationParameterOverrides,
+            installed: installed,
+            loaded: loaded,
+            serverLoaded: serverLoaded
+        )
     }
 }
 
@@ -434,6 +749,8 @@ private var preferredContextLengthMetadataKeys: [String] {
         "maxcontextwindow",
         "samplingmaxcontextwindow",
         "maxcontextlength",
+        "modelmaxlength",
+        "modelmaxlen",
         "inputtokenlimit",
         "maxinputtokens",
         "maxmodellen",
@@ -460,6 +777,52 @@ private func isContextLengthMetadataKey(
     _ key: String
 ) -> Bool {
     preferredContextLengthMetadataKeys.contains(normalizedMetadataKey(key))
+}
+
+private func contextLength(
+    fromText text: String
+) -> Int? {
+    let normalizedText = text.replacingOccurrences(of: ",", with: "")
+    let patterns = [
+        #"(?i)context\s+(?:length|window)[^\n\r\d]{0,40}(\d+(?:\.\d+)?)\s*([km])?\b"#,
+        #"(?i)(\d+(?:\.\d+)?)\s*([km])?\s*(?:-|\s)?token\s+context\b"#,
+        #"(?i)context\s+(?:length|window)[^\n\r\d]{0,40}(\d+)\b"#
+    ]
+    for pattern in patterns {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            continue
+        }
+        let range = NSRange(normalizedText.startIndex..<normalizedText.endIndex, in: normalizedText)
+        let matches = regex.matches(in: normalizedText, range: range)
+        for match in matches {
+            guard match.numberOfRanges >= 2,
+                  let numberRange = Range(match.range(at: 1), in: normalizedText),
+                  let number = Double(normalizedText[numberRange]) else {
+                continue
+            }
+            let suffix: String?
+            if match.numberOfRanges >= 3,
+               let suffixRange = Range(match.range(at: 2), in: normalizedText) {
+                suffix = String(normalizedText[suffixRange]).lowercased()
+            } else {
+                suffix = nil
+            }
+            let multiplier: Double
+            switch suffix {
+            case "m":
+                multiplier = 1_000_000
+            case "k":
+                multiplier = 1_024
+            default:
+                multiplier = 1
+            }
+            let integer = Int(number * multiplier)
+            if integer >= 1024 {
+                return integer
+            }
+        }
+    }
+    return nil
 }
 
 private func normalizedMetadataKey(
@@ -554,7 +917,34 @@ private func doubleValue(
     }
 }
 
+private extension Dictionary where Key == String, Value == Any {
+    func removingSparseIdentifierKeys() -> [String: Any] {
+        let sparseIdentifierKeys = Set([
+            "id",
+            "model",
+            "modelid",
+            "name",
+            "modeltype",
+            "architectures",
+            "architecture"
+        ])
+        return filter { key, _ in
+            !sparseIdentifierKeys.contains(normalizedMetadataKey(key))
+        }
+        .reduce(into: [:]) { result, element in
+            result[element.key] = element.value
+        }
+    }
+}
+
 private extension JSONValue {
+    var anyValueDictionary: [String: Any] {
+        guard case let .object(object) = self else {
+            return [:]
+        }
+        return object.mapValues(\.anyValue)
+    }
+
     var anyValue: Any {
         switch self {
         case let .string(value):

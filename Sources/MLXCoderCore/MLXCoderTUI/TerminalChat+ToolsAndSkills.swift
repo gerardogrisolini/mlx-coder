@@ -129,7 +129,9 @@ extension TerminalChat {
     public func toolSelectionItems(
         additionalDescriptors: [DirectToolDescriptor] = []
     ) async -> [TerminalToolSelectionItem] {
-        let knownMCPDescriptors = await sessionRunner.knownMCPToolDescriptors()
+        let knownMCPDescriptors = await sessionRunner.knownMCPToolDescriptors(
+            preferredWorkspaceRootURL: configuration.workingDirectory
+        )
         let featureStatuses = await SwiftFeatureRuntime().featureStatuses(
             includeTools: true,
             includeDisabled: true

@@ -38,7 +38,7 @@ extension MLXCoderACPBridge {
 
         let promptConfiguration: AgentCoreSessionConfiguration
         if let agentMentionResolution {
-            promptConfiguration = acpSessionConfiguration(
+            promptConfiguration = await acpSessionConfiguration(
                 applying: agentMentionResolution.agent,
                 to: session.configuration
             )
@@ -498,8 +498,11 @@ private extension MLXCoderACPBridge {
     func acpSessionConfiguration(
         applying agent: AgentProfile,
         to baseConfiguration: AgentCoreSessionConfiguration
-    ) -> AgentCoreSessionConfiguration {
-        let allowedToolNames = agent.allowedToolNames()
+    ) async -> AgentCoreSessionConfiguration {
+        let allowedToolNames = await resolvedAllowedToolNames(
+            agent.allowedToolNames(),
+            workingDirectory: baseConfiguration.workingDirectory
+        )
         let modelID = agent.modelID ?? baseConfiguration.modelID
         let systemPrompt = AgentCoreAppSessionFactory.resolvedSystemPrompt(
             providedSystemPrompt: nil,

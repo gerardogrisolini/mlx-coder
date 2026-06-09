@@ -252,6 +252,46 @@ struct RemoteSessionSnapshotTests {
         #expect(result.toolCalls.first?.argumentsObject["scheme"] as? String == "App")
     }
 
+    @Test
+    func chatTemplateThinkingPayloadIncludesReasoningEffort() async throws {
+        let response = """
+        data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}
+
+        data: [DONE]
+
+        """
+        let urlSession = RemoteRequestCapturingURLProtocol.urlSession(
+            responseBody: Data(response.utf8)
+        )
+        let client = RemoteGenerationClient(
+            configuration: remoteStreamingConfiguration(),
+            provider: AgentRemoteProvider(
+                name: "NVIDIA",
+                baseURL: "https://integrate.api.nvidia.com/v1",
+                modelID: "deepseek-ai/deepseek-v4-flash",
+                chatEndpoint: .chatCompletions
+            ),
+            apiKey: nil,
+            urlSession: urlSession,
+            mcpRuntime: await borrowedXcodeMCPRuntime()
+        )
+
+        _ = try await client.streamChatCompletions(
+            messages: [["role": "user", "content": "hi"]],
+            sessionID: "session-chat-template",
+            allowedToolNames: [],
+            thinkingSelection: .high,
+            onEvent: { _ in }
+        )
+        let request = try #require(RemoteRequestCapturingURLProtocol.capturedRequests().first)
+        let body = try request.jsonObject()
+        let chatTemplateKwargs = try #require(body["chat_template_kwargs"] as? [String: Any])
+
+        #expect(chatTemplateKwargs["thinking"] as? Bool == true)
+        #expect(chatTemplateKwargs["enable_thinking"] as? Bool == true)
+        #expect(chatTemplateKwargs["reasoning_effort"] as? String == "high")
+    }
+
 #if os(macOS)
     @Test
     func chatGPTSubscriptionContinuationKeepsFullInputForBaseRequest() throws {

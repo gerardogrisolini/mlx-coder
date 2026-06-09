@@ -1,3 +1,4 @@
+import Foundation
 import MLXCoderCore
 @testable import MLXCoderSetup
 import Testing
@@ -46,6 +47,87 @@ struct MLXCoderAgentProfileSetupRunnerTests {
         #expect(
             MLXCoderAgentProfileSetupRunner.recommendedAgentCount
                 == AgentProfileStore.defaultProfiles().count
+        )
+    }
+
+    @Test
+    func setupDefaultThinkingSelectionKeepsCompatibleExistingValue() {
+        let model = setupThinkingModel()
+
+        let selection = MLXCoderSetupRunner.setupDefaultThinkingSelection(
+            for: model,
+            existingSelection: .high
+        )
+
+        #expect(selection == .high)
+    }
+
+    @Test
+    func setupDefaultThinkingSelectionFallsBackToModelDefault() {
+        let model = setupThinkingModel()
+
+        let selection = MLXCoderSetupRunner.setupDefaultThinkingSelection(
+            for: model,
+            existingSelection: .xhigh
+        )
+
+        #expect(selection == .medium)
+    }
+
+    @Test
+    func setupDefaultThinkingSelectionSkipsModelsWithoutThinking() {
+        let model = AgentSettingsModelManifest(
+            id: "plain",
+            kind: .remoteAPI,
+            modelID: "plain-model",
+            providerID: UUID(),
+            provider: AgentRemoteProvider(modelID: "plain-model")
+        )
+
+        let selection = MLXCoderSetupRunner.setupDefaultThinkingSelection(
+            for: model,
+            existingSelection: .high
+        )
+
+        #expect(selection == nil)
+    }
+
+    @Test
+    func skillCheckboxItemsPreserveMissingSelectedSkills() {
+        let skill = MLXPromptSkill(
+            canonicalName: "swift-review",
+            title: "Swift Review",
+            summary: "Review Swift code.",
+            promptBody: "Review the code.",
+            sourceHash: "skill-a"
+        )
+
+        let items = MLXCoderAgentProfileSetupRunner.skillCheckboxItems(
+            availableSkills: [skill],
+            selectedSkillIDs: ["skill-a", "missing-skill"]
+        )
+
+        #expect(items.map(\.value) == ["skill-a", "missing-skill"])
+        #expect(items.last?.detail == "saved skill not currently installed")
+    }
+
+    @Test
+    func thinkingSelectionItemsUseMenuTitles() {
+        let items = MLXCoderAgentProfileSetupRunner.thinkingSelectionItems([.off, .high])
+
+        #expect(items.map(\.value) == [.off, .high])
+        #expect(items.map(\.title) == ["Thinking off", "High thinking"])
+    }
+
+    private func setupThinkingModel() -> AgentSettingsModelManifest {
+        AgentSettingsModelManifest(
+            id: "thinking",
+            kind: .remoteAPI,
+            modelID: "thinking-model",
+            providerID: UUID(),
+            provider: AgentRemoteProvider(modelID: "thinking-model"),
+            thinkingOptions: [.off, .low, .medium, .high],
+            defaultThinkingSelection: .medium
         )
     }
 }

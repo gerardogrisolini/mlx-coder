@@ -33,15 +33,23 @@ public actor AgentCoreSessionRunner {
     }
 
     public func mcpToolDescriptors(
-        allowedToolNames: Set<String>? = nil
+        allowedToolNames: Set<String>? = nil,
+        preferredWorkspaceRootURL: URL? = nil
     ) async -> [DirectToolDescriptor] {
-        await mcpRuntime.discoverDescriptors(allowedToolNames: allowedToolNames)
+        await mcpRuntime.discoverDescriptors(
+            allowedToolNames: allowedToolNames,
+            preferredWorkspaceRootURL: preferredWorkspaceRootURL
+        )
     }
 
     public func knownMCPToolDescriptors(
-        allowedToolNames: Set<String>? = nil
+        allowedToolNames: Set<String>? = nil,
+        preferredWorkspaceRootURL: URL? = nil
     ) async -> [DirectToolDescriptor] {
-        await mcpRuntime.knownDescriptors(allowedToolNames: allowedToolNames)
+        await mcpRuntime.knownDescriptors(
+            allowedToolNames: allowedToolNames,
+            preferredWorkspaceRootURL: preferredWorkspaceRootURL
+        )
     }
 
     public func installBorrowedXcodeExecutor(

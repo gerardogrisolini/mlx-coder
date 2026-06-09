@@ -52,6 +52,7 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
             outputLimit: 24_000,
             authorizationHandler: configuration.toolAuthorizationHandler,
             mcpRuntime: mcpRuntime,
+            preferredWorkspaceRootURL: configuration.workingDirectory,
             subAgentBackendFactory: {
                 RemoteGenerationClient(
                     configuration: configuration,
@@ -171,7 +172,13 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
     }
 
     public func activeToolDescriptors() async -> [DirectToolDescriptor] {
-        await toolExecutor.descriptors()
+        guard let session = sessions.values.first else {
+            return await toolExecutor.descriptors(allowedToolNames: [])
+        }
+        return await toolExecutor.descriptors(
+            allowedToolNames: session.allowedToolNames,
+            preferredWorkspaceRootURL: session.cwd
+        )
     }
 
     public func subAgentSnapshots() async -> [DirectSubAgentRuntime.AgentSnapshot] {
@@ -231,6 +238,7 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
                     messages: session.messages,
                     sessionID: session.id,
                     allowedToolNames: session.allowedToolNames,
+                    preferredWorkspaceRootURL: session.cwd,
                     thinkingSelection: session.thinkingSelection,
                     onEvent: onEvent
                 )
@@ -239,6 +247,7 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
                     messages: session.messages,
                     sessionID: session.id,
                     allowedToolNames: session.allowedToolNames,
+                    preferredWorkspaceRootURL: session.cwd,
                     thinkingSelection: session.thinkingSelection,
                     onEvent: onEvent
                 )

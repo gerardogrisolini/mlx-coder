@@ -122,9 +122,10 @@ public enum MLXCoderSetupRunner {
             )
         }
 
-        let selectedThinkingSelection = models
-            .first { $0.matches(selectedModelID) }?
-            .resolvedDefaultThinkingSelection
+        let selectedThinkingSelection = try selectDefaultThinkingSelection(
+            for: models.first { $0.matches(selectedModelID) },
+            existingSelection: existingManifest?.selectedThinkingSelection
+        )
         let telegram = try await promptTelegramSettings(existingSettings: existingManifest?.telegram)
         let voice = try promptVoiceSettings(existingSettings: existingManifest?.voice)
         let apiKeysByProviderID: [String: String] = Dictionary(
@@ -1386,6 +1387,57 @@ public enum MLXCoderSetupRunner {
         }
         if let model = models.first(where: { $0.matches(value) }) {
             return model.id
+        }
+        throw MLXCoderSetupError.invalidChoice(value)
+    }
+
+    static func setupDefaultThinkingSelection(
+        for model: AgentSettingsModelManifest?,
+        existingSelection: AgentThinkingSelection?
+    ) -> AgentThinkingSelection? {
+        model?.thinkingSelection(for: existingSelection)
+    }
+
+    private static func selectDefaultThinkingSelection(
+        for model: AgentSettingsModelManifest?,
+        existingSelection: AgentThinkingSelection?
+    ) throws -> AgentThinkingSelection? {
+        guard let model,
+              !model.availableThinkingSelections.isEmpty else {
+            return nil
+        }
+
+        let options = model.availableThinkingSelections
+        let defaultSelection = setupDefaultThinkingSelection(
+            for: model,
+            existingSelection: existingSelection
+        )
+        let defaultIndex = defaultSelection.flatMap { options.firstIndex(of: $0) } ?? 0
+
+        AgentOutput.standardError.writeString("\nDefault thinking for \(model.displayTitle):\n")
+        for (index, option) in options.enumerated() {
+            let marker = index == defaultIndex ? " *" : ""
+            AgentOutput.standardError.writeString(
+                "  \(index + 1). \(option.menuTitle) [\(option.rawValue)]\(marker)\n"
+            )
+        }
+
+        let value = try promptString(
+            "Choice",
+            defaultValue: String(defaultIndex + 1),
+            allowEmpty: false
+        )
+        if let index = Int(value),
+           options.indices.contains(index - 1) {
+            return options[index - 1]
+        }
+        let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let option = options.first(where: { option in
+            option.rawValue.lowercased() == normalizedValue
+                || option.displayTitle.lowercased() == normalizedValue
+                || option.menuTitle.lowercased() == normalizedValue
+        }) {
+            return option
         }
         throw MLXCoderSetupError.invalidChoice(value)
     }

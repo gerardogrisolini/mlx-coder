@@ -45,7 +45,9 @@ struct ACPCompatibilityTests {
                     modelID: "local/test-model"
                 )
             ],
-            backendFactory: { _, _ in backend }
+            backendFactory: { _, _ in backend },
+            mcpRuntime: Self.xcodeRuntime(workspacePath: "/tmp/acp-tools-workspace/App.xcodeproj"),
+            xcodeIsRunning: { true }
         )
 
         try await bridge.newSession(id: nil, params: [
@@ -63,6 +65,113 @@ struct ACPCompatibilityTests {
             "prompt": "verify tools"
         ])
         #expect(await backend.createdAllowedToolNames() == allowedToolNames)
+    }
+
+    @Test
+    func newSessionUsesHostedDefaultThinkingWhenThinkingIsNotProvided() async throws {
+        let bridge = try makeBridge(
+            models: [
+                Self.thinkingModel(defaultThinkingSelection: .high)
+            ]
+        )
+
+        try await bridge.newSession(id: nil, params: [
+            "cwd": "/tmp/acp-thinking-workspace"
+        ])
+
+        let configuration = try #require(await bridge.testOnlySessionConfigurations().first)
+
+        #expect(configuration.thinkingSelection == .high)
+    }
+
+    @Test
+    func newSessionUsesAgentThinkingOverHostedDefault() async throws {
+        let model = Self.thinkingModel(defaultThinkingSelection: .medium)
+        let agent = AgentProfile(
+            id: "thinking-agent",
+            name: "Thinking Agent",
+            tools: [],
+            modelID: model.id,
+            thinkingSelection: .high
+        )
+        let bridge = try makeBridge(
+            models: [model],
+            availableAgents: [agent],
+            agentName: agent.name
+        )
+
+        try await bridge.newSession(id: nil, params: [
+            "cwd": "/tmp/acp-thinking-workspace"
+        ])
+
+        let configuration = try #require(await bridge.testOnlySessionConfigurations().first)
+
+        #expect(configuration.modelID == model.id)
+        #expect(configuration.thinkingSelection == .high)
+    }
+
+    @Test
+    func newSessionKeepsXcodeSelectionWhenXcodeIsClosed() async throws {
+        let mcpRuntime = DirectMCPToolRuntime()
+        let bridge = try makeBridge(
+            models: [
+                AgentSettingsModelManifest(
+                    id: "test-model",
+                    kind: .remoteAPI,
+                    modelID: "local/test-model"
+                )
+            ],
+            mcpRuntime: mcpRuntime,
+            xcodeIsRunning: { false }
+        )
+
+        try await bridge.newSession(id: nil, params: [
+            "cwd": "/tmp/acp-tools-workspace",
+            "allowed_tools": ["xcode", "shell"] as [String]
+        ])
+
+        let configuration = try #require(await bridge.testOnlySessionConfigurations().first)
+        let allowedToolNames = try #require(configuration.allowedToolNames)
+
+        #expect(allowedToolNames.contains("local.exec"))
+        #expect(allowedToolNames.contains("xcode."))
+        let descriptors = await mcpRuntime.knownDescriptors(
+            allowedToolNames: ["xcode."],
+            preferredWorkspaceRootURL: URL(fileURLWithPath: "/tmp/acp-tools-workspace")
+        )
+        #expect(descriptors.isEmpty)
+    }
+
+    @Test
+    func newSessionKeepsXcodeSelectionWhenXcodeWorkspaceDiffers() async throws {
+        let mcpRuntime = Self.xcodeRuntime(workspacePath: "/tmp/other-workspace/App.xcodeproj")
+        let bridge = try makeBridge(
+            models: [
+                AgentSettingsModelManifest(
+                    id: "test-model",
+                    kind: .remoteAPI,
+                    modelID: "local/test-model"
+                )
+            ],
+            mcpRuntime: mcpRuntime,
+            xcodeIsRunning: { true }
+        )
+
+        try await bridge.newSession(id: nil, params: [
+            "cwd": "/tmp/acp-tools-workspace",
+            "allowed_tools": ["xcode", "shell"] as [String]
+        ])
+
+        let configuration = try #require(await bridge.testOnlySessionConfigurations().first)
+        let allowedToolNames = try #require(configuration.allowedToolNames)
+
+        #expect(allowedToolNames.contains("local.exec"))
+        #expect(allowedToolNames.contains("xcode."))
+        let descriptors = await mcpRuntime.knownDescriptors(
+            allowedToolNames: ["xcode."],
+            preferredWorkspaceRootURL: URL(fileURLWithPath: "/tmp/acp-tools-workspace")
+        )
+        #expect(descriptors.isEmpty)
     }
 
     @Test
@@ -411,10 +520,16 @@ private extension ACPCompatibilityTests {
 
     func makeBridge(
         models: [AgentSettingsModelManifest],
-        backendFactory: AgentRuntimeBackendFactory? = nil
+        availableAgents: [AgentProfile] = AgentProfileStore.defaultProfiles(),
+        agentName: String? = nil,
+        backendFactory: AgentRuntimeBackendFactory? = nil,
+        mcpRuntime: DirectMCPToolRuntime = DirectMCPToolRuntime(),
+        xcodeIsRunning: @escaping @Sendable () -> Bool = { false }
     ) throws -> MLXCoderACPBridge {
         let configuration = try AgentConfiguration(
             hostedModelID: models.first?.id ?? "model",
+            agentName: agentName,
+            availableAgents: availableAgents,
             availableModels: models,
             runMode: .acp,
             workingDirectory: FileManager.default.temporaryDirectory
@@ -422,7 +537,57 @@ private extension ACPCompatibilityTests {
         return MLXCoderACPBridge(
             configuration: configuration,
             writer: ACPWriter(),
-            backendFactory: backendFactory
+            backendFactory: backendFactory,
+            mcpRuntime: mcpRuntime,
+            xcodeIsRunning: xcodeIsRunning
+        )
+    }
+
+    static func xcodeRuntime(workspacePath: String) -> DirectMCPToolRuntime {
+        DirectMCPToolRuntime(
+            xcodeDiscoveryProvider: {
+                DirectMCPToolRuntime.XcodeDiscovery(
+                    executor: XcodeToolExecutor(
+                        configuration: MCPServerConfiguration(
+                            executablePath: "/usr/bin/false",
+                            arguments: [],
+                            environment: [:]
+                        )
+                    ),
+                    tools: [
+                        ToolDescriptor(
+                            name: "BuildProject",
+                            description: "Builds an Xcode project",
+                            inputSchema: "{}"
+                        )
+                    ],
+                    workspaceContexts: [
+                        XcodeWorkspaceContext(
+                            workspacePath: workspacePath,
+                            defaultTabIdentifier: nil
+                        )
+                    ],
+                    ownsExecutor: false
+                )
+            }
+        )
+    }
+
+    static func thinkingModel(
+        defaultThinkingSelection: AgentThinkingSelection
+    ) -> AgentSettingsModelManifest {
+        let provider = AgentRemoteProvider(
+            name: "mlx-server",
+            baseURL: "http://127.0.0.1",
+            modelID: "local/thinking-model"
+        )
+        return AgentSettingsModelManifest(
+            id: "thinking-model",
+            kind: .remoteAPI,
+            modelID: "local/thinking-model",
+            provider: provider,
+            thinkingOptions: [.off, .medium, .high],
+            defaultThinkingSelection: defaultThinkingSelection
         )
     }
 }

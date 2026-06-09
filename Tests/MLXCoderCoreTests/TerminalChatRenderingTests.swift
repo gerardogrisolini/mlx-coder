@@ -70,6 +70,22 @@ struct TerminalChatRenderingTests {
     }
 
     @Test
+    func statusBarModelFragmentIncludesThinkingSelection() {
+        #expect(
+            TerminalStatusBar.modelStatusFragment(
+                modelID: "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
+                thinkingSelection: .high
+            ) == "Qwen3-Coder-30B-A3B-Instruct-4bit · High"
+        )
+        #expect(
+            TerminalStatusBar.modelStatusFragment(
+                modelID: "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
+                thinkingSelection: nil
+            ) == "Qwen3-Coder-30B-A3B-Instruct-4bit"
+        )
+    }
+
+    @Test
     func markdownFormatterStylesHeadingsAndInlineCode() {
         var formatter = TerminalMarkdownStreamFormatter(isEnabled: true)
 

@@ -31,6 +31,7 @@ public struct AgentProfile: Codable, Hashable, Sendable {
     public let skills: [AgentProfileSkill]
     public let modelID: String?
     public let modelProvider: String?
+    public let thinkingSelection: AgentThinkingSelection?
 
     public init(
         id: String,
@@ -40,7 +41,8 @@ public struct AgentProfile: Codable, Hashable, Sendable {
         tools: [String] = [],
         skills: [AgentProfileSkill] = [],
         modelID: String? = nil,
-        modelProvider: String? = nil
+        modelProvider: String? = nil,
+        thinkingSelection: AgentThinkingSelection? = nil
     ) {
         self.id = id.nilIfBlank ?? UUID().uuidString
         self.name = name.nilIfBlank ?? AgentProfileStore.defaultAgentName
@@ -50,6 +52,7 @@ public struct AgentProfile: Codable, Hashable, Sendable {
         self.skills = skills
         self.modelID = modelID?.nilIfBlank
         self.modelProvider = modelProvider?.nilIfBlank
+        self.thinkingSelection = thinkingSelection
     }
 
     public init(from decoder: Decoder) throws {
@@ -62,6 +65,10 @@ public struct AgentProfile: Codable, Hashable, Sendable {
         self.skills = try container.decodeIfPresent([AgentProfileSkill].self, forKey: .skills) ?? []
         self.modelID = try container.decodeIfPresent(String.self, forKey: .modelID)?.nilIfBlank
         self.modelProvider = try container.decodeIfPresent(String.self, forKey: .modelProvider)?.nilIfBlank
+        self.thinkingSelection = try container.decodeIfPresent(
+            AgentThinkingSelection.self,
+            forKey: .thinkingSelection
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -73,6 +80,7 @@ public struct AgentProfile: Codable, Hashable, Sendable {
         case skills
         case modelID
         case modelProvider
+        case thinkingSelection
     }
 
     public var displayName: String {
@@ -118,6 +126,10 @@ public struct AgentProfile: Codable, Hashable, Sendable {
             if matchingKeys.isEmpty {
                 if let normalizedName = tool.nilIfBlank {
                     guard !AgentProfileStore.isFeatureManagementToolReference(normalizedName) else {
+                        continue
+                    }
+                    if let externalToolName = AgentProfileStore.normalizedExternalToolReference(normalizedName) {
+                        allowedToolNames.insert(externalToolName)
                         continue
                     }
                     allowedToolNames.insert(normalizedName)
@@ -404,7 +416,8 @@ public enum AgentProfileStore {
             tools: tools,
             skills: agent.skills,
             modelID: agent.modelID,
-            modelProvider: agent.modelProvider
+            modelProvider: agent.modelProvider,
+            thinkingSelection: agent.thinkingSelection
         )
     }
 
@@ -451,6 +464,27 @@ public enum AgentProfileStore {
             || normalizedValue == "feature"
             || normalizedValue == "features"
             || normalizedValue == "kernel"
+    }
+
+    fileprivate static func normalizedExternalToolReference(_ value: String) -> String? {
+        let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedValue = toolReferenceKey(trimmedValue)
+        if normalizedValue == "xcode" {
+            return "xcode."
+        }
+        if trimmedValue == "xcode." {
+            return "xcode."
+        }
+        if DirectMCPToolRuntime.isXcodeToolName(trimmedValue) {
+            return DirectMCPToolRuntime.canonicalXcodeToolName(for: trimmedValue) ?? trimmedValue
+        }
+        if normalizedValue == "figma" {
+            return "figma."
+        }
+        if trimmedValue.hasPrefix("figma.") {
+            return trimmedValue
+        }
+        return nil
     }
 
     private static func toolReferenceKey(_ value: String) -> String {
