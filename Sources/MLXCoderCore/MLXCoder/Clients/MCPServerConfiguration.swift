@@ -11,6 +11,7 @@ import CryptoKit
 import Crypto
 #endif
 import Foundation
+import os
 #if canImport(Network)
 import Network
 #endif
@@ -93,11 +94,12 @@ public nonisolated struct MCPServerConfiguration: Hashable, Sendable {
             return false
         }
 
-        if executablePath == "/usr/bin/xcrun" {
-            return arguments.first == "mcpbridge"
+        let executableName = URL(fileURLWithPath: executablePath).lastPathComponent.lowercased()
+        if executableName == "xcrun" {
+            return arguments.first?.lowercased() == "mcpbridge"
         }
 
-        return URL(fileURLWithPath: executablePath).lastPathComponent == "mcpbridge"
+        return executableName == "mcpbridge"
     }
 
     public static func xcodeFromEnvironment(
@@ -303,7 +305,7 @@ public nonisolated struct MCPServerConfiguration: Hashable, Sendable {
     ) async -> Bool {
         await withCheckedContinuation { continuation in
             final class ReachabilityContinuationState: @unchecked Sendable {
-                private let lock = NSLock()
+                private let lock = OSAllocatedUnfairLock()
                 private var didResume = false
 
                 func beginFinishing() -> Bool {

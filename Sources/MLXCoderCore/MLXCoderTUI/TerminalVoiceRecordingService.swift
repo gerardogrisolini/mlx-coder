@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import os
 #if canImport(AVFoundation)
 import AVFoundation
 #endif
@@ -14,7 +15,7 @@ public struct TerminalVoiceRecordingSession: Equatable, Sendable {
 }
 
 public final class TerminalVoiceRecordingService: @unchecked Sendable {
-    private let lock = NSLock()
+    private let lock = OSAllocatedUnfairLock()
     #if canImport(AVFoundation)
     private var recorder: AVAudioRecorder?
     #endif

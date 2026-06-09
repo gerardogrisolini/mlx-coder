@@ -7,6 +7,7 @@
 
 #if os(macOS)
 import Foundation
+import os
 
 private struct ChatGPTSubscriptionToolCallUpdate: Sendable {
     let id: String
@@ -237,7 +238,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
     }
 
     private final class StreamAccumulator: @unchecked Sendable {
-        private let lock = NSLock()
+        private let lock = OSAllocatedUnfairLock()
         private var responseText = ""
         private var responseReasoningText = ""
         private var stopReason = "end_turn"
@@ -539,7 +540,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         return modelLLMID
     }
 
-        public func activeToolDescriptors() async -> [DirectToolDescriptor] {
+    public func activeToolDescriptors() async -> [DirectToolDescriptor] {
         guard let session = sessions.values.first else {
             return await toolExecutor.descriptors(allowedToolNames: [])
         }
@@ -646,6 +647,15 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                     preferredWorkspaceRootURL: URL(fileURLWithPath: session.cwd)
                 )
             )
+            if configuration.verboseLogging {
+                await onEvent(
+                    .diagnostic(
+                        RemoteGenerationClient.toolExposureDiagnostic(
+                            from: toolCatalog.bindings.map(\.descriptor)
+                        )
+                    )
+                )
+            }
             let requestPayload = ChatGPTSubscriptionRequestBuilder.requestInputPayload(
                 from: toolCatalog.wireMessages(from: session.messages),
                 continuation: session.continuation
@@ -2258,7 +2268,7 @@ public final class ChatGPTSubscriptionWebSocketPool: @unchecked Sendable {
     }
 
     private let idleTTL: TimeInterval = 5 * 60
-    private let lock = NSLock()
+    private let lock = OSAllocatedUnfairLock()
     private var entries: [String: Entry] = [:]
     private var sseFallbackSessionIDs: Set<String> = []
 

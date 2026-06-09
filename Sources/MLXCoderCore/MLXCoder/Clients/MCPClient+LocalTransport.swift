@@ -27,21 +27,22 @@ extension MCPClient {
             return
         }
 
-        log(buildMarker)
-        log("Launching MCP bridge: \(configuration.executablePath) \(configuration.arguments.joined(separator: " "))")
-        if !configuration.environment.isEmpty {
-            log("Bridge environment: \(configuration.environment)")
-        }
-
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: configuration.executablePath)
+        let executableURL = Self.resolvedExecutableURL(for: configuration)
+        process.executableURL = executableURL
         process.arguments = configuration.arguments
 
-        let environment = configuration.environment
+        let environment = Self.resolvedEnvironment(for: configuration)
         let mcpEnvironment = environment.filter { key, _ in
             key.hasPrefix("MCP_XCODE")
         }
         process.environment = environment
+
+        log(buildMarker)
+        log("Launching MCP bridge: \(executableURL.path) \(configuration.arguments.joined(separator: " "))")
+        if !configuration.environment.isEmpty {
+            log("Bridge environment overrides: \(configuration.environment)")
+        }
         log("Resolved bridge environment: \(mcpEnvironment)")
 
         let standardInput = Pipe()
@@ -166,6 +167,28 @@ extension MCPClient {
         stdoutChunkTraceURLs.removeAll(keepingCapacity: false)
         stdoutReassembledBufferURLs.removeAll(keepingCapacity: false)
         lastReassembledBufferSize = -1
+    }
+
+    nonisolated static func resolvedExecutableURL(for configuration: MCPServerConfiguration) -> URL {
+        let executablePath = configuration.executablePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !executablePath.isEmpty else {
+            return URL(fileURLWithPath: configuration.executablePath)
+        }
+
+        if executablePath.contains("/") {
+            return URL(fileURLWithPath: executablePath)
+        }
+
+        return DeveloperToolEnvironment.executableURL(named: executablePath)
+            ?? URL(fileURLWithPath: executablePath)
+    }
+
+    nonisolated static func resolvedEnvironment(for configuration: MCPServerConfiguration) -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        for (key, value) in configuration.environment {
+            environment[key] = value
+        }
+        return DeveloperToolEnvironment.processEnvironment(base: environment)
     }
 
     public func listTools() async throws -> MCPListToolsResult {

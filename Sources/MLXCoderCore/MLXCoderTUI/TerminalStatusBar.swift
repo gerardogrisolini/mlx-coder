@@ -10,6 +10,7 @@ import Glibc
 #endif
 import Dispatch
 import Foundation
+import os
 
 public final class TerminalStatusBar: @unchecked Sendable {
     private struct InputPanelState {
@@ -22,7 +23,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
 
     private let isEnabled: Bool
     private let output: FileHandle?
-    private let lock = NSLock()
+    private let lock = OSAllocatedUnfairLock()
     private var isStarted = false
     private var row = 0
     private var columns = 0

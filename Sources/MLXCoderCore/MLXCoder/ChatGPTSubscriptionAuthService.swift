@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import os
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -283,7 +284,7 @@ private struct TokenResponse: Decodable {
 private final class ChatGPTSubscriptionCallbackServer: @unchecked Sendable {
     private let state: String
     private let queue = DispatchQueue(label: "MLXCoder.ChatGPTSubscriptionCallback")
-    private let lock = NSLock()
+    private let lock = OSAllocatedUnfairLock()
     private var listener: NWListener?
     private var waitContinuation: CheckedContinuation<String, Error>?
     private var pendingResult: Result<String, Error>?
@@ -585,7 +586,7 @@ private final class ChatGPTSubscriptionCallbackServer: @unchecked Sendable {
 }
 
 private final class CallbackStartState: @unchecked Sendable {
-    private let lock = NSLock()
+    private let lock = OSAllocatedUnfairLock()
     private var continuation: CheckedContinuation<Void, Error>?
 
     init(continuation: CheckedContinuation<Void, Error>) {

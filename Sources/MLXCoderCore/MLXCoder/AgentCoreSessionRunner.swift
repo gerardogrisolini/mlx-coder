@@ -67,6 +67,16 @@ public actor AgentCoreSessionRunner {
         )
     }
 
+    public func installACPProvidedMCPServer(
+        name: String,
+        configuration: MCPServerConfiguration
+    ) async throws -> [DirectToolDescriptor] {
+        try await mcpRuntime.installExternalMCPServer(
+            name: name,
+            configuration: configuration
+        )
+    }
+
     public func createSession(
         configuration: AgentCoreSessionConfiguration
     ) async throws {

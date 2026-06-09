@@ -417,6 +417,23 @@ struct RemoteSessionSnapshotTests {
     }
 
     @Test
+    func chatGPTSubscriptionClientUsesInjectedMCPRuntimeForActiveTools() async throws {
+        let client = ChatGPTSubscriptionGenerationClient(
+            configuration: remoteStreamingConfiguration(),
+            mcpRuntime: await borrowedXcodeMCPRuntime()
+        )
+
+        await client.createSession(
+            id: "session-chatgpt-xcode-tools",
+            cwd: "/tmp/project",
+            allowedToolNames: ["xcode."]
+        )
+        let descriptors = await client.activeToolDescriptors()
+
+        #expect(descriptors.map(\.name) == ["xcode.BuildProject"])
+    }
+
+    @Test
     func chatGPTSubscriptionWebSocketPayloadKeepsCachedContinuationWireSafe() throws {
         let catalog = remoteXcodeToolCatalog()
         let messages = catalog.wireMessages(from: remoteXcodeHistoryMessages())

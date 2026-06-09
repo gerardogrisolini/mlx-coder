@@ -261,7 +261,8 @@ public actor AgentCoreBackend {
             if provider.isChatGPTSubscriptionProvider {
 #if os(macOS)
                 remoteBackend = ChatGPTSubscriptionGenerationClient(
-                    configuration: resolvedConfiguration
+                    configuration: resolvedConfiguration,
+                    mcpRuntime: mcpRuntime
                 )
 #else
                 throw AgentCoreBackendError.missingRemoteProvider

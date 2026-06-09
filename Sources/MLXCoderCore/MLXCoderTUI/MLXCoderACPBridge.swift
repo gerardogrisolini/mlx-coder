@@ -30,6 +30,7 @@ public actor MLXCoderACPBridge {
     public let permissionBroker: ACPPermissionBroker
     public let sessionRunner: AgentCoreSessionRunner
     public let xcodeIsRunning: @Sendable () -> Bool
+    public let verboseLogFile: ACPVerboseLogFile?
     public var sessions: [String: SessionState] = [:]
 
     public init(
@@ -44,6 +45,8 @@ public actor MLXCoderACPBridge {
         self.configuration = configuration
         self.writer = writer
         self.xcodeIsRunning = xcodeIsRunning
+        let verboseLogFile = configuration.verboseLogging ? ACPVerboseLogFile.open() : nil
+        self.verboseLogFile = verboseLogFile
         let permissionBroker = ACPPermissionBroker(writer: writer)
         self.permissionBroker = permissionBroker
         self.sessionRunner = AgentCoreSessionRunner(
@@ -61,6 +64,14 @@ public actor MLXCoderACPBridge {
         }
         sessions.removeAll()
         await sessionRunner.shutdown()
+    }
+
+    public func verboseACPLog(_ message: @autoclosure () -> String) async {
+        guard configuration.verboseLogging else {
+            return
+        }
+        let message = message()
+        await verboseLogFile?.write("[mlx-coder][ACP] \(message)")
     }
 
     public func handleLine(_ line: String) async {

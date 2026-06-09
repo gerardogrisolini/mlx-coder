@@ -10,6 +10,7 @@ import Glibc
 #endif
 import Dispatch
 import Foundation
+import os
 
 public struct ACPError: LocalizedError {
     public let code: Int
@@ -52,7 +53,7 @@ extension FileHandle {
 }
 
 private enum TerminalOutputSynchronization {
-    private static let outputLock = NSLock()
+    private static let outputLock = OSAllocatedUnfairLock()
 
     static func lock() {
         outputLock.lock()

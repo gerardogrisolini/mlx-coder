@@ -12,6 +12,25 @@ import Dispatch
 import Foundation
 
 extension MLXCoderACPBridge {
+    public struct ACPMCPServerDefinition: Sendable {
+        public let name: String
+        public let type: String
+        public let configuration: MCPServerConfiguration
+        public let isXcodeCandidate: Bool
+
+        public init(
+            name: String,
+            type: String,
+            configuration: MCPServerConfiguration,
+            isXcodeCandidate: Bool
+        ) {
+            self.name = name
+            self.type = type
+            self.configuration = configuration
+            self.isXcodeCandidate = isXcodeCandidate
+        }
+    }
+
     public func runtimeHistory(from value: Any?) -> [AgentRuntimeMessage] {
         guard let messages = value as? [[String: Any]] else {
             return []
@@ -40,6 +59,49 @@ extension MLXCoderACPBridge {
             "workspacePath",
             "workspace_path"
         ])
+    }
+
+    public static func mcpServerDefinitions(from params: [String: Any]) -> [ACPMCPServerDefinition] {
+        mcpServerEntries(from: params).compactMap { fallbackName, value in
+            guard let object = value as? [String: Any] else {
+                return nil
+            }
+            return mcpServerDefinition(from: object, fallbackName: fallbackName)
+        }
+    }
+
+    public static func mcpServerInputSummary(from params: [String: Any]) -> String {
+        guard let value = mcpServerValue(from: params) else {
+            return "absent"
+        }
+        if let values = value as? [Any] {
+            return "array(\(values.count))"
+        }
+        if let object = value as? [String: Any] {
+            if mcpServerObjectLooksLikeDefinition(object) {
+                return "object(single)"
+            }
+            let keys = object.keys.sorted().prefix(6).joined(separator: ",")
+            let suffix = object.count > 6 ? ",..." : ""
+            return "object(\(object.count):\(keys)\(suffix))"
+        }
+        return "\(type(of: value))"
+    }
+
+    public static func mcpServerInputDetails(from params: [String: Any]) -> String {
+        guard let value = mcpServerValue(from: params) else {
+            return "absent"
+        }
+        let sanitizedValue = sanitizedMCPServerLogValue(value)
+        guard JSONSerialization.isValidJSONObject(sanitizedValue),
+              let data = try? JSONSerialization.data(
+                  withJSONObject: sanitizedValue,
+                  options: [.sortedKeys]
+              ),
+              let text = String(data: data, encoding: .utf8) else {
+            return String(describing: sanitizedValue)
+        }
+        return text
     }
 
     public static func allowedToolNames(from params: [String: Any]) -> Set<String>? {
@@ -110,6 +172,292 @@ extension MLXCoderACPBridge {
             }
         }
         return nil
+    }
+
+    private static func arrayValue(
+        from params: [String: Any],
+        keys: [String]
+    ) -> [Any]? {
+        for key in keys {
+            if let value = params[key] as? [Any] {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func mcpServerValue(from params: [String: Any]) -> Any? {
+        for key in ["mcpServers", "mcp_servers"] {
+            if let value = params[key] {
+                return value
+            }
+        }
+        if let config = params["config"] as? [String: Any] {
+            for key in ["mcpServers", "mcp_servers"] {
+                if let value = config[key] {
+                    return value
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func mcpServerEntries(from params: [String: Any]) -> [(String?, Any)] {
+        guard let value = mcpServerValue(from: params) else {
+            return []
+        }
+        if let values = value as? [Any] {
+            return values.map { (nil, $0) }
+        }
+        guard let object = value as? [String: Any] else {
+            return []
+        }
+        if mcpServerObjectLooksLikeDefinition(object) {
+            return [(nil, object)]
+        }
+        return object.keys.sorted().compactMap { key in
+            guard let value = object[key] else {
+                return nil
+            }
+            return (key, value)
+        }
+    }
+
+    private static func mcpServerObjectLooksLikeDefinition(_ object: [String: Any]) -> Bool {
+        stringValue(
+            from: object,
+            keys: [
+                "command",
+                "executable",
+                "executablePath",
+                "executable_path",
+                "url",
+                "endpoint",
+                "endpointURL",
+                "endpoint_url"
+            ]
+        ) != nil
+    }
+
+    private static func sanitizedMCPServerLogValue(_ value: Any, key: String? = nil) -> Any {
+        if let object = value as? [String: Any] {
+            let namedValueKey = stringValue(from: object, keys: ["name", "key"])
+            return object.keys.sorted().reduce(into: [String: Any]()) { result, childKey in
+                guard let childValue = object[childKey] else {
+                    return
+                }
+                let redactionKey = childKey == "value" ? (namedValueKey ?? childKey) : childKey
+                result[childKey] = sanitizedMCPServerLogValue(childValue, key: redactionKey)
+            }
+        }
+        if let values = value as? [Any] {
+            return values.map { sanitizedMCPServerLogValue($0) }
+        }
+        if let string = value as? String {
+            return shouldRedactMCPServerLogValue(for: key)
+                ? "<redacted:\(string.count)>"
+                : string
+        }
+        if value is NSNull || value is Bool || value is NSNumber {
+            return value
+        }
+        return String(describing: value)
+    }
+
+    private static func shouldRedactMCPServerLogValue(for key: String?) -> Bool {
+        guard let key = key?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !key.isEmpty else {
+            return false
+        }
+        let lowercasedKey = key.lowercased()
+        if lowercasedKey.hasPrefix("mcp_xcode") {
+            return false
+        }
+        return [
+            "authorization",
+            "bearer",
+            "cookie",
+            "credential",
+            "password",
+            "secret",
+            "token",
+            "api_key",
+            "apikey"
+        ].contains { lowercasedKey.contains($0) }
+    }
+
+    private static func stringArrayValue(
+        from params: [String: Any],
+        keys: [String]
+    ) -> [String] {
+        for key in keys {
+            if let strings = params[key] as? [String] {
+                return strings
+            }
+            if let values = params[key] as? [Any] {
+                return values.compactMap { value in
+                    (value as? String)?.nilIfBlank
+                }
+            }
+        }
+        return []
+    }
+
+    private static func mcpServerDefinition(
+        from object: [String: Any],
+        fallbackName: String? = nil
+    ) -> ACPMCPServerDefinition? {
+        let rawType = stringValue(from: object, keys: ["type", "transport"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let type = rawType
+            ?? (stringValue(from: object, keys: ["url", "endpoint", "endpointURL", "endpoint_url"]) == nil
+                ? "stdio"
+                : "http")
+        let name = stringValue(from: object, keys: ["name", "id", "title"])
+            ?? fallbackName?.nilIfBlank
+            ?? fallbackMCPServerName(from: object, type: type)
+        let protocolVersion = stringValue(
+            from: object,
+            keys: ["protocolVersion", "protocol_version", "preferredProtocolVersion", "preferred_protocol_version"]
+        )
+
+        switch type {
+        case "stdio":
+            guard let command = stringValue(
+                from: object,
+                keys: ["command", "executable", "executablePath", "executable_path"]
+            ) else {
+                return nil
+            }
+            let arguments = stringArrayValue(from: object, keys: ["args", "arguments"])
+            let environment = stringMap(from: object, keys: ["env", "environment"])
+            let configuration = MCPServerConfiguration(
+                executablePath: command,
+                arguments: arguments,
+                environment: environment,
+                preferredProtocolVersion: protocolVersion ?? "2024-11-05"
+            )
+            return ACPMCPServerDefinition(
+                name: name,
+                type: type,
+                configuration: configuration,
+                isXcodeCandidate: isXcodeMCPServerCandidate(
+                    name: name,
+                    command: command,
+                    arguments: arguments,
+                    environment: environment
+                )
+            )
+        case "http":
+            guard let rawURL = stringValue(
+                from: object,
+                keys: ["url", "endpoint", "endpointURL", "endpoint_url"]
+            ),
+                  let endpointURL = URL(string: rawURL) else {
+                return nil
+            }
+            let configuration = MCPServerConfiguration(
+                executablePath: "",
+                arguments: [],
+                environment: [:],
+                endpointURL: endpointURL,
+                httpHeaders: stringMap(from: object, keys: ["headers", "httpHeaders", "http_headers"]),
+                preferredProtocolVersion: protocolVersion ?? "2025-03-26"
+            )
+            return ACPMCPServerDefinition(
+                name: name,
+                type: type,
+                configuration: configuration,
+                isXcodeCandidate: name.localizedCaseInsensitiveContains("xcode")
+            )
+        default:
+            return nil
+        }
+    }
+
+    private static func fallbackMCPServerName(
+        from object: [String: Any],
+        type: String
+    ) -> String {
+        if let rawURL = stringValue(
+            from: object,
+            keys: ["url", "endpoint", "endpointURL", "endpoint_url"]
+        ),
+           let host = URL(string: rawURL)?.host?.nilIfBlank {
+            return host
+        }
+        if let command = stringValue(
+            from: object,
+            keys: ["command", "executable", "executablePath", "executable_path"]
+        ) {
+            return URL(fileURLWithPath: command).deletingPathExtension().lastPathComponent
+        }
+        return type == "http" ? "mcp-http" : "mcp-stdio"
+    }
+
+    private static func stringMap(
+        from object: [String: Any],
+        keys: [String]
+    ) -> [String: String] {
+        for key in keys {
+            if let map = object[key] as? [String: String] {
+                return map
+            }
+            if let map = object[key] as? [String: Any] {
+                return map.reduce(into: [String: String]()) { result, pair in
+                    if let value = pair.value as? String {
+                        result[pair.key] = value
+                    }
+                }
+            }
+            if let values = object[key] as? [[String: String]] {
+                return values.reduce(into: [String: String]()) { result, item in
+                    guard let name = item["name"]?.nilIfBlank ?? item["key"]?.nilIfBlank else {
+                        return
+                    }
+                    result[name] = item["value"] ?? ""
+                }
+            }
+            if let values = object[key] as? [[String: Any]] {
+                return values.reduce(into: [String: String]()) { result, item in
+                    guard let name = stringValue(from: item, keys: ["name", "key"]) else {
+                        return
+                    }
+                    result[name] = (item["value"] as? String) ?? ""
+                }
+            }
+            if let values = object[key] as? [Any] {
+                return values.reduce(into: [String: String]()) { result, value in
+                    guard let item = value as? [String: Any],
+                          let name = stringValue(from: item, keys: ["name", "key"]) else {
+                        return
+                    }
+                    result[name] = (item["value"] as? String) ?? ""
+                }
+            }
+        }
+        return [:]
+    }
+
+    private static func isXcodeMCPServerCandidate(
+        name: String,
+        command: String,
+        arguments: [String],
+        environment: [String: String]
+    ) -> Bool {
+        if name.localizedCaseInsensitiveContains("xcode") {
+            return true
+        }
+        let commandName = URL(fileURLWithPath: command).lastPathComponent.lowercased()
+        if commandName == "mcpbridge" {
+            return true
+        }
+        if commandName == "xcrun",
+           arguments.contains(where: { $0.lowercased() == "mcpbridge" }) {
+            return true
+        }
+        return environment.keys.contains { $0.hasPrefix("MCP_XCODE") }
     }
 
     private static let allowedToolParameterKeys = [
@@ -183,27 +531,11 @@ extension MLXCoderACPBridge {
         cwd: String,
         allowedToolNames: Set<String>?
     ) -> String {
-        let memoryToolEnabled = Self.memoryToolEnabled(allowedToolNames)
-        let selectedAgentSection = configuration.selectedAgent?.promptSection(memoryToolEnabled: memoryToolEnabled)
-        let selectedSkillSection = selectedAgentSkillSection()
-        let providedSystemPrompt = providedSystemPrompt?.nilIfBlank
-
-        if let providedSystemPrompt {
-            return [
-                MLXSystemPromptBuilder.responseLanguageSection,
-                selectedAgentSection,
-                selectedSkillSection,
-                providedSystemPrompt
-            ]
-                .compactMap { $0?.nilIfBlank }
-                .joined(separator: "\n\n")
-        }
-
-        return AgentStandaloneSystemPrompt.prompt(
+        AgentCoreAppSessionFactory.resolvedSystemPrompt(
+            providedSystemPrompt: providedSystemPrompt,
             cwd: cwd,
-            memoryToolEnabled: memoryToolEnabled,
-            selectedAgentSection: selectedAgentSection,
-            selectedSkillSection: selectedSkillSection
+            selectedAgent: configuration.selectedAgent,
+            allowedToolNames: allowedToolNames
         )
     }
 

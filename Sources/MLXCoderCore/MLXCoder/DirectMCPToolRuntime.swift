@@ -32,6 +32,7 @@ public actor DirectMCPToolRuntime {
     private enum ServerFamily: Hashable {
         case xcode
         case figma
+        case external(String)
     }
 
     private enum Backend {
@@ -110,6 +111,22 @@ public actor DirectMCPToolRuntime {
         _ executor: XcodeToolExecutor,
         tools: [ToolDescriptor]
     ) async {
+        _ = await installXcodeExecutor(
+            executor,
+            tools: tools,
+            workspaceContexts: [],
+            preferredWorkspaceRootURL: nil,
+            ownsExecutor: false
+        )
+    }
+
+    public func installXcodeExecutor(
+        _ executor: XcodeToolExecutor,
+        tools: [ToolDescriptor],
+        workspaceContexts: [XcodeWorkspaceContext],
+        preferredWorkspaceRootURL: URL?,
+        ownsExecutor: Bool
+    ) async -> [DirectToolDescriptor] {
         let descriptors = ToolDescriptor.canonicalized(tools)
             .map { tool in
                 let name = tool.name.hasPrefix("xcode.")
@@ -133,7 +150,17 @@ public actor DirectMCPToolRuntime {
         }
 
         guard !descriptors.isEmpty else {
-            return
+            return []
+        }
+
+        let matchedWorkspaceContext = workspaceContexts.isEmpty
+            ? nil
+            : matchedXcodeWorkspaceContext(
+                in: workspaceContexts,
+                preferredWorkspaceRootURL: preferredWorkspaceRootURL
+            )
+        guard workspaceContexts.isEmpty || matchedWorkspaceContext != nil else {
+            return []
         }
 
         servers.append(
@@ -142,10 +169,58 @@ public actor DirectMCPToolRuntime {
                 toolPrefix: "xcode.",
                 backend: .xcode(executor),
                 descriptors: descriptors,
-                workspaceRootPath: nil,
-                ownsBackend: false
+                workspaceRootPath: matchedWorkspaceContext?.normalizedWorkspaceRootPath,
+                ownsBackend: ownsExecutor
             )
         )
+        return descriptors
+    }
+
+    public func installExternalMCPServer(
+        name: String,
+        configuration: MCPServerConfiguration
+    ) async throws -> [DirectToolDescriptor] {
+        let family = ServerFamily.external(Self.externalServerID(for: name))
+        let previousServers = servers.filter { $0.family == family }
+        servers.removeAll { $0.family == family }
+        for server in previousServers {
+            await server.disconnectIfOwned()
+        }
+
+        let toolPrefix = Self.externalToolPrefix(for: name)
+        let executor = RemoteMCPToolExecutor(
+            configuration: configuration,
+            toolNamePrefix: toolPrefix
+        )
+        do {
+            let tools = ToolDescriptor.canonicalized(try await executor.loadTools())
+            guard !tools.isEmpty else {
+                await executor.disconnect()
+                return []
+            }
+
+            let descriptors = tools.map { tool in
+                DirectToolDescriptor(
+                    name: tool.name,
+                    description: "\(name): \(tool.description)",
+                    inputSchema: tool.inputSchema
+                )
+            }
+            servers.append(
+                Server(
+                    family: family,
+                    toolPrefix: toolPrefix,
+                    backend: .remote(executor),
+                    descriptors: descriptors,
+                    workspaceRootPath: nil,
+                    ownsBackend: true
+                )
+            )
+            return descriptors
+        } catch {
+            await executor.disconnect()
+            throw error
+        }
     }
 
     public func descriptors(
@@ -196,15 +271,13 @@ public actor DirectMCPToolRuntime {
             return []
         }
 
-        let requestedFamilies = Self.discoveryServerFamilies(
-            allowedToolNames: allowedToolNames
-        )
-        guard !requestedFamilies.isEmpty else {
-            return []
-        }
-
         return servers
-            .filter { requestedFamilies.contains($0.family) }
+            .filter { server in
+                serverIsRequested(
+                    server,
+                    allowedToolNames: allowedToolNames
+                )
+            }
             .filter {
                 serverMatchesPreferredWorkspace(
                     $0,
@@ -236,13 +309,7 @@ public actor DirectMCPToolRuntime {
             name: rawToolName,
             arguments: Self.jsonValueArguments(from: toolCall.argumentsObject)
         )
-        let normalizedRequest: ToolRequest
-        switch server.family {
-        case .xcode:
-            normalizedRequest = XcodeToolRequestCompatibility.normalize(request) ?? request
-        case .figma:
-            normalizedRequest = request
-        }
+        let normalizedRequest = normalizedToolRequest(request, for: server)
 
         let output = try await server.backend.execute(normalizedRequest)
         return output.text
@@ -272,6 +339,8 @@ public actor DirectMCPToolRuntime {
                 return "xcode"
             case .figma:
                 return "figma"
+            case let .external(name):
+                return name
             }
         })
     }
@@ -356,6 +425,8 @@ public actor DirectMCPToolRuntime {
             if let figmaServer = await discoverFigmaServer() {
                 servers.append(figmaServer)
             }
+        case .external:
+            return
         }
     }
 
@@ -459,6 +530,27 @@ public actor DirectMCPToolRuntime {
         }
     }
 
+    public static func externalToolPrefix(for serverName: String) -> String {
+        let base = externalServerID(for: serverName)
+        return "\(base)."
+    }
+
+    private static func externalServerID(for serverName: String) -> String {
+        let scalars = serverName
+            .lowercased()
+            .unicodeScalars
+            .map { scalar -> String in
+                CharacterSet.alphanumerics.contains(scalar)
+                    ? String(scalar)
+                    : "-"
+            }
+        let normalized = scalars.joined()
+            .split(separator: "-")
+            .joined(separator: "-")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return normalized.nilIfBlank ?? "mcp"
+    }
+
     private func matchedXcodeWorkspaceContext(
         in contexts: [XcodeWorkspaceContext],
         preferredWorkspaceRootURL: URL?
@@ -503,6 +595,39 @@ public actor DirectMCPToolRuntime {
         )
     }
 
+    private func serverIsRequested(
+        _ server: Server,
+        allowedToolNames: Set<String>?
+    ) -> Bool {
+        guard let allowedToolNames else {
+            return true
+        }
+        guard !allowedToolNames.isEmpty else {
+            return false
+        }
+        if Self.discoveryServerFamilies(allowedToolNames: allowedToolNames).contains(server.family) {
+            return true
+        }
+        return server.descriptors.contains { descriptor in
+            Self.toolName(
+                descriptor.name,
+                isAllowedBy: allowedToolNames
+            )
+        }
+    }
+
+    private static func toolName(
+        _ toolName: String,
+        isAllowedBy allowedToolNames: Set<String>
+    ) -> Bool {
+        if allowedToolNames.contains(toolName) {
+            return true
+        }
+        return allowedToolNames.contains { allowedToolName in
+            allowedToolName.hasSuffix(".") && toolName.hasPrefix(allowedToolName)
+        }
+    }
+
     private func serverAndToolName(for toolName: String) -> (Server, String)? {
         for server in servers {
             guard let rawToolName = rawToolName(toolName, for: server) else {
@@ -519,7 +644,7 @@ public actor DirectMCPToolRuntime {
             if server.descriptors.contains(where: { $0.name == toolName }) {
                 return rawToolName
             }
-            if server.family == .xcode,
+            if serverIsXcodeLike(server),
                let canonicalToolName = Self.canonicalXcodeToolName(for: toolName),
                server.descriptors.contains(where: { $0.name == "\(server.toolPrefix)\(canonicalToolName)" }) {
                 return canonicalToolName
@@ -527,12 +652,30 @@ public actor DirectMCPToolRuntime {
             return nil
         }
 
-        guard server.family == .xcode,
+        guard serverIsXcodeLike(server),
               let canonicalToolName = Self.canonicalXcodeToolName(for: toolName),
               server.descriptors.contains(where: { $0.name == "\(server.toolPrefix)\(canonicalToolName)" }) else {
             return nil
         }
         return canonicalToolName
+    }
+
+    private func normalizedToolRequest(_ request: ToolRequest, for server: Server) -> ToolRequest {
+        guard serverIsXcodeLike(server) else {
+            return request
+        }
+        return XcodeToolRequestCompatibility.normalize(request) ?? request
+    }
+
+    private func serverIsXcodeLike(_ server: Server) -> Bool {
+        switch server.family {
+        case .xcode:
+            return true
+        case let .external(id):
+            return id == "xcode"
+        case .figma:
+            return false
+        }
     }
 
     public static func canonicalXcodeToolName(for toolName: String) -> String? {

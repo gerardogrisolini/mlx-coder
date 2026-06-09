@@ -60,6 +60,9 @@ extension RemoteGenerationClient {
             allowedToolNames: allowedToolNames,
             preferredWorkspaceRootURL: preferredWorkspaceRootURL
         )
+        if configuration.verboseLogging {
+            await onEvent(.diagnostic(Self.toolExposureDiagnostic(from: toolDescriptors)))
+        }
         let toolCatalog = RemoteToolWireCatalog(descriptors: toolDescriptors)
         var body: [String: Any] = [
             "model": provider.modelID,
@@ -108,6 +111,9 @@ extension RemoteGenerationClient {
             allowedToolNames: allowedToolNames,
             preferredWorkspaceRootURL: preferredWorkspaceRootURL
         )
+        if configuration.verboseLogging {
+            await onEvent(.diagnostic(Self.toolExposureDiagnostic(from: toolDescriptors)))
+        }
         let toolCatalog = RemoteToolWireCatalog(descriptors: toolDescriptors)
         let normalizedInput = Self.responsesInputPayload(
             from: toolCatalog.wireMessages(from: messages)
@@ -264,6 +270,13 @@ extension RemoteGenerationClient {
                 generatedCharacterCount: accumulatedText.count
             )
         )
+    }
+
+    public static func toolExposureDiagnostic(from descriptors: [DirectToolDescriptor]) -> String {
+        let names = descriptors.map(\.name).filter { !$0.isEmpty }.sorted()
+        let sample = names.prefix(8).joined(separator: ",")
+        let suffix = names.count > 8 ? ",..." : ""
+        return "Remote tools exposed: \(names.count)[\(sample)\(suffix)]"
     }
 
     public func endpointURL(path: String) throws -> URL {

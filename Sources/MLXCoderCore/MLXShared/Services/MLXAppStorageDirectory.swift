@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import os
 
 public enum MLXAppStorageDirectory {
     public static let supportDirectoryEnvironmentKey = "MLX_CODER_SUPPORT_DIRECTORY"
@@ -51,7 +52,7 @@ public enum MLXAppStorageDirectory {
 }
 
 private final class SupportDirectoryOverride: @unchecked Sendable {
-    private let lock = NSLock()
+    private let lock = OSAllocatedUnfairLock()
     private var value: URL?
 
     func set(_ url: URL?) {

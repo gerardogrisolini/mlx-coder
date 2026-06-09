@@ -24,7 +24,7 @@ extension MLXCoderACPBridge {
                     "embeddedContext": true
                 ],
                 "mcpCapabilities": [
-                    "http": false,
+                    "http": true,
                     "sse": false
                 ],
                 "sessionCapabilities": [
@@ -60,6 +60,9 @@ extension MLXCoderACPBridge {
         let rawCwd = Self.workingDirectory(from: params)
             ?? configuration.workingDirectory.path
         let cwd = AgentConfiguration.resolvedWorkingDirectory(rawValue: rawCwd).path
+        await verboseACPLog(
+            "session/new cwd=\(cwd) mcpServers=\(Self.mcpServerInputSummary(from: params))"
+        )
         let requestedModelID = Self.modelID(from: params)
         let modelID = requestedModelID
             ?? configuration.effectiveModelID
@@ -67,14 +70,23 @@ extension MLXCoderACPBridge {
         let sessionID = "swiftmlx-\(UUID().uuidString.lowercased())"
         let cacheKey = (params["sessionKey"] as? String)
             ?? (params["cacheKey"] as? String)
+        let workingDirectoryURL = URL(fileURLWithPath: cwd)
+        let acpMCPDescriptors = await registerACPProvidedMCPServers(from: params)
         let requestedAllowedToolNames = Self.allowedToolNames(from: params)
             ?? configuration.selectedAgent?.allowedToolNames()
-        let allowedToolNames = await resolvedAllowedToolNames(
+        let resolvedRequestedAllowedToolNames = await resolvedAllowedToolNames(
             requestedAllowedToolNames,
-            workingDirectory: URL(fileURLWithPath: cwd)
+            workingDirectory: workingDirectoryURL
+        )
+        let allowedToolNames = Self.allowedToolNames(
+            resolvedRequestedAllowedToolNames,
+            adding: acpMCPDescriptors
+        )
+        await verboseACPLog(
+            "session/new allowedTools=\(Self.verboseToolNameSummary(allowedToolNames))"
         )
         let systemPrompt = resolvedSystemPrompt(
-            providedSystemPrompt: params["systemPrompt"] as? String,
+            providedSystemPrompt: nil,
             cwd: cwd,
             allowedToolNames: allowedToolNames
         )
@@ -144,6 +156,47 @@ extension MLXCoderACPBridge {
             preferredWorkspaceRootURL: workingDirectory
         )
         return allowedToolNames
+    }
+
+    public func registerACPProvidedMCPServers(
+        from params: [String: Any]
+    ) async -> [DirectToolDescriptor] {
+        let definitions = Self.mcpServerDefinitions(from: params)
+        await verboseACPLog(
+            "ACP mcpServers input=\(Self.mcpServerInputSummary(from: params)) parsed=\(definitions.count)"
+        )
+        await verboseACPLog(
+            "ACP mcpServers detail=\(Self.mcpServerInputDetails(from: params))"
+        )
+        guard !definitions.isEmpty else {
+            return []
+        }
+
+        var descriptors: [DirectToolDescriptor] = []
+        for definition in definitions {
+            do {
+                await verboseACPLog(
+                    "connecting ACP MCP server name=\(definition.name) type=\(definition.type)"
+                )
+                let installedDescriptors = try await sessionRunner.installACPProvidedMCPServer(
+                    name: definition.name,
+                    configuration: definition.configuration
+                )
+                await verboseACPLog(
+                    "installed ACP MCP server name=\(definition.name) tools=\(Self.verboseDescriptorSummary(installedDescriptors))"
+                )
+                descriptors.append(contentsOf: installedDescriptors)
+            } catch {
+                await verboseACPLog(
+                    "failed ACP MCP server name=\(definition.name): \(error.localizedDescription)"
+                )
+                SwiftMLXLogger.warning(
+                    .viewModelRuntime,
+                    "failed to install ACP MCP server '\(definition.name)': \(error.localizedDescription)"
+                )
+            }
+        }
+        return DirectToolExecutor.canonicalized(descriptors)
     }
 
     public func loadSession(id: JSONValue?, params: [String: Any]) async throws {
@@ -291,6 +344,9 @@ extension MLXCoderACPBridge {
         let rawCwd = Self.workingDirectory(from: params)
             ?? configuration.workingDirectory.path
         let workingDirectory = AgentConfiguration.resolvedWorkingDirectory(rawValue: rawCwd)
+        await verboseACPLog(
+            "session/restore id=\(sessionID) cwd=\(workingDirectory.path) replay=\(replayHistory) mcpServers=\(Self.mcpServerInputSummary(from: params))"
+        )
         guard let snapshot = try MLXCoderACPSessionStore.load(
             sessionID: sessionID,
             workingDirectory: workingDirectory
@@ -298,7 +354,19 @@ extension MLXCoderACPBridge {
             throw ACPError(code: -32002, message: "Unknown session: \(sessionID)")
         }
 
-        let configuration = sessionConfiguration(from: snapshot)
+        let acpMCPDescriptors = await registerACPProvidedMCPServers(from: params)
+        let baseConfiguration = sessionConfiguration(from: snapshot)
+        let allowedToolNames = Self.allowedToolNames(
+            baseConfiguration.allowedToolNames,
+            adding: acpMCPDescriptors
+        )
+        let configuration = sessionConfiguration(
+            from: baseConfiguration,
+            allowedToolNames: allowedToolNames
+        )
+        await verboseACPLog(
+            "session/restore allowedTools=\(Self.verboseToolNameSummary(allowedToolNames))"
+        )
         sessions[sessionID] = sessionState(configuration: configuration)
         try await sessionRunner.createSession(configuration: configuration)
         if replayHistory {
@@ -518,6 +586,37 @@ extension MLXCoderACPBridge {
         )
     }
 
+    public static func allowedToolNames(
+        _ allowedToolNames: Set<String>?,
+        adding descriptors: [DirectToolDescriptor]
+    ) -> Set<String>? {
+        let descriptorNames = Set(descriptors.map(\.name).filter { !$0.isEmpty })
+        guard !descriptorNames.isEmpty else {
+            return allowedToolNames
+        }
+        var merged = allowedToolNames ?? []
+        merged.formUnion(descriptorNames)
+        return merged
+    }
+
+    public static func verboseToolNameSummary(_ toolNames: Set<String>?) -> String {
+        guard let toolNames else {
+            return "all"
+        }
+        return verboseNameSummary(toolNames)
+    }
+
+    public static func verboseDescriptorSummary(_ descriptors: [DirectToolDescriptor]) -> String {
+        verboseNameSummary(descriptors.map(\.name))
+    }
+
+    private static func verboseNameSummary<S: Sequence>(_ names: S) -> String where S.Element == String {
+        let sortedNames = names.filter { !$0.isEmpty }.sorted()
+        let sample = sortedNames.prefix(8).joined(separator: ",")
+        let suffix = sortedNames.count > 8 ? ",..." : ""
+        return "\(sortedNames.count)[\(sample)\(suffix)]"
+    }
+
     public func sessionConfiguration(
         from snapshot: AgentRuntimeSessionSnapshot
     ) -> AgentCoreSessionConfiguration {
@@ -536,6 +635,31 @@ extension MLXCoderACPBridge {
             appMode: configuration.appMode,
             thinkingSelection: snapshot.thinkingSelection,
             preserveThinking: snapshot.preserveThinking
+        )
+    }
+
+    public func sessionConfiguration(
+        from configuration: AgentCoreSessionConfiguration,
+        allowedToolNames: Set<String>?
+    ) -> AgentCoreSessionConfiguration {
+        AgentCoreSessionConfiguration(
+            sessionID: configuration.sessionID,
+            modelID: configuration.modelID,
+            bearerToken: configuration.bearerToken,
+            workingDirectory: configuration.workingDirectory,
+            systemPrompt: configuration.systemPrompt,
+            cacheKey: configuration.cacheKey,
+            sessionRevision: configuration.sessionRevision,
+            history: configuration.history,
+            allowedToolNames: allowedToolNames,
+            configuredContextWindowLimit: configuration.configuredContextWindowLimit,
+            generationParameterOverrides: configuration.generationParameterOverrides,
+            maxToolRounds: configuration.maxToolRounds,
+            maxOutputTokens: configuration.maxOutputTokens,
+            verboseLogging: configuration.verboseLogging,
+            appMode: configuration.appMode,
+            thinkingSelection: configuration.thinkingSelection,
+            preserveThinking: configuration.preserveThinking
         )
     }
 

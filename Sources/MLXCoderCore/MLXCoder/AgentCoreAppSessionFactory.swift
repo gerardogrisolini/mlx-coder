@@ -129,22 +129,26 @@ public enum AgentCoreAppSessionFactory {
         let providedSystemPrompt = providedSystemPrompt?.nilIfBlank
 
         if let providedSystemPrompt {
-            return [
+            let sections = [
                 MLXSystemPromptBuilder.responseLanguageSection,
                 selectedAgentSection,
-                selectedSkillSection,
-                providedSystemPrompt
+                selectedSkillSection
             ]
                 .compactMap { $0?.nilIfBlank }
+                + [
+                    providedSystemPrompt
+                ]
+            return sections
                 .joined(separator: "\n\n")
         }
 
-        return AgentStandaloneSystemPrompt.prompt(
+        let basePrompt = AgentStandaloneSystemPrompt.prompt(
             cwd: cwd,
             memoryToolEnabled: memoryToolEnabled,
             selectedAgentSection: selectedAgentSection,
             selectedSkillSection: selectedSkillSection
         )
+        return basePrompt
     }
 
     public static func memoryToolEnabled(_ allowedToolNames: Set<String>?) -> Bool {

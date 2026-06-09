@@ -46,6 +46,15 @@ extension MLXCoderACPBridge {
         } else {
             promptConfiguration = session.configuration
         }
+        if configuration.verboseLogging {
+            let mcpDescriptors = await sessionRunner.knownMCPToolDescriptors(
+                allowedToolNames: promptConfiguration.allowedToolNames,
+                preferredWorkspaceRootURL: URL(fileURLWithPath: session.cwd)
+            )
+            await verboseACPLog(
+                "session/prompt id=\(sessionID) knownMCPTools=\(Self.verboseDescriptorSummary(mcpDescriptors)) allowedTools=\(Self.verboseToolNameSummary(promptConfiguration.allowedToolNames))"
+            )
+        }
 
         let visiblePromptText = routedPromptText.isEmpty ? "Analyze the attached media." : routedPromptText
         await sendUserMessageChunk(sessionID: sessionID, text: visiblePromptText)
@@ -102,6 +111,7 @@ extension MLXCoderACPBridge {
                             ]))
                         }
                     case let .diagnostic(message):
+                        await self.verboseACPLog("diagnostic \(message)")
                         if Self.isMetricsDiagnostic(message) {
                             break
                         }

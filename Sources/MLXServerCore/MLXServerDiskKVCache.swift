@@ -5,6 +5,7 @@
 
 import CryptoKit
 import Foundation
+import os
 import MLXLMCommon
 
 public struct MLXServerDiskKVCacheConfiguration: Sendable, Equatable {
@@ -110,8 +111,8 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
     private let configuration: MLXServerDiskKVCacheConfiguration
     private let fileManager: FileManager
     private let indexRebuildObserver: (@Sendable () -> Void)?
-    private let storeLock = NSRecursiveLock()
-    private let ensuredDirectoryLock = NSLock()
+    private let storeLock = OSAllocatedUnfairLock()
+    private let ensuredDirectoryLock = OSAllocatedUnfairLock()
     private var ensuredDirectoryPaths = Set<String>()
 
     // MARK: - In-memory index
@@ -614,7 +615,7 @@ final class MLXServerDiskKVCachePersistenceWriter: @unchecked Sendable {
         var operation: @Sendable () -> Void
     }
 
-    private let lock = NSLock()
+    private let lock = OSAllocatedUnfairLock()
     private var pendingJobs: [String: Job] = [:]
     private var pendingKeys: [String] = []
     private var isDraining = false

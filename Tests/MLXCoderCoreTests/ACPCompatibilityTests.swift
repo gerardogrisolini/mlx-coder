@@ -35,6 +35,203 @@ struct ACPCompatibilityTests {
     }
 
     @Test
+    func acpVerboseLogFileWritesToSupportLogsDirectory() async throws {
+        let supportURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-acp-log-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: supportURL)
+        }
+
+        let logFile = try #require(
+            ACPVerboseLogFile.open(supportDirectoryURL: supportURL)
+        )
+        await logFile.write("sample diagnostic")
+
+        let contents = try String(contentsOf: logFile.url, encoding: .utf8)
+
+        #expect(logFile.url.deletingLastPathComponent().lastPathComponent == "logs")
+        #expect(logFile.url.lastPathComponent.hasPrefix("acp-"))
+        #expect(contents.contains("sample diagnostic"))
+    }
+
+    @Test
+    func mcpServersParseACPStdioXcodeConfiguration() throws {
+        let definitions = MLXCoderACPBridge.mcpServerDefinitions(from: [
+            "mcpServers": [
+                [
+                    "type": "stdio",
+                    "name": "Xcode",
+                    "command": "/usr/bin/xcrun",
+                    "args": ["mcpbridge"],
+                    "env": [
+                        [
+                            "name": "MCP_XCODE_SESSION_ID",
+                            "value": "session-1"
+                        ]
+                    ]
+                ] as [String: Any]
+            ]
+        ])
+
+        let definition = try #require(definitions.first)
+
+        #expect(definitions.count == 1)
+        #expect(definition.name == "Xcode")
+        #expect(definition.type == "stdio")
+        #expect(definition.isXcodeCandidate)
+        #expect(definition.configuration.executablePath == "/usr/bin/xcrun")
+        #expect(definition.configuration.arguments == ["mcpbridge"])
+        #expect(definition.configuration.environment["MCP_XCODE_SESSION_ID"] == "session-1")
+        #expect(definition.configuration.usesMCPBridgeExecutable)
+    }
+
+    @Test
+    func mcpServersParseBareXcrunXcodeConfiguration() throws {
+        let definitions = MLXCoderACPBridge.mcpServerDefinitions(from: [
+            "mcpServers": [
+                [
+                    "type": "stdio",
+                    "name": "xcode-tools",
+                    "command": "xcrun",
+                    "args": ["mcpbridge"]
+                ] as [String: Any]
+            ]
+        ])
+
+        let definition = try #require(definitions.first)
+
+        #expect(definitions.count == 1)
+        #expect(definition.name == "xcode-tools")
+        #expect(definition.isXcodeCandidate)
+        #expect(definition.configuration.executablePath == "xcrun")
+        #expect(definition.configuration.arguments == ["mcpbridge"])
+        #expect(definition.configuration.usesMCPBridgeExecutable)
+    }
+
+    @Test
+    func mcpServersParseACPHTTPConfiguration() throws {
+        let definitions = MLXCoderACPBridge.mcpServerDefinitions(from: [
+            "mcp_servers": [
+                [
+                    "type": "http",
+                    "name": "Docs",
+                    "url": "https://mcp.example.test/mcp",
+                    "headers": [
+                        [
+                            "name": "Authorization",
+                            "value": "Bearer token"
+                        ]
+                    ]
+                ] as [String: Any]
+            ]
+        ])
+
+        let definition = try #require(definitions.first)
+
+        #expect(definitions.count == 1)
+        #expect(definition.name == "Docs")
+        #expect(definition.type == "http")
+        #expect(!definition.isXcodeCandidate)
+        #expect(definition.configuration.endpointURL?.absoluteString == "https://mcp.example.test/mcp")
+        #expect(definition.configuration.httpHeaders["Authorization"] == "Bearer token")
+    }
+
+    @Test
+    func mcpServersParseMapConfiguration() throws {
+        let definitions = MLXCoderACPBridge.mcpServerDefinitions(from: [
+            "mcpServers": [
+                "Xcode": [
+                    "type": "stdio",
+                    "command": "/usr/bin/xcrun",
+                    "args": ["mcpbridge"]
+                ] as [String: Any]
+            ] as [String: Any]
+        ])
+
+        let definition = try #require(definitions.first)
+
+        #expect(definitions.count == 1)
+        #expect(definition.name == "Xcode")
+        #expect(definition.configuration.executablePath == "/usr/bin/xcrun")
+        #expect(definition.configuration.arguments == ["mcpbridge"])
+        #expect(MLXCoderACPBridge.mcpServerInputSummary(from: [
+            "mcpServers": [
+                "Xcode": [:] as [String: Any]
+            ] as [String: Any]
+        ]) == "object(1:Xcode)")
+    }
+
+    #if os(macOS)
+    @Test
+    func localMCPTransportResolvesBareExecutableNamesAndKeepsPATH() throws {
+        let configuration = MCPServerConfiguration(
+            executablePath: "env",
+            arguments: [],
+            environment: [
+                "MCP_XCODE_SESSION_ID": "session-1",
+                "PATH": "/custom/bin"
+            ]
+        )
+        let expectedExecutableURL = try #require(DeveloperToolEnvironment.executableURL(named: "env"))
+        let resolvedEnvironment = MCPClient.resolvedEnvironment(for: configuration)
+        let resolvedPathParts = Set((resolvedEnvironment["PATH"] ?? "").split(separator: ":").map(String.init))
+
+        #expect(MCPClient.resolvedExecutableURL(for: configuration).path == expectedExecutableURL.path)
+        #expect(resolvedEnvironment["MCP_XCODE_SESSION_ID"] == "session-1")
+        #expect(resolvedPathParts.contains("/custom/bin"))
+        #expect(resolvedPathParts.contains("/usr/bin"))
+    }
+    #endif
+
+    @Test
+    func allowedToolNamesIncludeACPProvidedMCPDescriptors() {
+        let allowedTools = MLXCoderACPBridge.allowedToolNames(
+            ["local.exec"],
+            adding: [
+                DirectToolDescriptor(
+                    name: "xcode.BuildProject",
+                    description: "Xcode: Build",
+                    inputSchema: "{}"
+                )
+            ]
+        )
+
+        #expect(allowedTools == ["local.exec", "xcode.BuildProject"])
+    }
+
+    @Test
+    func newSessionSkipsUnavailableACPProvidedMCPServers() async throws {
+        let bridge = try makeBridge(
+            models: [
+                AgentSettingsModelManifest(
+                    id: "test-model",
+                    kind: .remoteAPI,
+                    modelID: "local/test-model"
+                )
+            ]
+        )
+
+        try await bridge.newSession(id: nil, params: [
+            "cwd": "/tmp/acp-tools-workspace",
+            "allowed_tools": ["shell"] as [String],
+            "mcpServers": [
+                [
+                    "type": "stdio",
+                    "name": "Xcode",
+                    "command": "/path/that/does/not/exist/mcpbridge",
+                    "args": [] as [String]
+                ] as [String: Any]
+            ]
+        ])
+
+        let configuration = try #require(await bridge.testOnlySessionConfigurations().first)
+        let allowedToolNames = try #require(configuration.allowedToolNames)
+
+        #expect(allowedToolNames.contains("local.exec"))
+        #expect(!allowedToolNames.contains("xcode.BuildProject"))
+    }
+
+    @Test
     func newSessionConsumesAllowedToolsFromACPParams() async throws {
         let backend = CapturingACPBackend()
         let bridge = try makeBridge(
@@ -65,6 +262,146 @@ struct ACPCompatibilityTests {
             "prompt": "verify tools"
         ])
         #expect(await backend.createdAllowedToolNames() == allowedToolNames)
+    }
+
+    @Test
+    func newSessionDoesNotDiscoverInternalXcodeWhenOnlyACPProvidesXcodeTools() async throws {
+        let supportURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-acp-client-xcode-mcp-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: supportURL)
+        }
+        try FileManager.default.createDirectory(
+            at: supportURL,
+            withIntermediateDirectories: true
+        )
+        let executableURL = supportURL.appendingPathComponent("xcode-mcp-fixture")
+        try """
+        #!/bin/sh
+        while IFS= read -r line; do
+          id=$(printf '%s\\n' "$line" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*\\([^,}]*\\).*/\\1/p')
+          case "$line" in
+            *initialize*)
+              printf '%s\\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}}'
+              ;;
+            *tools*list*)
+              printf '%s\\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"XcodeRead","description":"Reads from Xcode","inputSchema":{"type":"object","properties":{"filePath":{"type":"string"}}}}]}}'
+              ;;
+          esac
+        done
+        """.write(to: executableURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: executableURL.path
+        )
+        let discoveryProbe = XcodeDiscoveryProbe()
+        let mcpRuntime = DirectMCPToolRuntime(
+            xcodeDiscoveryProvider: {
+                await discoveryProbe.discovery(workspacePath: "/tmp/acp-tools-workspace/App.xcodeproj")
+            }
+        )
+        let bridge = try makeBridge(
+            models: [
+                AgentSettingsModelManifest(
+                    id: "test-model",
+                    kind: .remoteAPI,
+                    modelID: "local/test-model"
+                )
+            ],
+            mcpRuntime: mcpRuntime,
+            xcodeIsRunning: { true }
+        )
+
+        try await bridge.newSession(id: nil, params: [
+            "cwd": "/tmp/acp-tools-workspace",
+            "allowed_tools": ["shell"] as [String],
+            "mcpServers": [
+                [
+                    "type": "stdio",
+                    "name": "Xcode",
+                    "command": executableURL.path,
+                    "args": [] as [String]
+                ] as [String: Any]
+            ]
+        ])
+
+        let configuration = try #require(await bridge.testOnlySessionConfigurations().first)
+        let allowedToolNames = try #require(configuration.allowedToolNames)
+
+        #expect(allowedToolNames.contains("local.exec"))
+        #expect(allowedToolNames.contains("xcode.XcodeRead"))
+        #expect(await discoveryProbe.count() == 0)
+    }
+
+    @Test
+    func newSessionExposesDiscoveredXcodeToolsWithoutInjectingPromptContext() async throws {
+        let backend = CapturingACPBackend()
+        let agent = AgentProfile(
+            id: "xcode-agent",
+            name: "Xcode Agent",
+            tools: ["shell", "xcode"]
+        )
+        let mcpRuntime = Self.xcodeRuntime(workspacePath: "/tmp/acp-tools-workspace/App.xcodeproj")
+        let bridge = try makeBridge(
+            models: [
+                AgentSettingsModelManifest(
+                    id: "test-model",
+                    kind: .remoteAPI,
+                    modelID: "local/test-model"
+                )
+            ],
+            availableAgents: [agent],
+            agentName: agent.name,
+            backendFactory: { _, _ in backend },
+            mcpRuntime: mcpRuntime,
+            xcodeIsRunning: { true }
+        )
+
+        try await bridge.newSession(id: nil, params: [
+            "cwd": "/tmp/acp-tools-workspace"
+        ])
+
+        let configuration = try #require(await bridge.testOnlySessionConfigurations().first)
+        let allowedToolNames = try #require(configuration.allowedToolNames)
+        let systemPrompt = try #require(configuration.systemPrompt)
+        let descriptors = await mcpRuntime.knownDescriptors(
+            allowedToolNames: allowedToolNames,
+            preferredWorkspaceRootURL: URL(fileURLWithPath: "/tmp/acp-tools-workspace")
+        )
+
+        #expect(allowedToolNames.contains("xcode."))
+        #expect(descriptors.map(\.name) == ["xcode.BuildProject"])
+        #expect(!systemPrompt.contains("Current Xcode workspace context:"))
+        #expect(!systemPrompt.contains("Available Xcode tools in this session:"))
+        #expect(!systemPrompt.contains("`xcode.BuildProject`"))
+        try await bridge.prompt(id: nil, params: [
+            "sessionId": configuration.sessionID,
+            "prompt": "verify Xcode tools"
+        ])
+        #expect(await backend.createdSystemPrompt()?.contains("`xcode.BuildProject`") != true)
+    }
+
+    @Test
+    func newSessionIgnoresNonStandardSystemPromptParameter() async throws {
+        let bridge = try makeBridge(
+            models: [
+                AgentSettingsModelManifest(
+                    id: "test-model",
+                    kind: .remoteAPI,
+                    modelID: "local/test-model"
+                )
+            ]
+        )
+
+        try await bridge.newSession(id: nil, params: [
+            "cwd": "/tmp/acp-system-prompt-workspace",
+            "systemPrompt": "CLIENT-SYSTEM-PROMPT-SHOULD-NOT-BE-INJECTED"
+        ])
+
+        let configuration = try #require(await bridge.testOnlySessionConfigurations().first)
+        let systemPrompt = try #require(configuration.systemPrompt)
+
+        #expect(!systemPrompt.contains("CLIENT-SYSTEM-PROMPT-SHOULD-NOT-BE-INJECTED"))
     }
 
     @Test
@@ -135,6 +472,7 @@ struct ACPCompatibilityTests {
 
         #expect(allowedToolNames.contains("local.exec"))
         #expect(allowedToolNames.contains("xcode."))
+        #expect(configuration.systemPrompt?.contains("Available Xcode tools in this session:") != true)
         let descriptors = await mcpRuntime.knownDescriptors(
             allowedToolNames: ["xcode."],
             preferredWorkspaceRootURL: URL(fileURLWithPath: "/tmp/acp-tools-workspace")
@@ -167,6 +505,7 @@ struct ACPCompatibilityTests {
 
         #expect(allowedToolNames.contains("local.exec"))
         #expect(allowedToolNames.contains("xcode."))
+        #expect(configuration.systemPrompt?.contains("Available Xcode tools in this session:") != true)
         let descriptors = await mcpRuntime.knownDescriptors(
             allowedToolNames: ["xcode."],
             preferredWorkspaceRootURL: URL(fileURLWithPath: "/tmp/acp-tools-workspace")
@@ -203,6 +542,73 @@ struct ACPCompatibilityTests {
         )
 
         #expect(descriptors.map(\.name) == ["xcode.BuildProject"])
+    }
+
+    @Test
+    func acpProvidedXcodeMCPServerRegistersThroughCentralRuntime() async throws {
+        let supportURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mlx-acp-xcode-mcp-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: supportURL)
+        }
+        try FileManager.default.createDirectory(
+            at: supportURL,
+            withIntermediateDirectories: true
+        )
+        let requestURL = supportURL.appendingPathComponent("request.jsonl")
+        let executableURL = supportURL.appendingPathComponent("xcode-mcp-fixture")
+        try """
+        #!/bin/sh
+        while IFS= read -r line; do
+          id=$(printf '%s\\n' "$line" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*\\([^,}]*\\).*/\\1/p')
+          case "$line" in
+            *initialize*)
+              printf '%s\\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}}'
+              ;;
+            *tools*list*)
+              printf '%s\\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"tools":[{"name":"XcodeRead","description":"Reads from Xcode","inputSchema":{"type":"object","properties":{"filePath":{"type":"string"}}}}]}}'
+              ;;
+            *tools*call*)
+              printf '%s\\n' "$line" > "\(requestURL.path)"
+              printf '%s\\n' '{"jsonrpc":"2.0","id":'"$id"',"result":{"content":[{"type":"text","text":"ok"}]}}'
+              exit 0
+              ;;
+          esac
+        done
+        """.write(to: executableURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: executableURL.path
+        )
+
+        let runtime = DirectMCPToolRuntime()
+        let descriptors = try await runtime.installExternalMCPServer(
+            name: "Xcode",
+            configuration: MCPServerConfiguration(
+                executablePath: executableURL.path,
+                arguments: [],
+                environment: [:]
+            )
+        )
+        let output = try await runtime.execute(
+            toolCall: DirectAgentToolCall(
+                id: "call-1",
+                name: "xcode.read",
+                argumentsObject: ["path": "Sources/App/File.swift"],
+                argumentsJSON: #"{"path":"Sources/App/File.swift"}"#
+            )
+        )
+        let capturedRequestData = try Data(contentsOf: requestURL)
+        let capturedRequest = try #require(
+            JSONSerialization.jsonObject(with: capturedRequestData) as? [String: Any]
+        )
+        let capturedParams = try #require(capturedRequest["params"] as? [String: Any])
+        let capturedArguments = try #require(capturedParams["arguments"] as? [String: Any])
+
+        #expect(descriptors.map(\.name) == ["xcode.XcodeRead"])
+        #expect(output == "ok")
+        #expect(capturedParams["name"] as? String == "XcodeRead")
+        #expect(capturedArguments["filePath"] as? String == "Sources/App/File.swift")
     }
 
     @Test
@@ -631,13 +1037,49 @@ private extension MLXCoderACPBridge {
     }
 }
 
+private actor XcodeDiscoveryProbe {
+    private var callCount = 0
+
+    func discovery(workspacePath: String) -> DirectMCPToolRuntime.XcodeDiscovery {
+        callCount += 1
+        return DirectMCPToolRuntime.XcodeDiscovery(
+            executor: XcodeToolExecutor(
+                configuration: MCPServerConfiguration(
+                    executablePath: "/usr/bin/false",
+                    arguments: [],
+                    environment: [:]
+                )
+            ),
+            tools: [
+                ToolDescriptor(
+                    name: "BuildProject",
+                    description: "Builds an Xcode project",
+                    inputSchema: "{}"
+                )
+            ],
+            workspaceContexts: [
+                XcodeWorkspaceContext(
+                    workspacePath: workspacePath,
+                    defaultTabIdentifier: nil
+                )
+            ],
+            ownsExecutor: false
+        )
+    }
+
+    func count() -> Int {
+        callCount
+    }
+}
+
 private actor CapturingACPBackend: AgentRuntimeBackend {
     private var allowedToolNames: Set<String>?
+    private var systemPrompt: String?
 
     func createSession(
         id _: String,
         cwd _: String,
-        systemPrompt _: String?,
+        systemPrompt: String?,
         history _: [AgentRuntimeMessage],
         cacheKey _: String?,
         allowedToolNames: Set<String>?,
@@ -645,6 +1087,7 @@ private actor CapturingACPBackend: AgentRuntimeBackend {
         preserveThinking _: Bool
     ) {
         self.allowedToolNames = allowedToolNames
+        self.systemPrompt = systemPrompt
     }
 
     func createSessionIfNeeded(
@@ -671,12 +1114,13 @@ private actor CapturingACPBackend: AgentRuntimeBackend {
 
     func updateSessionOptions(
         id _: String,
-        systemPrompt _: String?,
+        systemPrompt: String?,
         allowedToolNames: Set<String>?,
         thinkingSelection _: AgentThinkingSelection?,
         preserveThinking _: Bool
     ) {
         self.allowedToolNames = allowedToolNames
+        self.systemPrompt = systemPrompt
     }
 
     func closeSession(id _: String) {}
@@ -704,5 +1148,9 @@ private actor CapturingACPBackend: AgentRuntimeBackend {
 
     func createdAllowedToolNames() -> Set<String>? {
         allowedToolNames
+    }
+
+    func createdSystemPrompt() -> String? {
+        systemPrompt
     }
 }

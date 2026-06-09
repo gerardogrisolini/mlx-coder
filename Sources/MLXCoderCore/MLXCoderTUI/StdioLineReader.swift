@@ -10,6 +10,7 @@ import Glibc
 #endif
 import Dispatch
 import Foundation
+import os
 
 public final class StdioLineReader: @unchecked Sendable {
     private var buffer: [UInt8] = []
@@ -100,7 +101,7 @@ public final class TerminalRawInput: @unchecked Sendable {
     private var shouldCloseControlFileDescriptor: Bool
     private var inputFileDescriptorLabel: String
     private var rawModeFailureDescription: String?
-    private let lock = NSLock()
+    private let lock = OSAllocatedUnfairLock()
     private var originalAttributes: termios?
     private var didRequestEnhancedKeyboardProtocol = false
     private var didRequestBracketedPaste = false
@@ -542,7 +543,7 @@ public final class TerminalInteractiveLineReader: @unchecked Sendable {
     private var historyIndex: Int?
     private var draftBeforeHistory: [Character] = []
     private let rawInput = TerminalRawInput()
-    private let panelLock = NSLock()
+    private let panelLock = OSAllocatedUnfairLock()
     private var panelTask: Task<Void, Never>?
     private var panelStatusBar: TerminalStatusBar?
     private var panelBuffer: [Character] = []

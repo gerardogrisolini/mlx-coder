@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import os
 
 public struct AgentSettingsManifest: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
@@ -945,7 +946,7 @@ public enum AgentSettingsManifestStore {
             case failed(Error)
         }
 
-        private let lock = NSLock()
+        private let lock = OSAllocatedUnfairLock()
         private var state: State = .notLoaded
 
         func load(
