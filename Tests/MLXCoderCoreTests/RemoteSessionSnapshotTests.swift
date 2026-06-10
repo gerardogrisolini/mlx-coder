@@ -361,6 +361,11 @@ struct RemoteSessionSnapshotTests {
     }
 
     @Test
+    func chatGPTSubscriptionWebSocketHasNoDefaultResponseIdleTimeout() {
+        #expect(ChatGPTSubscriptionResponsesClient.webSocketIdleTimeoutNanoseconds == nil)
+    }
+
+    @Test
     func chatGPTSubscriptionContinuationUsesToolOutputDelta() throws {
         let messages = chatGPTContinuationMessagesWithToolOutput()
         let fullPayload = RemoteGenerationClient.responsesInputPayload(from: messages)

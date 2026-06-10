@@ -11,6 +11,88 @@ import Foundation
 import FoundationNetworking
 #endif
 
+public enum AnthropicSubscriptionRequestBuilder {
+    public static func estimatedContextTokenCount(
+        system: [[String: Any]],
+        messages: [[String: Any]],
+        tools: [[String: Any]]
+    ) -> Int? {
+        var payload: [String: Any] = [:]
+        if !system.isEmpty {
+            payload["system"] = system
+        }
+        if !messages.isEmpty {
+            payload["messages"] = messages
+        }
+        if !tools.isEmpty {
+            payload["tools"] = tools
+        }
+
+        guard !payload.isEmpty,
+              let data = try? JSONValue(jsonObject: payload).jsonData(
+                  outputFormatting: [.withoutEscapingSlashes]
+              ),
+              !data.isEmpty else {
+            return nil
+        }
+        return max(Int((Double(data.count) / 4.0).rounded(.up)), 1)
+    }
+
+    public static func usage(
+        from value: Any?,
+        previous: RemoteGenerationUsage? = nil
+    ) -> RemoteGenerationUsage? {
+        guard let object = value as? [String: Any],
+              let parsed = RemoteGenerationClient.parsedUsage(from: object) else {
+            return previous
+        }
+        return mergedUsage(parsed, previous: previous)
+    }
+
+    private static func mergedUsage(
+        _ usage: RemoteGenerationUsage,
+        previous: RemoteGenerationUsage?
+    ) -> RemoteGenerationUsage {
+        let promptTokens = usage.promptTokens ?? previous?.promptTokens
+        let completionTokens = usage.completionTokens ?? previous?.completionTokens
+        let computedTotalTokens = sum(promptTokens, completionTokens)
+
+        return RemoteGenerationUsage(
+            promptTokens: promptTokens,
+            completionTokens: completionTokens,
+            totalTokens: usage.totalTokens
+                ?? computedTotalTokens
+                ?? previous?.totalTokens,
+            contextTokens: usage.contextTokens
+                ?? computedTotalTokens
+                ?? previous?.contextTokens,
+            processedPromptTokens: usage.processedPromptTokens
+                ?? previous?.processedPromptTokens,
+            cachedPromptTokens: usage.cachedPromptTokens
+                ?? previous?.cachedPromptTokens,
+            promptTokensPerSecond: usage.promptTokensPerSecond
+                ?? previous?.promptTokensPerSecond,
+            completionTokensPerSecond: usage.completionTokensPerSecond
+                ?? previous?.completionTokensPerSecond,
+            responseDurationSeconds: usage.responseDurationSeconds
+                ?? previous?.responseDurationSeconds
+        )
+    }
+
+    private static func sum(_ lhs: Int?, _ rhs: Int?) -> Int? {
+        switch (lhs, rhs) {
+        case let (lhs?, rhs?):
+            return lhs + rhs
+        case let (lhs?, nil):
+            return lhs
+        case let (nil, rhs?):
+            return rhs
+        default:
+            return nil
+        }
+    }
+}
+
 public actor AnthropicSubscriptionGenerationClient: AgentRuntimeBackend {
     public struct AgentSession {
         public let id: String
@@ -253,7 +335,7 @@ public actor AnthropicSubscriptionGenerationClient: AgentRuntimeBackend {
             generationStats.append(streamResult.stats)
             appendAssistantMessage(streamResult: streamResult, to: &session.messages)
             if let metrics = RemoteGenerationClient.generationMetrics(generationStats) {
-                await RemoteGenerationClient.publishGenerationMetrics(
+                await Self.publishAnthropicSubscriptionMetrics(
                     metrics,
                     maxTokens: resolvedContextWindowTokenLimit(forLLMID: modelLLMID),
                     modelID: modelID,
@@ -318,21 +400,42 @@ public actor AnthropicSubscriptionGenerationClient: AgentRuntimeBackend {
         let anthropicPayload = Self.anthropicMessagesPayload(
             from: toolCatalog.wireMessages(from: session.messages)
         )
+        let requestMessages = Self.addingCacheControlToLastUserMessage(
+            anthropicPayload.messages
+        )
+        let systemBlocks = Self.subscriptionSystemBlocks(
+            userSystemPrompt: anthropicPayload.system
+        )
+        let tools = Self.anthropicTools(from: toolCatalog.bindings)
+        let estimatedContextTokens = AnthropicSubscriptionRequestBuilder
+            .estimatedContextTokenCount(
+                system: systemBlocks,
+                messages: requestMessages,
+                tools: tools
+            )
+        if let estimatedContextTokens {
+            await onEvent(
+                .contextWindow(
+                    DirectAgentContextWindowStatus(
+                        usedTokens: estimatedContextTokens,
+                        maxTokens: resolvedContextWindowTokenLimit(forLLMID: modelLLMID),
+                        modelID: modelID,
+                        isApproximate: true
+                    )
+                )
+            )
+        }
+
         var body: [String: Any] = [
             "model": modelID,
-            "messages": Self.addingCacheControlToLastUserMessage(
-                anthropicPayload.messages
-            ),
+            "messages": requestMessages,
             "max_tokens": resolvedMaxOutputTokens(
                 forLLMID: modelLLMID,
                 thinkingSelection: session.thinkingSelection
             ),
             "stream": true
         ]
-        body["system"] = Self.subscriptionSystemBlocks(
-            userSystemPrompt: anthropicPayload.system
-        )
-        let tools = Self.anthropicTools(from: toolCatalog.bindings)
+        body["system"] = systemBlocks
         if !tools.isEmpty {
             body["tools"] = tools
         }
@@ -503,6 +606,44 @@ public actor AnthropicSubscriptionGenerationClient: AgentRuntimeBackend {
     private func resolvedContextWindowTokenLimit(forLLMID modelLLMID: String?) -> Int? {
         configuration.configuredContextWindowLimit
             ?? AnthropicSubscriptionModel.contextWindowTokenLimit(forLLMID: modelLLMID)
+    }
+
+    nonisolated static func anthropicSubscriptionVisibleMetrics(
+        _ metrics: DirectAgentGenerationMetrics
+    ) -> DirectAgentGenerationMetrics {
+        DirectAgentGenerationMetrics(
+            promptTokenCount: nil,
+            cachedPromptTokenCount: nil,
+            promptTokensPerSecond: nil,
+            completionTokenCount: metrics.completionTokenCount,
+            completionTokensPerSecond: metrics.completionTokensPerSecond,
+            responseDurationSeconds: metrics.responseDurationSeconds,
+            contextTokenCount: metrics.contextTokenCount,
+            clearsPromptMetrics: true
+        )
+    }
+
+    nonisolated private static func publishAnthropicSubscriptionMetrics(
+        _ metrics: DirectAgentGenerationMetrics,
+        maxTokens: Int?,
+        modelID: String,
+        onEvent: @escaping @Sendable (DirectAgentEvent) async -> Void
+    ) async {
+        let visibleMetrics = anthropicSubscriptionVisibleMetrics(metrics)
+        await onEvent(.metrics(visibleMetrics))
+        guard let contextTokenCount = metrics.contextTokenCount else {
+            return
+        }
+        await onEvent(
+            .contextWindow(
+                DirectAgentContextWindowStatus(
+                    usedTokens: contextTokenCount,
+                    maxTokens: maxTokens,
+                    modelID: modelID,
+                    isApproximate: true
+                )
+            )
+        )
     }
 
     private func resolvedMaxOutputTokens(
@@ -906,24 +1047,9 @@ private extension AnthropicSubscriptionGenerationClient {
     }
 
     static func usage(from value: Any?, previous: RemoteGenerationUsage? = nil) -> RemoteGenerationUsage? {
-        guard let object = value as? [String: Any] else {
-            return previous
-        }
-        let inputTokens = intValue(object["input_tokens"]) ?? previous?.promptTokens
-        let outputTokens = intValue(object["output_tokens"]) ?? previous?.completionTokens
-        let cacheReadTokens = intValue(object["cache_read_input_tokens"])
-            ?? intValue(object["cache_creation_input_tokens"])
-            ?? previous?.cachedPromptTokens
-        let totalTokens = [inputTokens, outputTokens].compactMap { $0 }.reduce(0, +)
-        return RemoteGenerationUsage(
-            promptTokens: inputTokens,
-            completionTokens: outputTokens,
-            totalTokens: totalTokens > 0 ? totalTokens : previous?.totalTokens,
-            contextTokens: totalTokens > 0 ? totalTokens : previous?.contextTokens,
-            processedPromptTokens: inputTokens,
-            cachedPromptTokens: cacheReadTokens,
-            promptTokensPerSecond: nil,
-            completionTokensPerSecond: nil
+        AnthropicSubscriptionRequestBuilder.usage(
+            from: value,
+            previous: previous
         )
     }
 

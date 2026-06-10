@@ -63,4 +63,150 @@ struct RemoteGenerationMetricsTests {
         #expect(metrics?.responseDurationSeconds == 6)
     }
 
+    @Test
+    func anthropicSubscriptionContextEstimateIncludesSystemAndTools() throws {
+        let messages = [
+            [
+                "role": "user",
+                "content": [
+                    [
+                        "type": "text",
+                        "text": "Summarize the current workspace."
+                    ]
+                ]
+            ] as [String: Any]
+        ]
+        let system = [
+            [
+                "type": "text",
+                "text": String(repeating: "Follow the coding instructions. ", count: 40)
+            ]
+        ]
+        let tools = [
+            [
+                "name": "tool_local_exec",
+                "description": "Run a shell command.",
+                "input_schema": [
+                    "type": "object",
+                    "properties": [
+                        "command": ["type": "string"]
+                    ],
+                    "required": ["command"]
+                ]
+            ] as [String: Any]
+        ]
+
+        let messageOnlyEstimate = try #require(
+            AnthropicSubscriptionRequestBuilder.estimatedContextTokenCount(
+                system: [],
+                messages: messages,
+                tools: []
+            )
+        )
+        let withSystemEstimate = try #require(
+            AnthropicSubscriptionRequestBuilder.estimatedContextTokenCount(
+                system: system,
+                messages: messages,
+                tools: []
+            )
+        )
+        let withToolsEstimate = try #require(
+            AnthropicSubscriptionRequestBuilder.estimatedContextTokenCount(
+                system: system,
+                messages: messages,
+                tools: tools
+            )
+        )
+
+        #expect(withSystemEstimate > messageOnlyEstimate)
+        #expect(withToolsEstimate > withSystemEstimate)
+    }
+
+    @Test
+    func anthropicSubscriptionUsageIncludesCachedInputTokens() throws {
+        let usage = try #require(
+            AnthropicSubscriptionRequestBuilder.usage(
+                from: [
+                    "input_tokens": 120,
+                    "cache_read_input_tokens": 800,
+                    "cache_creation_input_tokens": 40,
+                    "output_tokens": 2
+                ]
+            )
+        )
+
+        #expect(usage.promptTokens == 960)
+        #expect(usage.processedPromptTokens == 120)
+        #expect(usage.cachedPromptTokens == 800)
+        #expect(usage.completionTokens == 2)
+        #expect(usage.totalTokens == 962)
+        #expect(usage.contextTokens == 962)
+
+        let updatedUsage = try #require(
+            AnthropicSubscriptionRequestBuilder.usage(
+                from: [
+                    "output_tokens": 32
+                ],
+                previous: usage
+            )
+        )
+
+        #expect(updatedUsage.promptTokens == 960)
+        #expect(updatedUsage.processedPromptTokens == 120)
+        #expect(updatedUsage.cachedPromptTokens == 800)
+        #expect(updatedUsage.completionTokens == 32)
+        #expect(updatedUsage.totalTokens == 992)
+        #expect(updatedUsage.contextTokens == 992)
+    }
+
+    @Test
+    func anthropicSubscriptionVisibleMetricsClearsPromptMetrics() {
+        let visibleMetrics = AnthropicSubscriptionGenerationClient
+            .anthropicSubscriptionVisibleMetrics(
+                DirectAgentGenerationMetrics(
+                    promptTokenCount: 120,
+                    cachedPromptTokenCount: 800,
+                    promptTokensPerSecond: 60,
+                    completionTokenCount: 32,
+                    completionTokensPerSecond: 8,
+                    responseDurationSeconds: 4,
+                    contextTokenCount: 992
+                )
+            )
+
+        #expect(visibleMetrics.promptTokenCount == nil)
+        #expect(visibleMetrics.cachedPromptTokenCount == nil)
+        #expect(visibleMetrics.promptTokensPerSecond == nil)
+        #expect(visibleMetrics.completionTokenCount == 32)
+        #expect(visibleMetrics.completionTokensPerSecond == 8)
+        #expect(visibleMetrics.responseDurationSeconds == 4)
+        #expect(visibleMetrics.contextTokenCount == 992)
+        #expect(visibleMetrics.clearsPromptMetrics)
+    }
+
+    @Test
+    func chatGPTSubscriptionVisibleMetricsClearsPromptMetrics() {
+        let visibleMetrics = ChatGPTSubscriptionGenerationClient
+            .chatGPTSubscriptionVisibleMetrics(
+                DirectAgentGenerationMetrics(
+                    promptTokenCount: 120,
+                    cachedPromptTokenCount: 800,
+                    promptTokensPerSecond: 60,
+                    completionTokenCount: 32,
+                    completionTokensPerSecond: 8,
+                    responseDurationSeconds: 4,
+                    contextTokenCount: 992
+                )
+            )
+
+        #expect(visibleMetrics.promptTokenCount == nil)
+        #expect(visibleMetrics.cachedPromptTokenCount == nil)
+        #expect(visibleMetrics.promptTokensPerSecond == nil)
+        #expect(visibleMetrics.completionTokenCount == 32)
+        #expect(visibleMetrics.completionTokensPerSecond == 8)
+        #expect(visibleMetrics.responseDurationSeconds == 4)
+        #expect(visibleMetrics.contextTokenCount == 992)
+        #expect(visibleMetrics.clearsPromptMetrics)
+    }
+
 }

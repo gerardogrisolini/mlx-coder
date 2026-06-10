@@ -63,6 +63,7 @@ public struct DirectAgentGenerationMetrics: Sendable {
     public let completionTokensPerSecond: Double?
     public let responseDurationSeconds: Double?
     public let contextTokenCount: Int?
+    public let clearsPromptMetrics: Bool
 
     public init(
         promptTokenCount: Int?,
@@ -71,7 +72,8 @@ public struct DirectAgentGenerationMetrics: Sendable {
         completionTokenCount: Int?,
         completionTokensPerSecond: Double?,
         responseDurationSeconds: Double? = nil,
-        contextTokenCount: Int? = nil
+        contextTokenCount: Int? = nil,
+        clearsPromptMetrics: Bool = false
     ) {
         self.promptTokenCount = promptTokenCount
         self.cachedPromptTokenCount = cachedPromptTokenCount
@@ -80,6 +82,7 @@ public struct DirectAgentGenerationMetrics: Sendable {
         self.completionTokensPerSecond = completionTokensPerSecond
         self.responseDurationSeconds = responseDurationSeconds
         self.contextTokenCount = contextTokenCount
+        self.clearsPromptMetrics = clearsPromptMetrics
     }
 
     public var totalTokenCount: Int? {

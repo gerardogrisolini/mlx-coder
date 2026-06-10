@@ -626,13 +626,20 @@ public final class TerminalStatusBar: @unchecked Sendable {
             return update
         }
         return DirectAgentGenerationMetrics(
-            promptTokenCount: update.promptTokenCount ?? current.promptTokenCount,
-            cachedPromptTokenCount: update.cachedPromptTokenCount ?? current.cachedPromptTokenCount,
-            promptTokensPerSecond: update.promptTokensPerSecond ?? current.promptTokensPerSecond,
+            promptTokenCount: update.clearsPromptMetrics
+                ? update.promptTokenCount
+                : update.promptTokenCount ?? current.promptTokenCount,
+            cachedPromptTokenCount: update.clearsPromptMetrics
+                ? update.cachedPromptTokenCount
+                : update.cachedPromptTokenCount ?? current.cachedPromptTokenCount,
+            promptTokensPerSecond: update.clearsPromptMetrics
+                ? update.promptTokensPerSecond
+                : update.promptTokensPerSecond ?? current.promptTokensPerSecond,
             completionTokenCount: update.completionTokenCount ?? current.completionTokenCount,
             completionTokensPerSecond: update.completionTokensPerSecond ?? current.completionTokensPerSecond,
             responseDurationSeconds: update.responseDurationSeconds ?? current.responseDurationSeconds,
-            contextTokenCount: update.contextTokenCount ?? current.contextTokenCount
+            contextTokenCount: update.contextTokenCount ?? current.contextTokenCount,
+            clearsPromptMetrics: update.clearsPromptMetrics
         )
     }
 

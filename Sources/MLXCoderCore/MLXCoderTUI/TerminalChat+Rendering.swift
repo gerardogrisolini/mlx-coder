@@ -719,17 +719,17 @@ extension TerminalChat {
         let icon = MLXCoderACPBridge.toolIcon(for: toolCall.name)
         guard let target = MLXCoderACPBridge.displayToolTarget(for: toolCall),
               title.hasSuffix(target) else {
-            return [compactToolHeaderLine("\(icon) \(title) \(statusIcon)")]
+            return [compactToolHeaderLine("\(icon)  \(title) \(statusIcon)")]
         }
 
         let action = title
             .dropLast(target.count)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !action.isEmpty else {
-            return [compactToolHeaderLine("\(icon) \(title) \(statusIcon)")]
+            return [compactToolHeaderLine("\(icon)  \(title) \(statusIcon)")]
         }
         return [
-            compactToolHeaderLine("\(icon) \(action):"),
+            compactToolHeaderLine("\(icon)  \(action):"),
             compactToolStatusLine(
                 target: target,
                 statusIcon: statusIcon,

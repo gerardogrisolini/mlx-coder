@@ -873,7 +873,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         modelID: String,
         onEvent: @escaping @Sendable (DirectAgentEvent) async -> Void
     ) async {
-        await onEvent(.metrics(chatGPTSubscriptionMetrics(metrics)))
+        await onEvent(.metrics(chatGPTSubscriptionVisibleMetrics(metrics)))
         await onEvent(
             .contextWindow(
                 DirectAgentContextWindowStatus(
@@ -891,7 +891,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         )
     }
 
-    private static func chatGPTSubscriptionMetrics(
+    nonisolated static func chatGPTSubscriptionVisibleMetrics(
         _ metrics: DirectAgentGenerationMetrics
     ) -> DirectAgentGenerationMetrics {
         DirectAgentGenerationMetrics(
@@ -901,7 +901,8 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
             completionTokenCount: metrics.completionTokenCount,
             completionTokensPerSecond: metrics.completionTokensPerSecond,
             responseDurationSeconds: metrics.responseDurationSeconds,
-            contextTokenCount: metrics.contextTokenCount
+            contextTokenCount: metrics.contextTokenCount,
+            clearsPromptMetrics: true
         )
     }
 
@@ -1674,7 +1675,7 @@ public struct ChatGPTSubscriptionResponsesClient {
     private static let maxRetries = 3
     private static let baseRetryDelayNanoseconds: UInt64 = 1_000_000_000
     private static let webSocketBetaHeader = "responses_websockets=2026-02-06"
-    private static let webSocketIdleTimeoutNanoseconds: UInt64 = 60_000_000_000
+    static let webSocketIdleTimeoutNanoseconds: UInt64? = nil
 
     public init(
         credentials: CodexAgentCredentials,
@@ -1912,9 +1913,12 @@ public struct ChatGPTSubscriptionResponsesClient {
 
     private static func receiveWebSocketMessage(
         from task: URLSessionWebSocketTask,
-        timeoutNanoseconds: UInt64
+        timeoutNanoseconds: UInt64?
     ) async throws -> URLSessionWebSocketTask.Message {
-        try await withThrowingTaskGroup(
+        guard let timeoutNanoseconds, timeoutNanoseconds > 0 else {
+            return try await task.receive()
+        }
+        return try await withThrowingTaskGroup(
             of: URLSessionWebSocketTask.Message.self
         ) { group in
             group.addTask {
