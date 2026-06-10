@@ -574,6 +574,12 @@ public enum MLXCoderSetupRunner {
                             existingModels: existingModels
                         )
                     )
+                } else if isAnthropicSubscriptionProvider(provider) {
+                    providerInputs.append(
+                        try await readAnthropicSubscriptionProvider(
+                            existingModels: existingModels
+                        )
+                    )
                 } else {
                     providerInputs.append(
                         try await readRemoteAPIProvider(
@@ -676,6 +682,8 @@ public enum MLXCoderSetupRunner {
             return try await readRemoteAPIProvider()
         case .chatGPTSubscription:
             return try await readChatGPTSubscriptionProvider()
+        case .anthropicSubscription:
+            return try await readAnthropicSubscriptionProvider()
         }
     }
 
@@ -749,6 +757,42 @@ public enum MLXCoderSetupRunner {
             defaultModels: existingModels
         ).map { option in
             chatGPTSubscriptionModelManifest(
+                option: option,
+                providerID: id,
+                providerName: name,
+                baseURL: baseURL,
+                chatEndpoint: chatEndpoint
+            )
+        }
+
+        guard !models.isEmpty else {
+            throw MLXCoderSetupError.noModelsConfigured
+        }
+
+        return SetupProviderInput(
+            id: id,
+            name: name,
+            baseURL: baseURL,
+            chatEndpoint: chatEndpoint,
+            apiKey: nil,
+            models: models
+        )
+    }
+
+    private static func readAnthropicSubscriptionProvider(
+        existingModels: [AgentSettingsModelManifest] = []
+    ) async throws -> SetupProviderInput {
+        AgentOutput.standardError.writeString("\nClaude Subscription\n")
+        try await ensureAnthropicSubscriptionCredentials()
+
+        let id = AgentRemoteProvider.anthropicSubscriptionProviderID
+        let name = AnthropicSubscriptionModel.displayTitle
+        let baseURL = AgentRemoteProvider.anthropicSubscriptionBaseURL
+        let chatEndpoint = AgentRemoteChatEndpoint.responses
+        let models = try selectAnthropicSubscriptionModels(
+            defaultModels: existingModels
+        ).map { option in
+            anthropicSubscriptionModelManifest(
                 option: option,
                 providerID: id,
                 providerName: name,
@@ -967,6 +1011,13 @@ public enum MLXCoderSetupRunner {
             || provider.baseURL == AgentRemoteProvider.chatGPTSubscriptionBaseURL
     }
 
+    private static func isAnthropicSubscriptionProvider(
+        _ provider: AgentSettingsProviderManifest
+    ) -> Bool {
+        provider.id == AgentRemoteProvider.anthropicSubscriptionProviderID
+            || provider.baseURL == AgentRemoteProvider.anthropicSubscriptionBaseURL
+    }
+
     private static func ensureChatGPTSubscriptionCredentials() async throws {
 #if os(macOS)
         do {
@@ -1007,6 +1058,49 @@ public enum MLXCoderSetupRunner {
         AgentOutput.standardError.writeString("ChatGPT Subscription connected.\n")
 #else
         throw MLXCoderSetupError.chatGPTSubscriptionUnsupported
+#endif
+    }
+
+    private static func ensureAnthropicSubscriptionCredentials() async throws {
+#if os(macOS)
+        do {
+            _ = try await AnthropicSubscriptionAuthService.loadValidCredentials()
+            return
+        } catch {
+            AgentOutput.standardError.writeString(
+                "Claude Subscription is not connected. Opening Claude login in the browser.\n"
+            )
+        }
+
+        let session = try await AnthropicSubscriptionAuthService.startSignIn()
+        let didOpen = await AnthropicSubscriptionAuthService.openAuthorizationURL(
+            session.authorizationURL
+        )
+        guard didOpen else {
+            throw AnthropicSubscriptionAuthError.browserOpenFailed
+        }
+
+        AgentOutput.standardError.writeString(
+            """
+            Complete login in the browser.
+            If the local callback does not return automatically, paste the callback URL or code here.
+            Otherwise press Return when the browser shows completion.
+
+            """
+        )
+        let callbackInput = try promptString(
+            "Callback URL/code (optional)",
+            defaultValue: nil,
+            allowEmpty: true
+        )
+        if let callbackInput = callbackInput.nilIfBlank {
+            try session.submitAuthorizationInput(callbackInput)
+        }
+
+        _ = try await session.waitForCredentials()
+        AgentOutput.standardError.writeString("Claude Subscription connected.\n")
+#else
+        throw MLXCoderSetupError.anthropicSubscriptionUnsupported
 #endif
     }
 
@@ -1170,6 +1264,75 @@ public enum MLXCoderSetupRunner {
         return selectedIndexes.map(String.init).joined(separator: ",")
     }
 
+    private static func selectAnthropicSubscriptionModels(
+        defaultModels: [AgentSettingsModelManifest] = []
+    ) throws -> [AnthropicSubscriptionModel.ModelOption] {
+        let models = AnthropicSubscriptionModel.availableModels
+        AgentOutput.standardError.writeString("\nClaude Subscription models:\n")
+        for (index, model) in models.enumerated() {
+            let context = model.contextWindowTokenLimit.map { "ctx \($0)" } ?? "ctx default"
+            let thinking = model.thinkingSupport?.supportsThinking == true ? ", thinking" : ""
+            AgentOutput.standardError.writeString(
+                "  \(index + 1). \(model.title) (\(model.modelID)) [\(context)\(thinking)]\n"
+            )
+        }
+
+        let defaultSelection = anthropicSubscriptionModelSelectionDefault(
+            models: models,
+            defaultModels: defaultModels
+        )
+        let value = try promptString(
+            "Model selection (number, list like 1,3, or all)",
+            defaultValue: defaultSelection,
+            allowEmpty: false
+        )
+        let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalizedValue == "all" {
+            return models
+        }
+
+        let tokens = normalizedValue
+            .split { $0 == "," || $0 == " " || $0 == ";" }
+            .map(String.init)
+        guard !tokens.isEmpty else {
+            throw MLXCoderSetupError.invalidChoice(value)
+        }
+
+        var selected: [AnthropicSubscriptionModel.ModelOption] = []
+        var seenIndexes = Set<Int>()
+        for token in tokens {
+            guard let index = Int(token),
+                  models.indices.contains(index - 1),
+                  seenIndexes.insert(index - 1).inserted else {
+                throw MLXCoderSetupError.invalidChoice(value)
+            }
+            selected.append(models[index - 1])
+        }
+        return selected
+    }
+
+    private static func anthropicSubscriptionModelSelectionDefault(
+        models: [AnthropicSubscriptionModel.ModelOption],
+        defaultModels: [AgentSettingsModelManifest]
+    ) -> String {
+        guard !defaultModels.isEmpty else {
+            return "1"
+        }
+        let selectedIndexes = defaultModels.compactMap { defaultModel in
+            models.firstIndex { option in
+                option.modelID == defaultModel.modelID
+                    || AnthropicSubscriptionModel.selectionID(forModelID: option.modelID) == defaultModel.id
+            }.map { $0 + 1 }
+        }
+        guard !selectedIndexes.isEmpty else {
+            return "1"
+        }
+        if selectedIndexes.count == models.count {
+            return "all"
+        }
+        return selectedIndexes.map(String.init).joined(separator: ",")
+    }
+
     private static func remoteModelManifest(
         from model: OpenRouterModelInfo,
         providerID: UUID,
@@ -1209,6 +1372,28 @@ public enum MLXCoderSetupRunner {
             configuredContextWindowLimit: option.contextWindowTokenLimit,
             generationParameterOverrides: nil,
             thinkingSupport: CodexAgentModel.thinkingSupport
+        )
+    }
+
+    private static func anthropicSubscriptionModelManifest(
+        option: AnthropicSubscriptionModel.ModelOption,
+        providerID: UUID,
+        providerName: String,
+        baseURL: String,
+        chatEndpoint: AgentRemoteChatEndpoint
+    ) -> AgentSettingsModelManifest {
+        let manifestID = AnthropicSubscriptionModel.selectionID(forModelID: option.modelID)
+        return AgentSettingsModelManifestFactory.remoteAPIModel(
+            manifestID: manifestID,
+            title: option.title,
+            modelID: option.modelID,
+            providerID: providerID,
+            providerName: providerName,
+            baseURL: baseURL,
+            chatEndpoint: chatEndpoint,
+            configuredContextWindowLimit: option.contextWindowTokenLimit,
+            generationParameterOverrides: nil,
+            thinkingSupport: option.thinkingSupport
         )
     }
 
@@ -1351,6 +1536,7 @@ public enum MLXCoderSetupRunner {
             Provider:
               1. OpenAI-compatible / MLX server
               2. ChatGPT Subscription
+              3. Claude Subscription
             """ + "\n"
         )
         let value = try promptString("Choice", defaultValue: "1", allowEmpty: false)
@@ -1359,6 +1545,8 @@ public enum MLXCoderSetupRunner {
             return .remoteAPI
         case "2", "chatgpt", "subscription", "chatgpt subscription", "codex":
             return .chatGPTSubscription
+        case "3", "claude", "anthropic", "claude subscription", "anthropic subscription":
+            return .anthropicSubscription
         default:
             throw MLXCoderSetupError.invalidChoice(value)
         }
@@ -1542,6 +1730,7 @@ private struct SetupProviderInput {
 private enum SetupProviderKind {
     case remoteAPI
     case chatGPTSubscription
+    case anthropicSubscription
 }
 
 private enum MLXCoderSetupError: LocalizedError {
@@ -1552,6 +1741,7 @@ private enum MLXCoderSetupError: LocalizedError {
     case noModelsConfigured
     case noRemoteModelsReturned
     case chatGPTSubscriptionUnsupported
+    case anthropicSubscriptionUnsupported
     case voiceToolExecutableNotFound
     case voiceToolBuildFailed(Int32)
     case voiceToolExecutableMissing(String)
@@ -1572,6 +1762,8 @@ private enum MLXCoderSetupError: LocalizedError {
             return "The server did not return any models from /models."
         case .chatGPTSubscriptionUnsupported:
             return "ChatGPT Subscription setup is available on macOS."
+        case .anthropicSubscriptionUnsupported:
+            return "Claude Subscription setup is available on macOS."
         case .voiceToolExecutableNotFound:
             return "Local voice executable was not found. Install or update mlx-coder so mlx-voice-transcriber is available next to mlx-coder or in PATH."
         case let .voiceToolBuildFailed(exitCode):

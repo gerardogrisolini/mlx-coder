@@ -82,6 +82,8 @@ public struct AgentRemoteProvider: Codable, Hashable, Sendable {
     public static let defaultOpenRouterModelID = "openrouter/auto"
     public static let chatGPTSubscriptionProviderID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
     public static let chatGPTSubscriptionBaseURL = "chatgpt://subscription"
+    public static let anthropicSubscriptionProviderID = UUID(uuidString: "00000000-0000-0000-0000-000000000004")!
+    public static let anthropicSubscriptionBaseURL = "anthropic://subscription"
 
     public let id: UUID
     public let name: String
@@ -116,7 +118,8 @@ public struct AgentRemoteProvider: Codable, Hashable, Sendable {
     }
 
     public var requiresAPIKey: Bool {
-        guard !isChatGPTSubscriptionProvider else {
+        guard !isChatGPTSubscriptionProvider,
+              !isAnthropicSubscriptionProvider else {
             return false
         }
         return Self.isOpenRouterBaseURL(baseURL)
@@ -127,6 +130,11 @@ public struct AgentRemoteProvider: Codable, Hashable, Sendable {
     public var isChatGPTSubscriptionProvider: Bool {
         id == Self.chatGPTSubscriptionProviderID
             || Self.isChatGPTSubscriptionBaseURL(baseURL)
+    }
+
+    public var isAnthropicSubscriptionProvider: Bool {
+        id == Self.anthropicSubscriptionProviderID
+            || Self.isAnthropicSubscriptionBaseURL(baseURL)
     }
 
     public static func normalizedName(_ value: String) -> String {
@@ -175,6 +183,10 @@ public struct AgentRemoteProvider: Codable, Hashable, Sendable {
 
     public static func isChatGPTSubscriptionBaseURL(_ value: String) -> Bool {
         normalizedBaseURL(value).lowercased() == chatGPTSubscriptionBaseURL
+    }
+
+    public static func isAnthropicSubscriptionBaseURL(_ value: String) -> Bool {
+        normalizedBaseURL(value).lowercased() == anthropicSubscriptionBaseURL
     }
 
 }

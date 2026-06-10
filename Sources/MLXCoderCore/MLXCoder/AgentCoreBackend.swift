@@ -267,6 +267,16 @@ public actor AgentCoreBackend {
 #else
                 throw AgentCoreBackendError.missingRemoteProvider
 #endif
+            } else if provider.isAnthropicSubscriptionProvider {
+#if os(macOS)
+                remoteBackend = AnthropicSubscriptionGenerationClient(
+                    configuration: resolvedConfiguration,
+                    provider: provider,
+                    mcpRuntime: mcpRuntime
+                )
+#else
+                throw AgentCoreBackendError.missingRemoteProvider
+#endif
             } else {
                 remoteBackend = RemoteGenerationClient(
                     configuration: resolvedConfiguration,

@@ -710,7 +710,7 @@ extension TerminalChat {
         isAtStartOfChatLine = terminator.hasSuffix("\n")
     }
 
-        static func compactToolLines(
+    static func compactToolLines(
         for toolCall: DirectAgentToolCall,
         statusIcon: String,
         contentInsetWidth: Int = 0
@@ -719,17 +719,17 @@ extension TerminalChat {
         let icon = MLXCoderACPBridge.toolIcon(for: toolCall.name)
         guard let target = MLXCoderACPBridge.displayToolTarget(for: toolCall),
               title.hasSuffix(target) else {
-            return [compactToolHeaderLine("\(icon)  \(title) \(statusIcon)")]
+            return [compactToolHeaderLine("\(icon) \(title) \(statusIcon)")]
         }
 
         let action = title
             .dropLast(target.count)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !action.isEmpty else {
-            return [compactToolHeaderLine("\(icon)  \(title) \(statusIcon)")]
+            return [compactToolHeaderLine("\(icon) \(title) \(statusIcon)")]
         }
         return [
-            compactToolHeaderLine("\(icon)  \(action):"),
+            compactToolHeaderLine("\(icon) \(action):"),
             compactToolStatusLine(
                 target: target,
                 statusIcon: statusIcon,
@@ -800,7 +800,7 @@ extension TerminalChat {
         let reset = "\u{1B}[0m"
         let prefix = consumeToolLeadingLineBreakRequirement() ? "\n" : ""
         let lineInset = chatLineInsetPrefix
-                let text = lines
+        let text = lines
             .map { "\(lineInset)\(Self.renderDetailedToolLine($0))\(reset)" }
             .joined(separator: "\n")
         AgentOutput.standardError.writeString("\(prefix)\(text)\n")
@@ -808,7 +808,7 @@ extension TerminalChat {
         isAtStartOfChatLine = true
     }
 
-        private static func renderDetailedToolLine(_ line: String) -> String {
+    private static func renderDetailedToolLine(_ line: String) -> String {
         if line.hasPrefix("  ") || line.hasPrefix("    ") {
             return TerminalCodeBlockRenderer.renderLine(line, language: nil)
         }

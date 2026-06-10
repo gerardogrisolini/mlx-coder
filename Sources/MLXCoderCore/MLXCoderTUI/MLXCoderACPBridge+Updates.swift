@@ -179,6 +179,7 @@ extension MLXCoderACPBridge {
     }
 
     public static func toolIcon(for toolName: String) -> String {
+        /*
         switch toolName {
         case "local.exec":
             return "💻"
@@ -218,6 +219,8 @@ extension MLXCoderACPBridge {
             }
             return "🔨"
         }
+        */
+        "🛠️"
     }
 
     public static func xcodeToolKind(for rawName: String) -> String {
