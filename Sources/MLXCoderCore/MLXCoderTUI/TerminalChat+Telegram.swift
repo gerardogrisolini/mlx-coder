@@ -119,6 +119,10 @@ extension TerminalChat {
         let text = message.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !text.isEmpty else { return }
 
+        if await handleTelegramPermissionResponseIfNeeded(text, chatID: message.chatID) {
+            return
+        }
+
         if TerminalTelegramRemoteCommand(text: text) == .start {
             await sendTelegramSystemMessage(
                 "Telegram is already linked to this mlx-coder session. Send a prompt or /help.",
@@ -237,6 +241,54 @@ extension TerminalChat {
     func printTelegramStatus() async {
         telegramControlState = await telegramControlService.currentState()
         writeSystemMessage(telegramStatusText() + "\n")
+    }
+
+    func telegramToolAuthorizationHandler(
+        for origin: TerminalPromptOrigin
+    ) -> AgentToolAuthorizationHandler? {
+        guard origin.telegramChatID != nil else {
+            return nil
+        }
+        return { [weak self] request in
+            guard let self else {
+                return false
+            }
+            return await self.authorizeTelegramToolRequest(request, origin: origin)
+        }
+    }
+
+    func authorizeTelegramToolRequest(
+        _ request: AgentToolAuthorizationRequest,
+        origin: TerminalPromptOrigin
+    ) async -> Bool {
+        guard request.toolName == "local.exec" else {
+            return true
+        }
+        guard let chatID = origin.telegramChatID,
+              telegramLinkedChatID == chatID,
+              telegramControlState.isActive else {
+            return false
+        }
+
+        return await telegramPermissionBroker.authorize(request, chatID: chatID) { [weak self] message in
+            await self?.sendTelegramSystemMessage(message, to: chatID)
+        }
+    }
+
+    func handleTelegramPermissionResponseIfNeeded(
+        _ text: String,
+        chatID: Int64
+    ) async -> Bool {
+        let result = await telegramPermissionBroker.handleMessage(text, chatID: chatID)
+        switch result {
+        case .notHandled:
+            return false
+        case let .handled(reply):
+            if let reply = reply?.nilIfBlank {
+                await sendTelegramSystemMessage(reply, to: chatID)
+            }
+            return true
+        }
     }
 
     func sendTelegramCompletionIfLinked(
@@ -358,6 +410,7 @@ extension TerminalChat {
         """
         Send a message to prompt the current mlx-coder TUI session.
         Remote commands: /status, /changes, /retry, /help.
+        Permission replies: /allow ID, /always ID, /deny ID.
         Turn Telegram off from the TUI with /telegram off.
         """
     }

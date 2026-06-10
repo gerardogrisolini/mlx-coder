@@ -179,6 +179,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         let systemPrompt: String
         let sessionKey: String
         let history: [AgentRuntimeMessage]
+        let allowedToolNames: Set<String>?
         let thinkingSelection: AgentThinkingSelection?
         let appMode: Bool
     }
@@ -188,6 +189,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         let modelID: String
         let workingDirectory: String
         let systemPrompt: String
+        let toolSelection: String?
         let appMode: Bool
 
         init(configuration: RequestConfiguration) {
@@ -202,6 +204,9 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
             modelID = model.isEmpty ? CodexAgentModel.defaultLLMID : model
             workingDirectory = configuration.workingDirectory
             systemPrompt = configuration.systemPrompt
+            toolSelection = Self.toolSelectionSignature(
+                configuration.allowedToolNames
+            )
             appMode = configuration.appMode
         }
 
@@ -220,12 +225,28 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                     modelID,
                     workingDirectory,
                     systemPrompt,
+                    toolSelection ?? "tools:any",
                     appMode ? "app" : "cli"
                 ].joined(separator: "\u{1f}")
             }
             return data.base64EncodedString()
         }
-    }
+
+        private static func toolSelectionSignature(_ allowedToolNames: Set<String>?) -> String? {
+            guard let allowedToolNames else {
+                return nil
+            }
+
+            let names = allowedToolNames
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .sorted()
+            guard !names.isEmpty else {
+                return "tools:none"
+            }
+            return "tools:\(names.joined(separator: "\u{1e}"))"
+        }
+        }
 
     private struct StreamAccumulatorResult {
         let text: String
@@ -488,7 +509,9 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
             return
         }
         let oldSystemPrompt = session.systemPrompt
+        let oldAllowedToolNames = session.allowedToolNames
         session.systemPrompt = systemPrompt
+
         session.messages = RemoteGenerationClient.replacingSystemPrompt(
             in: session.messages,
             cwd: session.cwd,
@@ -498,13 +521,14 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         session.allowedToolNames = allowedToolNames
         session.thinkingSelection = thinkingSelection
         session.preserveThinking = preserveThinking
-        if oldSystemPrompt != systemPrompt {
+        if oldSystemPrompt != systemPrompt || oldAllowedToolNames != allowedToolNames {
             if let chatGPTSessionID = session.chatGPTSessionID {
                 webSocketPool.closeSession(sessionID: chatGPTSessionID)
             }
             session.continuation = nil
             session.chatGPTSessionID = nil
         }
+
         sessions[id] = session
     }
 
@@ -601,9 +625,10 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
             systemPrompt: session.systemPrompt ?? "",
             sessionKey: session.cacheKey?.nilIfBlank ?? session.id,
             history: [],
+            allowedToolNames: session.allowedToolNames,
             thinkingSelection: session.thinkingSelection,
             appMode: configuration.appMode
-        )
+                )
         let sessionIdentity = SessionIdentity(configuration: requestConfiguration)
         let chatGPTSessionID = sessionIDsByIdentity[sessionIdentity] ?? UUID().uuidString
         storeSessionID(chatGPTSessionID, for: sessionIdentity)

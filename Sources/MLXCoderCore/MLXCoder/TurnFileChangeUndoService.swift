@@ -102,10 +102,58 @@ public enum TurnFileChangeUndoService {
             )
         }
 
+                // `git apply` can exit 0 while silently skipping patches whose paths
+        // fall outside the current repository subtree (it prints
+        // "Skipped patch ..." and succeeds). Verify the undo actually landed
+        // so callers can fall back to captured snapshots when it did not.
+        guard undoWasApplied(summary: summary, baseDirectoryURL: baseDirectoryURL) else {
+            throw NSError(
+                domain: "mlx-coder.undo",
+                code: 1,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "git apply --reverse succeeded but one or more files were not reverted."
+                ]
+            )
+        }
+
         return true
         #else
         return false
         #endif
+    }
+
+    static func undoWasApplied(
+        summary: TurnFileChangeSummary,
+        baseDirectoryURL: URL
+    ) -> Bool {
+        for entry in summary.entries {
+            let fileURL = fileURLForUndoEntry(entry, baseDirectoryURL: baseDirectoryURL)
+
+            switch entry.existedBefore {
+            case false:
+                var isDirectory: ObjCBool = false
+                let exists = FileManager.default.fileExists(
+                    atPath: fileURL.path,
+                    isDirectory: &isDirectory
+                )
+                if exists && !isDirectory.boolValue {
+                    return false
+                }
+            case true:
+                guard let beforeData = entry.beforeData else {
+                    continue
+                }
+                guard let currentData = try? Data(contentsOf: fileURL),
+                      currentData == beforeData else {
+                    return false
+                }
+            case nil:
+                continue
+            }
+        }
+
+        return true
     }
 
     static func restoreFilesFromSnapshots(

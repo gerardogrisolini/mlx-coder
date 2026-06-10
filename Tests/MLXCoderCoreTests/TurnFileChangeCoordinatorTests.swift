@@ -90,6 +90,67 @@ struct TurnFileChangeCoordinatorTests {
         #expect(await coordinator.latestFileChangeSummary() == nil)
     }
 
+        @Test
+    func undoRestoresFilesWhenBaseDirectoryIsGitRepoSubdirectory() async throws {
+        let repoDirectory = try temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: repoDirectory)
+        }
+                // Minimal valid git layout so `git apply` resolves paths against the
+        // repository root and silently skips patches outside the subtree.
+        let gitDirectory = repoDirectory.appendingPathComponent(".git", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: gitDirectory.appendingPathComponent("objects", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: gitDirectory.appendingPathComponent("refs", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data("ref: refs/heads/main\n".utf8).write(
+            to: gitDirectory.appendingPathComponent("HEAD")
+        )
+        let baseDirectory = repoDirectory.appendingPathComponent("sub", isDirectory: true)
+        let fileURL = baseDirectory.appendingPathComponent("Sources/App.swift")
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let before = Data("let value = 1\n".utf8)
+        let after = Data("let value = 2\n".utf8)
+        try after.write(to: fileURL)
+        let patch = """
+        diff --git a/Sources/App.swift b/Sources/App.swift
+        index 3c37c33..6392506 100644
+        --- a/Sources/App.swift
+        +++ b/Sources/App.swift
+        @@ -1 +1 @@
+        -let value = 1
+        +let value = 2
+        """
+        let summary = TurnFileChangeSummary(
+            entries: [
+                TurnFileChangeSummary.Entry(
+                    path: "Sources/App.swift",
+                    additions: 1,
+                    deletions: 1,
+                    status: .modified,
+                    isBinary: false,
+                    existedBefore: true,
+                    beforeDataBase64: before.base64EncodedString(),
+                    patch: patch
+                )
+            ]
+        )
+
+        try await TurnFileChangeUndoService.undo(
+            summary: summary,
+            baseDirectoryURL: baseDirectory
+        )
+
+        #expect(try Data(contentsOf: fileURL) == before)
+    }
+
     private func temporaryDirectory() throws -> URL {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent(

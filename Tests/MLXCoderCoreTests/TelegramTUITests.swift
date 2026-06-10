@@ -511,4 +511,122 @@ struct TelegramTUITests {
         #expect(TerminalTelegramPairingService.pairingCode(in: "\n/start AbCd1234\n") == "ABCD1234")
         #expect(TerminalTelegramPairingService.pairingCode(in: "/start") == nil)
     }
+
+    @Test
+    func telegramPermissionCommandsParseRemoteApprovalReplies() {
+        #expect(
+            TerminalTelegramPermissionBroker.permissionCommand(from: "/allow ABC123")
+                == TerminalTelegramPermissionCommand(decision: .allowOnce, requestID: "ABC123")
+        )
+        #expect(
+            TerminalTelegramPermissionBroker.permissionCommand(from: "sì abc-123")
+                == TerminalTelegramPermissionCommand(decision: .allowOnce, requestID: "ABC123")
+        )
+        #expect(
+            TerminalTelegramPermissionBroker.permissionCommand(from: "/always@mlx_coder_bot f00")
+                == TerminalTelegramPermissionCommand(decision: .allowAlways, requestID: "F00")
+        )
+        #expect(
+            TerminalTelegramPermissionBroker.permissionCommand(from: "annulla")
+                == TerminalTelegramPermissionCommand(decision: .deny, requestID: nil)
+        )
+        #expect(TerminalTelegramPermissionBroker.permissionCommand(from: "run the tests") == nil)
+    }
+
+    @Test
+    func telegramPermissionBrokerWaitsForRemoteReply() async throws {
+        let broker = TerminalTelegramPermissionBroker()
+        let collector = TelegramTestMessageCollector()
+        let command = "mlx-telegram-permission-test-\(UUID().uuidString)"
+        let request = Self.localExecAuthorizationRequest(command: "\(command) --flag")
+
+        let authorization = Task {
+            await broker.authorize(
+                request,
+                chatID: 42,
+                timeoutNanoseconds: 5_000_000_000
+            ) { message in
+                await collector.append(message)
+            }
+        }
+
+        let message = await collector.firstMessage()
+        #expect(message.contains("Permission required"))
+        #expect(message.contains(command))
+        let requestID = try #require(Self.telegramPermissionRequestID(in: message))
+
+        let reminder = await broker.handleMessage("queue another prompt", chatID: 42)
+        #expect(reminder.isHandled)
+        if case let .handled(reply) = reminder {
+            #expect(reply?.contains("Permission request pending") == true)
+        }
+
+        let reply = await broker.handleMessage("/allow \(requestID)", chatID: 42)
+        #expect(reply.isHandled)
+        if case let .handled(replyText) = reply {
+            #expect(replyText?.contains("allowed once") == true)
+        }
+        #expect(await authorization.value)
+    }
+
+    @Test
+    func telegramPermissionBrokerHandlesStrayPermissionRepliesWithoutPrompting() async {
+        let broker = TerminalTelegramPermissionBroker()
+        let permissionReply = await broker.handleMessage("/allow ABC123", chatID: 42)
+        let regularPrompt = await broker.handleMessage("please continue", chatID: 42)
+
+        #expect(permissionReply.isHandled)
+        if case let .handled(reply) = permissionReply {
+            #expect(reply == "No permission request is pending.")
+        }
+        #expect(regularPrompt == .notHandled)
+    }
+
+    private static func localExecAuthorizationRequest(command: String) -> AgentToolAuthorizationRequest {
+        AgentToolAuthorizationRequest(
+            sessionID: "terminal-test",
+            toolCallID: "tool-call-test",
+            toolName: "local.exec",
+            title: "Run \(command)",
+            kind: "execute",
+            command: command,
+            workingDirectory: "/tmp/project"
+        )
+    }
+
+    private static func telegramPermissionRequestID(in message: String) -> String? {
+        message
+            .split(separator: "\n")
+            .first { line in
+                line.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .hasPrefix("Request ID:")
+            }
+            .map {
+                $0.replacingOccurrences(of: "Request ID:", with: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+    }
+}
+
+private actor TelegramTestMessageCollector {
+    private var messages: [String] = []
+    private var waiters: [CheckedContinuation<String, Never>] = []
+
+    func append(_ message: String) {
+        messages.append(message)
+        let pendingWaiters = waiters
+        waiters.removeAll()
+        for waiter in pendingWaiters {
+            waiter.resume(returning: message)
+        }
+    }
+
+    func firstMessage() async -> String {
+        if let message = messages.first {
+            return message
+        }
+        return await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
 }

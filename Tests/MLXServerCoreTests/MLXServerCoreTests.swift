@@ -580,6 +580,236 @@ func diskKVCachePersistenceWriterCoalescesPendingJobsByKey() {
 }
 
 @Test
+func diskPersistenceBoundaryPolicyAlignsStoreLength() {
+    // Too short: not worth a disk checkpoint.
+    #expect(DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(0) == 0)
+    #expect(DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(511) == 0)
+    // Short prompts above the minimum are stored as-is.
+    #expect(DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(512) == 512)
+    #expect(DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(544) == 544)
+    // Once past minimum + trim, lengths align down to the boundary.
+    #expect(DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(1_060) == 1_024)
+    #expect(DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(2_100) == 2_048)
+    // Consecutive turns within one boundary produce the same store length.
+    #expect(
+        DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(5_200)
+            == DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(6_100)
+    )
+    // Aligned-down results below the minimum fall back to the full length.
+    #expect(DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(1_040) == 1_040)
+}
+
+@Test
+func diskKVCacheSkipsPersistenceForDominatedIdentities() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("mlx-server-dedup-\(UUID().uuidString)", isDirectory: true)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let store = MLXServerDiskKVCacheStore(
+        configuration: MLXServerDiskKVCacheConfiguration(
+            directory: directory,
+            limitBytes: 1_000_000
+        )
+    )
+    let storedIdentity = MLXServerDiskKVCacheIdentity(
+        modelID: "mlx-community/test-a",
+        runtimeKind: .llm,
+        cacheLayoutSignature: "standard",
+        promptTokenDigest: "stored",
+        promptTokenCount: 4,
+        promptTokenIDs: [1, 2, 3, 4]
+    )
+
+    let target = try #require(try store.preparePersistenceTarget(for: storedIdentity))
+    try Data(repeating: 1, count: 16).write(to: target.temporaryURL)
+    try store.commitPersistedCache(identity: storedIdentity, target: target)
+
+    // Identical identity: already on disk, no rewrite needed.
+    #expect(!store.needsPersistence(for: storedIdentity))
+
+    // Strict prefix of the stored entry: dominated, no write needed.
+    let prefixIdentity = MLXServerDiskKVCacheIdentity(
+        modelID: "mlx-community/test-a",
+        runtimeKind: .llm,
+        cacheLayoutSignature: "standard",
+        promptTokenDigest: "prefix",
+        promptTokenCount: 2,
+        promptTokenIDs: [1, 2]
+    )
+    #expect(!store.needsPersistence(for: prefixIdentity))
+
+    // Extension of the stored entry: new tokens, must be written.
+    let extendedIdentity = MLXServerDiskKVCacheIdentity(
+        modelID: "mlx-community/test-a",
+        runtimeKind: .llm,
+        cacheLayoutSignature: "standard",
+        promptTokenDigest: "extended",
+        promptTokenCount: 6,
+        promptTokenIDs: [1, 2, 3, 4, 5, 6]
+    )
+    #expect(store.needsPersistence(for: extendedIdentity))
+
+    // Divergent prompt: unrelated, must be written.
+    let divergentIdentity = MLXServerDiskKVCacheIdentity(
+        modelID: "mlx-community/test-a",
+        runtimeKind: .llm,
+        cacheLayoutSignature: "standard",
+        promptTokenDigest: "divergent",
+        promptTokenCount: 4,
+        promptTokenIDs: [1, 2, 9, 9]
+    )
+    #expect(store.needsPersistence(for: divergentIdentity))
+}
+
+@Test
+func diskKVCacheCommitPrunesSupersededPrefixEntries() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("mlx-server-superseded-\(UUID().uuidString)", isDirectory: true)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let store = MLXServerDiskKVCacheStore(
+        configuration: MLXServerDiskKVCacheConfiguration(
+            directory: directory,
+            limitBytes: 1_000_000
+        )
+    )
+    let firstTurnIdentity = MLXServerDiskKVCacheIdentity(
+        modelID: "mlx-community/test-a",
+        runtimeKind: .llm,
+        cacheLayoutSignature: "standard",
+        promptTokenDigest: "turn-1",
+        promptTokenCount: 3,
+        promptTokenIDs: [1, 2, 3]
+    )
+    let unrelatedIdentity = MLXServerDiskKVCacheIdentity(
+        modelID: "mlx-community/test-a",
+        runtimeKind: .llm,
+        cacheLayoutSignature: "standard",
+        promptTokenDigest: "other-session",
+        promptTokenCount: 3,
+        promptTokenIDs: [9, 8, 7]
+    )
+    let secondTurnIdentity = MLXServerDiskKVCacheIdentity(
+        modelID: "mlx-community/test-a",
+        runtimeKind: .llm,
+        cacheLayoutSignature: "standard",
+        promptTokenDigest: "turn-2",
+        promptTokenCount: 5,
+        promptTokenIDs: [1, 2, 3, 4, 5]
+    )
+
+    let firstTarget = try #require(try store.preparePersistenceTarget(for: firstTurnIdentity))
+    try Data(repeating: 1, count: 16).write(to: firstTarget.temporaryURL)
+    try store.commitPersistedCache(identity: firstTurnIdentity, target: firstTarget)
+
+    let unrelatedTarget = try #require(try store.preparePersistenceTarget(for: unrelatedIdentity))
+    try Data(repeating: 2, count: 16).write(to: unrelatedTarget.temporaryURL)
+    try store.commitPersistedCache(identity: unrelatedIdentity, target: unrelatedTarget)
+
+    let secondTarget = try #require(try store.preparePersistenceTarget(for: secondTurnIdentity))
+    try Data(repeating: 3, count: 16).write(to: secondTarget.temporaryURL)
+    try store.commitPersistedCache(identity: secondTurnIdentity, target: secondTarget)
+
+    // The first turn's entry is a strict prefix of the second turn's entry
+    // and must be pruned; the unrelated session's entry must survive.
+    #expect(!FileManager.default.fileExists(atPath: firstTarget.cacheURL.path))
+    #expect(!FileManager.default.fileExists(atPath: firstTarget.metadataURL.path))
+    #expect(FileManager.default.fileExists(atPath: unrelatedTarget.cacheURL.path))
+    #expect(FileManager.default.fileExists(atPath: unrelatedTarget.metadataURL.path))
+    #expect(FileManager.default.fileExists(atPath: secondTarget.cacheURL.path))
+    #expect(FileManager.default.fileExists(atPath: secondTarget.metadataURL.path))
+}
+
+@Test
+func diskKVCacheIndexRebuildRemovesOrphanedCacheFiles() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("mlx-server-orphans-\(UUID().uuidString)", isDirectory: true)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let store = MLXServerDiskKVCacheStore(
+        configuration: MLXServerDiskKVCacheConfiguration(
+            directory: directory,
+            limitBytes: 1_000_000
+        )
+    )
+    let identity = MLXServerDiskKVCacheIdentity(
+        modelID: "mlx-community/test-a",
+        runtimeKind: .llm,
+        cacheLayoutSignature: "standard",
+        promptTokenDigest: "first",
+        promptTokenCount: 2,
+        promptTokenIDs: [1, 2]
+    )
+
+    let target = try #require(try store.preparePersistenceTarget(for: identity))
+    try Data(repeating: 1, count: 16).write(to: target.temporaryURL)
+    try store.commitPersistedCache(identity: identity, target: target)
+
+    let modelDirectory = target.cacheURL.deletingLastPathComponent()
+    let orphanedCacheURL = modelDirectory.appendingPathComponent("orphan.safetensors")
+    try Data(repeating: 2, count: 16).write(to: orphanedCacheURL)
+    let staleTemporaryURL = modelDirectory.appendingPathComponent("stale.tmp.safetensors")
+    try Data(repeating: 3, count: 16).write(to: staleTemporaryURL)
+    try FileManager.default.setAttributes(
+        [.modificationDate: Date(timeIntervalSinceNow: -3 * 60 * 60)],
+        ofItemAtPath: staleTemporaryURL.path
+    )
+    let freshTemporaryURL = modelDirectory.appendingPathComponent("fresh.tmp.safetensors")
+    try Data(repeating: 4, count: 16).write(to: freshTemporaryURL)
+
+    // A fresh store (e.g. after a server restart) rebuilds the index from
+    // disk and must clean orphans up; the original store's index is warm.
+    let restartedStore = MLXServerDiskKVCacheStore(
+        configuration: MLXServerDiskKVCacheConfiguration(
+            directory: directory,
+            limitBytes: 1_000_000
+        )
+    )
+    restartedStore.enforceDiskLimit()
+
+    #expect(FileManager.default.fileExists(atPath: target.cacheURL.path))
+    #expect(FileManager.default.fileExists(atPath: target.metadataURL.path))
+    #expect(!FileManager.default.fileExists(atPath: orphanedCacheURL.path))
+    #expect(!FileManager.default.fileExists(atPath: staleTemporaryURL.path))
+    #expect(FileManager.default.fileExists(atPath: freshTemporaryURL.path))
+}
+
+@Test
+func diskKVCachePersistenceWriterRunsPendingJobsWithDistinctKeys() {
+    let writer = MLXServerDiskKVCachePersistenceWriter()
+    let firstStarted = DispatchSemaphore(value: 0)
+    let releaseFirst = DispatchSemaphore(value: 0)
+    let bothFinished = DispatchSemaphore(value: 0)
+    let recorder = DiskKVCacheWriterExecutionRecorder()
+
+    writer.enqueue(coalescingKey: "blocking") {
+        firstStarted.signal()
+        _ = releaseFirst.wait(timeout: .now() + .seconds(2))
+    }
+    #expect(firstStarted.wait(timeout: .now() + .seconds(2)) == .success)
+
+    // Pending persists for different entries (e.g. concurrent sessions on the
+    // same model) must not replace each other.
+    writer.enqueue(coalescingKey: "entry-a") {
+        recorder.record("entry-a")
+    }
+    writer.enqueue(coalescingKey: "entry-b") {
+        recorder.record("entry-b")
+        bothFinished.signal()
+    }
+
+    releaseFirst.signal()
+    #expect(bothFinished.wait(timeout: .now() + .seconds(2)) == .success)
+    #expect(recorder.values == ["entry-a", "entry-b"])
+}
+
+@Test
 func savesAndLoadsModelsJSON() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("mlx-server-models-\(UUID().uuidString)", isDirectory: true)

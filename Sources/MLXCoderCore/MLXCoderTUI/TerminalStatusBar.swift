@@ -573,14 +573,11 @@ public final class TerminalStatusBar: @unchecked Sendable {
         if let duration = latestMetrics?.responseDurationSeconds {
             fragments.append("time \(Self.durationText(duration))")
         }
+        if let prefillRate = latestMetrics?.promptTokensPerSecond {
+            fragments.append("pre \(Self.rateText(prefillRate)) tok/s")
+        }
         if let generationRate = latestMetrics?.completionTokensPerSecond {
             fragments.append("gen \(Self.rateText(generationRate)) tok/s")
-        }
-        if let prefillTokens = latestMetrics?.promptTokenCount {
-            fragments.append("pre \(Self.tokenCountText(prefillTokens))")
-        }
-        if let promptRate = latestMetrics?.promptTokensPerSecond {
-            fragments.append("pro \(Self.rateText(promptRate)) tok/s")
         }
         return fragments.joined(separator: " | ")
     }

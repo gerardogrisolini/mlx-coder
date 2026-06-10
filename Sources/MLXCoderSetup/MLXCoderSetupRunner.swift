@@ -36,29 +36,12 @@ public enum MLXCoderSetupRunner {
         )
 
         let settingsURL = AgentSettingsManifestStore.settingsURL()
-        var existingManifest: AgentSettingsManifest?
+        var originalManifest: AgentSettingsManifest?
+        var manifest: AgentSettingsManifest?
         if FileManager.default.fileExists(atPath: settingsURL.path) {
             do {
-                existingManifest = try AgentSettingsManifestStore.loadRequired(from: settingsURL)
-                let shouldReconfigure = try promptYesNo(
-                    "settings.json already exists. Reconfigure providers and models?",
-                    defaultValue: false
-                )
-                if !shouldReconfigure {
-                    guard existingManifest != nil else {
-                        throw MLXCoderSetupError.noModelsConfigured
-                    }
-                    let existingManifest = try requireExistingManifest(existingManifest)
-                    let manifest = try await configureOptionalIntegrations(in: existingManifest)
-                    let shouldWriteSettings = manifest != existingManifest
-                    let result = try MLXCoderSupportFileService.ensureRequiredFiles(
-                        settingsManifest: manifest,
-                        overwriteSettings: shouldWriteSettings
-                    )
-                    printResult(result, settingsWasWritten: shouldWriteSettings)
-                    printCompletion()
-                    return
-                }
+                originalManifest = try AgentSettingsManifestStore.loadRequired(from: settingsURL)
+                manifest = originalManifest
             } catch {
                 let shouldOverwrite = try promptYesNo(
                     "settings.json exists but is invalid. Rewrite it?",
@@ -70,12 +53,42 @@ public enum MLXCoderSetupRunner {
             }
         }
 
-        let manifest = try await buildSettingsManifest(existingManifest: existingManifest)
+        if manifest == nil {
+            AgentOutput.standardError.writeString(
+                "No valid settings.json found. Configure providers and models first.\n\n"
+            )
+        }
+
+        var didChangeSettings = false
+        while true {
+            let section = try promptSetupSection(currentManifest: manifest)
+            guard section != .finish else {
+                break
+            }
+
+            let previousManifest = manifest
+            manifest = try await configureSetupSection(section, currentManifest: manifest)
+            if manifest != previousManifest {
+                didChangeSettings = true
+            }
+
+            guard try promptYesNo("Modify another setup section?", defaultValue: false) else {
+                break
+            }
+        }
+
+        guard let finalManifest = manifest else {
+            throw MLXCoderSetupError.noModelsConfigured
+        }
+
+        let shouldWriteSettings = didChangeSettings
+            || originalManifest == nil
+            || finalManifest != originalManifest
         let result = try MLXCoderSupportFileService.ensureRequiredFiles(
-            settingsManifest: manifest,
-            overwriteSettings: true
+            settingsManifest: finalManifest,
+            overwriteSettings: shouldWriteSettings
         )
-        printResult(result, settingsWasWritten: true)
+        printResult(result, settingsWasWritten: shouldWriteSettings)
         printCompletion()
     }
 
@@ -83,12 +96,155 @@ public enum MLXCoderSetupRunner {
         AgentOutput.standardError.writeString("\nSetup completed.\n\n")
     }
 
-    private static func buildSettingsManifest(
-        existingManifest: AgentSettingsManifest? = nil
+    private static func requireExistingManifest(
+        _ manifest: AgentSettingsManifest?
+    ) throws -> AgentSettingsManifest {
+        guard let manifest else {
+            throw MLXCoderSetupError.noModelsConfigured
+        }
+        return manifest
+    }
+
+    private static func promptSetupSection(
+        currentManifest manifest: AgentSettingsManifest?
+    ) throws -> SetupSection {
+        while true {
+            let options = setupSectionOptions(currentManifest: manifest)
+            let defaultSection: SetupSection = manifest?.models.isEmpty == false ? .finish : .providersAndModels
+            let defaultIndex = options.firstIndex { $0.section == defaultSection } ?? 0
+
+            AgentOutput.standardError.writeString("Setup sections:\n")
+            for (index, option) in options.enumerated() {
+                let marker = index == defaultIndex ? " *" : ""
+                let detail = option.detail.map { " - \($0)" } ?? ""
+                AgentOutput.standardError.writeString(
+                    "  \(index + 1). \(option.section.title)\(detail)\(marker)\n"
+                )
+            }
+
+            let value = try promptString(
+                "Section",
+                defaultValue: String(defaultIndex + 1),
+                allowEmpty: false
+            )
+            let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let selectedSection: SetupSection?
+            if let index = Int(normalizedValue),
+               options.indices.contains(index - 1) {
+                selectedSection = options[index - 1].section
+            } else {
+                selectedSection = options.first { option in
+                    option.section.matches(normalizedValue)
+                }?.section
+            }
+
+            guard let selectedSection else {
+                throw MLXCoderSetupError.invalidChoice(value)
+            }
+            if selectedSection.requiresConfiguredModels,
+               manifest?.models.isEmpty != false {
+                AgentOutput.standardError.writeString(
+                    "Configure providers and models before modifying that section.\n\n"
+                )
+                continue
+            }
+            return selectedSection
+        }
+    }
+
+    private static func setupSectionOptions(
+        currentManifest manifest: AgentSettingsManifest?
+    ) -> [SetupSectionOption] {
+        [
+            SetupSectionOption(
+                section: .providersAndModels,
+                detail: providersAndModelsSetupDetail(manifest)
+            ),
+            SetupSectionOption(
+                section: .defaultModel,
+                detail: defaultModelSetupDetail(manifest)
+            ),
+            SetupSectionOption(
+                section: .defaultThinking,
+                detail: defaultThinkingSetupDetail(manifest)
+            ),
+            SetupSectionOption(
+                section: .telegram,
+                detail: manifest?.telegram?.isEnabled == true ? "enabled" : "disabled"
+            ),
+            SetupSectionOption(
+                section: .voice,
+                detail: manifest?.voice?.isConfigured == true ? "enabled" : "disabled"
+            ),
+            SetupSectionOption(section: .finish, detail: nil)
+        ]
+    }
+
+    private static func providersAndModelsSetupDetail(
+        _ manifest: AgentSettingsManifest?
+    ) -> String {
+        let providerCount = manifest?.providers.count ?? 0
+        let modelCount = manifest?.models.count ?? 0
+        if providerCount == 0 && modelCount == 0 {
+            return "not configured"
+        }
+        return "\(providerCount) providers, \(modelCount) models"
+    }
+
+    private static func defaultModelSetupDetail(
+        _ manifest: AgentSettingsManifest?
+    ) -> String {
+        guard let manifest,
+              !manifest.models.isEmpty else {
+            return "requires providers/models"
+        }
+        if let model = selectedModel(in: manifest) {
+            return model.displayTitle
+        }
+        return "not selected"
+    }
+
+    private static func defaultThinkingSetupDetail(
+        _ manifest: AgentSettingsManifest?
+    ) -> String {
+        guard let manifest,
+              !manifest.models.isEmpty else {
+            return "requires providers/models"
+        }
+        guard let model = selectedModel(in: manifest) else {
+            return "requires default model"
+        }
+        guard model.supportsThinking else {
+            return "not supported by selected model"
+        }
+        let selection = model.thinkingSelection(for: manifest.selectedThinkingSelection)
+        return selection?.displayTitle ?? "default"
+    }
+
+    private static func configureSetupSection(
+        _ section: SetupSection,
+        currentManifest manifest: AgentSettingsManifest?
     ) async throws -> AgentSettingsManifest {
-        var providerInputs = try await reconfigureExistingProviders(
-            existingManifest
-        )
+        switch section {
+        case .providersAndModels:
+            return try await configureProvidersAndModels(existingManifest: manifest)
+        case .defaultModel:
+            return try configureDefaultModel(in: requireExistingManifest(manifest))
+        case .defaultThinking:
+            return try configureDefaultThinking(in: requireExistingManifest(manifest))
+        case .telegram:
+            return try await configureTelegram(in: requireExistingManifest(manifest))
+        case .voice:
+            return try configureVoice(in: requireExistingManifest(manifest))
+        case .finish:
+            return try requireExistingManifest(manifest)
+        }
+    }
+
+    private static func configureProvidersAndModels(
+        existingManifest: AgentSettingsManifest?
+    ) async throws -> AgentSettingsManifest {
+        var providerInputs = try await reconfigureExistingProviders(existingManifest)
         if providerInputs.isEmpty {
             repeat {
                 providerInputs.append(try await readProvider())
@@ -112,22 +268,14 @@ public enum MLXCoderSetupRunner {
             throw MLXCoderSetupError.noModelsConfigured
         }
 
-        let selectedModelID: String
-        if models.count == 1 {
-            selectedModelID = models[0].id
-        } else {
-            selectedModelID = try selectDefaultModel(
-                from: models,
-                defaultModelID: existingManifest?.selectedModelID
-            )
-        }
-
-        let selectedThinkingSelection = try selectDefaultThinkingSelection(
+        let selectedModelID = preservedOrFirstSelectedModelID(
+            from: models,
+            existingSelectedModelID: existingManifest?.selectedModelID
+        )
+        let selectedThinkingSelection = setupDefaultThinkingSelection(
             for: models.first { $0.matches(selectedModelID) },
             existingSelection: existingManifest?.selectedThinkingSelection
         )
-        let telegram = try await promptTelegramSettings(existingSettings: existingManifest?.telegram)
-        let voice = try promptVoiceSettings(existingSettings: existingManifest?.voice)
         let apiKeysByProviderID: [String: String] = Dictionary(
             uniqueKeysWithValues: providerInputs.compactMap { input -> (String, String)? in
                 guard let apiKey = input.apiKey else {
@@ -138,21 +286,99 @@ public enum MLXCoderSetupRunner {
         )
 
         return AgentSettingsManifest(
+            version: existingManifest?.version ?? AgentSettingsManifest.currentVersion,
             providers: providers,
             models: models,
             selectedModelID: selectedModelID,
             selectedThinkingSelection: selectedThinkingSelection,
-            telegram: telegram,
-            voice: voice,
-            remoteAPIKeysByProviderID: apiKeysByProviderID
+            telegram: existingManifest?.telegram,
+            voice: existingManifest?.voice,
+            remoteAPIKeysByProviderID: apiKeysByProviderID,
+            localExecAllowedCommands: existingManifest?.localExecAllowedCommands ?? []
         )
     }
 
-    private static func configureOptionalIntegrations(
+    private static func preservedOrFirstSelectedModelID(
+        from models: [AgentSettingsModelManifest],
+        existingSelectedModelID: String?
+    ) -> String {
+        if let existingSelectedModelID,
+           let model = models.first(where: { $0.matches(existingSelectedModelID) }) {
+            return model.id
+        }
+        return models[0].id
+    }
+
+    private static func configureDefaultModel(
+        in manifest: AgentSettingsManifest
+    ) throws -> AgentSettingsManifest {
+        guard !manifest.models.isEmpty else {
+            throw MLXCoderSetupError.noModelsConfigured
+        }
+
+        let selectedModelID: String
+        if manifest.models.count == 1 {
+            selectedModelID = manifest.models[0].id
+            AgentOutput.standardError.writeString(
+                "Only one model configured: \(manifest.models[0].displayTitle)\n"
+            )
+        } else {
+            selectedModelID = try selectDefaultModel(
+                from: manifest.models,
+                defaultModelID: manifest.selectedModelID
+            )
+        }
+        let selectedThinkingSelection = setupDefaultThinkingSelection(
+            for: manifest.models.first { $0.matches(selectedModelID) },
+            existingSelection: manifest.selectedThinkingSelection
+        )
+        return manifestByUpdatingSelection(
+            manifest,
+            selectedModelID: selectedModelID,
+            selectedThinkingSelection: selectedThinkingSelection
+        )
+    }
+
+    private static func configureDefaultThinking(
+        in manifest: AgentSettingsManifest
+    ) throws -> AgentSettingsManifest {
+        guard !manifest.models.isEmpty else {
+            throw MLXCoderSetupError.noModelsConfigured
+        }
+
+        let selectedModelID = preservedOrFirstSelectedModelID(
+            from: manifest.models,
+            existingSelectedModelID: manifest.selectedModelID
+        )
+        guard let model = manifest.models.first(where: { $0.matches(selectedModelID) }) else {
+            throw MLXCoderSetupError.noModelsConfigured
+        }
+        guard model.supportsThinking else {
+            AgentOutput.standardError.writeString(
+                "The selected model does not support thinking options.\n"
+            )
+            return manifestByUpdatingSelection(
+                manifest,
+                selectedModelID: selectedModelID,
+                selectedThinkingSelection: nil
+            )
+        }
+
+        let selectedThinkingSelection = try selectDefaultThinkingSelection(
+            for: model,
+            existingSelection: manifest.selectedThinkingSelection
+        )
+        return manifestByUpdatingSelection(
+            manifest,
+            selectedModelID: selectedModelID,
+            selectedThinkingSelection: selectedThinkingSelection
+        )
+    }
+
+    private static func configureTelegram(
         in manifest: AgentSettingsManifest
     ) async throws -> AgentSettingsManifest {
         let telegram = try await promptTelegramSettings(existingSettings: manifest.telegram)
-        let voice = try promptVoiceSettings(existingSettings: manifest.voice)
         return AgentSettingsManifest(
             version: manifest.version,
             providers: manifest.providers,
@@ -160,18 +386,54 @@ public enum MLXCoderSetupRunner {
             selectedModelID: manifest.selectedModelID,
             selectedThinkingSelection: manifest.selectedThinkingSelection,
             telegram: telegram,
-            voice: voice,
-            remoteAPIKeysByProviderID: manifest.remoteAPIKeysByProviderID
+            voice: manifest.voice,
+            remoteAPIKeysByProviderID: manifest.remoteAPIKeysByProviderID,
+            localExecAllowedCommands: manifest.localExecAllowedCommands
         )
     }
 
-    private static func requireExistingManifest(
-        _ manifest: AgentSettingsManifest?
+    private static func configureVoice(
+        in manifest: AgentSettingsManifest
     ) throws -> AgentSettingsManifest {
-        guard let manifest else {
-            throw MLXCoderSetupError.noModelsConfigured
+        let voice = try promptVoiceSettings(existingSettings: manifest.voice)
+        return AgentSettingsManifest(
+            version: manifest.version,
+            providers: manifest.providers,
+            models: manifest.models,
+            selectedModelID: manifest.selectedModelID,
+            selectedThinkingSelection: manifest.selectedThinkingSelection,
+            telegram: manifest.telegram,
+            voice: voice,
+            remoteAPIKeysByProviderID: manifest.remoteAPIKeysByProviderID,
+            localExecAllowedCommands: manifest.localExecAllowedCommands
+        )
+    }
+
+    private static func manifestByUpdatingSelection(
+        _ manifest: AgentSettingsManifest,
+        selectedModelID: String?,
+        selectedThinkingSelection: AgentThinkingSelection?
+    ) -> AgentSettingsManifest {
+        AgentSettingsManifest(
+            version: manifest.version,
+            providers: manifest.providers,
+            models: manifest.models,
+            selectedModelID: selectedModelID,
+            selectedThinkingSelection: selectedThinkingSelection,
+            telegram: manifest.telegram,
+            voice: manifest.voice,
+            remoteAPIKeysByProviderID: manifest.remoteAPIKeysByProviderID,
+            localExecAllowedCommands: manifest.localExecAllowedCommands
+        )
+    }
+
+    private static func selectedModel(
+        in manifest: AgentSettingsManifest
+    ) -> AgentSettingsModelManifest? {
+        guard let selectedModelID = manifest.selectedModelID else {
+            return nil
         }
-        return manifest
+        return manifest.models.first { $0.matches(selectedModelID) }
     }
 
     private static func promptTelegramSettings(
@@ -1686,6 +1948,67 @@ public enum MLXCoderSetupRunner {
         }
         if settingsWasWritten && !result.createdFilenames.contains(AgentSettingsManifestStore.settingsFilename) {
             AgentOutput.standardError.writeString("Updated: settings.json\n")
+        }
+    }
+}
+
+private struct SetupSectionOption {
+    let section: SetupSection
+    let detail: String?
+}
+
+private enum SetupSection: Equatable {
+    case providersAndModels
+    case defaultModel
+    case defaultThinking
+    case telegram
+    case voice
+    case finish
+
+    var title: String {
+        switch self {
+        case .providersAndModels:
+            return "Providers and models"
+        case .defaultModel:
+            return "Default model"
+        case .defaultThinking:
+            return "Default thinking"
+        case .telegram:
+            return "Telegram remote control"
+        case .voice:
+            return "Local voice tools"
+        case .finish:
+            return "Finish setup"
+        }
+    }
+
+    var requiresConfiguredModels: Bool {
+        switch self {
+        case .providersAndModels, .finish:
+            return false
+        case .defaultModel, .defaultThinking, .telegram, .voice:
+            return true
+        }
+    }
+
+    func matches(_ value: String) -> Bool {
+        aliases.contains(value)
+    }
+
+    private var aliases: Set<String> {
+        switch self {
+        case .providersAndModels:
+            return ["providers", "provider", "models", "model", "providers and models", "providers/models", "remote"]
+        case .defaultModel:
+            return ["default", "default model", "selected model", "model default"]
+        case .defaultThinking:
+            return ["thinking", "default thinking", "reasoning", "thinking default"]
+        case .telegram:
+            return ["telegram", "remote control", "bot"]
+        case .voice:
+            return ["voice", "local voice", "voice tools", "speech"]
+        case .finish:
+            return ["finish", "done", "exit", "quit", "end", "stop"]
         }
     }
 }

@@ -531,8 +531,9 @@ public actor MLXServerRuntime {
                 selectedCache = memoryMatch.cache
                 selectedCachedPromptTokenCount = memoryMatch.prefixTokenCount
                 selectedCacheStatus = .memoryHit
-            } else if let diskMatch = diskKVCacheStore?.loadLongestPromptPrefix(
-                for: MLXServerDiskKVCachePrefixQuery(
+                        } else if let diskMatch = await Self.diskPromptPrefixMatch(
+                store: diskKVCacheStore,
+                query: MLXServerDiskKVCachePrefixQuery(
                     modelID: request.model.id,
                     runtimeKind: request.runtimeKind,
                     cacheLayoutSignature: PromptPrefixSignature.cacheLayout(request.parameters),
@@ -1060,6 +1061,20 @@ public actor MLXServerRuntime {
         )
     }
 
+    /// Runs the disk prefix lookup off the actor executor so heavy
+    /// safetensors reads do not block other runtime requests.
+    private static func diskPromptPrefixMatch(
+        store: MLXServerDiskKVCacheStore?,
+        query: MLXServerDiskKVCachePrefixQuery
+    ) async -> MLXServerDiskKVCachePrefixMatch? {
+        guard let store, store.isEnabled else {
+            return nil
+        }
+        return await Task.detached(priority: .userInitiated) {
+            store.loadLongestPromptPrefix(for: query)
+        }.value
+    }
+
     private func enqueueDiskPromptCachePersistenceIfNeeded(
         cache: [KVCache],
         key: PromptPrefixCacheKey,
@@ -1071,15 +1086,47 @@ public actor MLXServerRuntime {
               cache.hasPromptState else {
             return
         }
+
+        // Persist at an aligned token boundary instead of the exact turn
+        // length. Turns that do not cross a new boundary produce the same
+        // identity as the previous checkpoint and are deduplicated by the
+        // store, so long sessions write O(tokens / boundary) checkpoints
+        // instead of one full snapshot per turn. Trimming a small tail also
+        // avoids storing tokens that the next turn's template rendering may
+        // re-tokenize differently across the generation boundary.
+        let storeTokenCount = DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(
+            tokenIDs.count
+        )
+        guard storeTokenCount > 0 else {
+            return
+        }
+        let storeTokenIDs = Array(tokenIDs.prefix(storeTokenCount))
         let identity = MLXServerDiskKVCacheIdentity(
             promptPrefixKey: key,
-            tokenIDs: tokenIDs,
+            tokenIDs: storeTokenIDs,
             parameters: parameters
         )
-        // The live cache can be reused by the next turn; the disk writer needs its own snapshot.
-        let cacheSnapshot = MLXServerKVCacheTransfer(cache: cache.map { $0.copy() })
+        guard diskKVCacheStore.needsPersistence(for: identity) else {
+            return
+        }
 
-        diskKVCachePersistenceWriter.enqueue(coalescingKey: key.signature) {
+        // The live cache can be reused by the next turn; the disk writer
+        // needs its own snapshot, trimmed to the aligned boundary.
+        let snapshot = cache.map { $0.copy() }
+        if storeTokenCount < tokenIDs.count {
+            let tokensToTrim = tokenIDs.count - storeTokenCount
+            guard trimPromptPrefixCache(snapshot, numTokens: tokensToTrim) == tokensToTrim,
+                  normalizePromptCacheLength(snapshot, expectedTokenCount: storeTokenCount)
+            else {
+                return
+            }
+        }
+        let cacheSnapshot = MLXServerKVCacheTransfer(cache: snapshot)
+
+        // Coalesce per entry (prompt token digest), not per model: pending
+        // persists from concurrent sessions on the same model must not
+        // replace each other; only rewrites of the same entry coalesce.
+        diskKVCachePersistenceWriter.enqueue(coalescingKey: identity.entryKey) {
             diskKVCacheStore.persistCache(
                 identity: identity,
                 cache: cacheSnapshot.cache
@@ -1087,6 +1134,36 @@ public actor MLXServerRuntime {
         }
     }
 
+}
+
+/// Disk checkpoint boundary policy, after ds4's kvstore: align stores down
+/// to a coarse token boundary (with a small tail trim) so consecutive turns
+/// that stay within one boundary produce identical checkpoint identities and
+/// the store's dedup skips the write entirely.
+enum DiskPersistenceBoundaryPolicy {
+    /// Minimum prompt length worth checkpointing to disk.
+    static let minimumStoreTokenCount = 512
+    /// Tail tokens dropped before aligning; the next turn's template
+    /// rendering can re-tokenize bytes around the generation boundary.
+    static let boundaryTrimTokenCount = 32
+    /// Store boundary alignment, in tokens.
+    static let boundaryAlignmentTokenCount = 1024
+
+    /// Returns the aligned number of tokens to persist, or 0 when the prompt
+    /// is too short to be worth a disk checkpoint.
+    static func alignedStoreTokenCount(_ tokenCount: Int) -> Int {
+        guard tokenCount >= minimumStoreTokenCount else {
+            return 0
+        }
+        if tokenCount > minimumStoreTokenCount + boundaryTrimTokenCount {
+            var stable = tokenCount - boundaryTrimTokenCount
+            stable -= stable % boundaryAlignmentTokenCount
+            if stable >= minimumStoreTokenCount {
+                return stable
+            }
+        }
+        return tokenCount
+    }
 }
 
 private struct LoadedModelKey: Hashable, Sendable {

@@ -54,6 +54,7 @@ public final class TerminalChat: @unchecked Sendable {
         isEnabled: AgentOutput.standardErrorIsTerminal
     )
     public let telegramControlService = TerminalTelegramControlService()
+    let telegramPermissionBroker = TerminalTelegramPermissionBroker()
     public var telegramControlState = TerminalTelegramControlState.inactive()
     public var telegramLinkedChatID: Int64?
     public var telegramLinkedChatTitle: String?
@@ -742,6 +743,7 @@ public final class TerminalChat: @unchecked Sendable {
                 configuration: await currentSessionConfiguration(),
                 prompt: attempt.prompt,
                 attachments: attempt.attachments,
+                authorizeTool: telegramToolAuthorizationHandler(for: attempt.origin),
                 onToolWillExecute: { toolCall in
                     await fileChanges.captureBaselineIfNeeded(
                         forAgentToolCall: toolCall
