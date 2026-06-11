@@ -220,7 +220,7 @@ let targets: [Target] = [
 ]
 
 let package = Package(
-    name: "mlx-server",
+    name: "mlx-coder",
     platforms: [
         .macOS(.v26)
     ],

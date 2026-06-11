@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="gerardogrisolini/mlx-server"
+REPO="gerardogrisolini/mlx-coder"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 FEATURES_DIR="${FEATURES_DIR:-${INSTALL_DIR}/mlx-server-features}"
 

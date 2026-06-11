@@ -1,12 +1,12 @@
-# mlx-server
+# mlx-coder
 
-`mlx-server` is a Swift Package with two closely related executables and one important local-first workflow:
+`mlx-coder` is a Swift Package centered on a fully local coding agent for Apple Silicon, with an integrated MLX inference layer:
 
-- **`mlx-server --coder`**: the recommended fully local coding-agent mode. It runs the `mlx-coder` agent directly on `MLXServerRuntime`, using the local MLX model catalog without HTTP.
 - **`mlx-coder`**: the standalone autonomous coding agent for the terminal and ACP-compatible clients.
-- **`mlx-server`**: the local MLX inference server that exposes downloaded MLX models through OpenAI-compatible, Responses-compatible, and Anthropic-compatible HTTP APIs.
+- **`mlx-server --coder`**: the recommended fully local coding-agent mode. It runs the `mlx-coder` agent directly on `MLXServerRuntime`, using the local MLX model catalog without HTTP.
+- **`mlx-server`**: the integrated way to manage local inference — an MLX inference server that exposes downloaded MLX models through OpenAI-compatible, Responses-compatible, and Anthropic-compatible HTTP APIs.
 
-The project is designed for local-first AI development on Apple Silicon: keep models on your Mac, configure them explicitly, expose them to existing agent clients, and run a coding agent that can work directly inside your projects.
+The project is designed for local-first AI development on Apple Silicon: run a coding agent that can work directly inside your projects, keep models on your Mac, configure them explicitly, and optionally expose them to existing agent clients over HTTP.
 
 ## Start Here
 
@@ -16,7 +16,7 @@ Install the latest release through the Homebrew tap:
 
 ```bash
 brew tap gerardogrisolini/tap
-brew install mlx-server
+brew install mlx-coder
 ```
 
 Then set up configuration and models:
@@ -30,7 +30,7 @@ mlx-server --coder --cwd /path/to/project
 Upgrade with:
 
 ```bash
-brew upgrade mlx-server
+brew upgrade mlx-coder
 ```
 
 Requires macOS 26 (Tahoe) on Apple Silicon.
@@ -40,10 +40,10 @@ Requires macOS 26 (Tahoe) on Apple Silicon.
 If you do not want to use Homebrew, install the latest release with the installer script:
 
 ```bash
-curl -sL https://raw.githubusercontent.com/gerardogrisolini/mlx-server/main/Scripts/install.sh | bash
+curl -sL https://raw.githubusercontent.com/gerardogrisolini/mlx-coder/main/Scripts/install.sh | bash
 ```
 
-Or download a specific release from [GitHub Releases](https://github.com/gerardogrisolini/mlx-server/releases) and extract manually:
+Or download a specific release from [GitHub Releases](https://github.com/gerardogrisolini/mlx-coder/releases) and extract manually:
 
 ```bash
 tar xzf mlx-server-v0.1.1-macos-arm64.tar.gz
@@ -52,7 +52,15 @@ sudo cp mlx-server mlx-coder mlx-voice-transcriber /usr/local/bin/
 
 ### Build from Source
 
-If your goal is **local coding assistance with MLX models**, start with **`mlx-server --coder`**:
+If your goal is the **standalone local coding agent**, start with **`mlx-coder`**:
+
+```bash
+swift run -c release mlx-coder --setup
+swift run -c release mlx-coder --setup-agents
+swift run -c release mlx-coder --cwd /path/to/project
+```
+
+If you want the agent backed directly by the local MLX runtime, use **`mlx-server --coder`**:
 
 ```bash
 swift run -c release mlx-server --setup
@@ -61,14 +69,6 @@ swift run -c release mlx-server --coder --cwd /path/to/project
 ```
 
 This is the most direct local workflow: one process runs the agent and the MLX runtime together, with no HTTP hop and no external model provider required.
-
-If you want the standalone agent configuration, use **`mlx-coder`**:
-
-```bash
-swift run -c release mlx-coder --setup
-swift run -c release mlx-coder --setup-agents
-swift run -c release mlx-coder --cwd /path/to/project
-```
 
 If your goal is serving local MLX models over HTTP, start with **`mlx-server`**:
 
@@ -87,7 +87,7 @@ Detailed guides:
 
 ## Why `mlx-server --coder`
 
-`mlx-server --coder` is the bridge between the two parts of the package: it starts the coding agent, but the model backend is the local `mlx-server` runtime instead of a remote provider or an HTTP client.
+`mlx-server --coder` is the bridge between the agent and the integrated inference layer: it starts the `mlx-coder` coding agent, but the model backend is the local `mlx-server` runtime instead of a remote provider or an HTTP client.
 
 That means:
 
@@ -177,7 +177,7 @@ For a fully local model backend, prefer the `mlx-server --coder` workflow descri
 
 ## mlx-server Overview
 
-`mlx-server` is the inference layer. It loads MLX models through [`mlx-swift-lm`](https://github.com/ml-explore/mlx-swift-lm), keeps model/runtime configuration explicit, and exposes local models through familiar HTTP protocols.
+`mlx-server` is the integrated inference layer that powers `mlx-coder`. It loads MLX models through [`mlx-swift-lm`](https://github.com/ml-explore/mlx-swift-lm) — which does the heavy lifting of inference — keeps model/runtime configuration explicit, and can also expose local models through familiar HTTP protocols.
 
 Use it when you want:
 
