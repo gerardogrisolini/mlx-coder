@@ -22,9 +22,8 @@ brew install mlx-coder
 Then set up configuration and models:
 
 ```bash
-mlx-server --setup
-mlx-server --setup-models
-mlx-server --coder --cwd /path/to/project
+mlx-coder --setup
+mlx-coder --setup-agents
 ```
 
 Upgrade with:
