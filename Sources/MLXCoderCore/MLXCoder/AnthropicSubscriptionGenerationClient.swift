@@ -319,12 +319,15 @@ public actor AnthropicSubscriptionGenerationClient: AgentRuntimeBackend {
         var accumulatedText = ""
         var generationStats: [RemoteGenerationStats] = []
         for round in 0..<configuration.maxToolRounds {
-            if let result = compactSessionIfNeeded(&session) {
+            if let result = compactSessionIfNeeded(
+                &session,
+                modelLLMID: modelLLMID
+            ) {
                 await onEvent(.diagnostic(Self.compactionDiagnostic(from: result)))
             }
 
             let streamResult = try await streamAnthropicMessages(
-                session: session,
+                session: &session,
                 modelID: modelID,
                 modelLLMID: modelLLMID,
                 credentials: credentials,
@@ -383,7 +386,7 @@ public actor AnthropicSubscriptionGenerationClient: AgentRuntimeBackend {
     }
 
     private func streamAnthropicMessages(
-        session: AgentSession,
+        session: inout AgentSession,
         modelID: String,
         modelLLMID: String,
         credentials: AnthropicSubscriptionCredentials,
@@ -397,22 +400,49 @@ public actor AnthropicSubscriptionGenerationClient: AgentRuntimeBackend {
             await onEvent(.diagnostic(RemoteGenerationClient.toolExposureDiagnostic(from: toolDescriptors)))
         }
         let toolCatalog = RemoteToolWireCatalog(descriptors: toolDescriptors)
-        let anthropicPayload = Self.anthropicMessagesPayload(
+        var anthropicPayload = Self.anthropicMessagesPayload(
             from: toolCatalog.wireMessages(from: session.messages)
         )
-        let requestMessages = Self.addingCacheControlToLastUserMessage(
+        var requestMessages = Self.addingCacheControlToLastUserMessage(
             anthropicPayload.messages
         )
-        let systemBlocks = Self.subscriptionSystemBlocks(
+        var systemBlocks = Self.subscriptionSystemBlocks(
             userSystemPrompt: anthropicPayload.system
         )
         let tools = Self.anthropicTools(from: toolCatalog.bindings)
-        let estimatedContextTokens = AnthropicSubscriptionRequestBuilder
+        let maxOutputTokens = resolvedMaxOutputTokens(
+            forLLMID: modelLLMID,
+            thinkingSelection: session.thinkingSelection
+        )
+        var estimatedContextTokens = AnthropicSubscriptionRequestBuilder
             .estimatedContextTokenCount(
                 system: systemBlocks,
                 messages: requestMessages,
                 tools: tools
             )
+        if let result = compactSessionForEstimatedContextIfNeeded(
+            &session,
+            estimatedContextTokens: estimatedContextTokens,
+            modelLLMID: modelLLMID,
+            maxOutputTokens: maxOutputTokens
+        ) {
+            await onEvent(.diagnostic(Self.compactionDiagnostic(from: result)))
+            anthropicPayload = Self.anthropicMessagesPayload(
+                from: toolCatalog.wireMessages(from: session.messages)
+            )
+            requestMessages = Self.addingCacheControlToLastUserMessage(
+                anthropicPayload.messages
+            )
+            systemBlocks = Self.subscriptionSystemBlocks(
+                userSystemPrompt: anthropicPayload.system
+            )
+            estimatedContextTokens = AnthropicSubscriptionRequestBuilder
+                .estimatedContextTokenCount(
+                    system: systemBlocks,
+                    messages: requestMessages,
+                    tools: tools
+                )
+        }
         if let estimatedContextTokens {
             await onEvent(
                 .contextWindow(
@@ -429,10 +459,7 @@ public actor AnthropicSubscriptionGenerationClient: AgentRuntimeBackend {
         var body: [String: Any] = [
             "model": modelID,
             "messages": requestMessages,
-            "max_tokens": resolvedMaxOutputTokens(
-                forLLMID: modelLLMID,
-                thinkingSelection: session.thinkingSelection
-            ),
+            "max_tokens": maxOutputTokens,
             "stream": true
         ]
         body["system"] = systemBlocks
@@ -576,11 +603,16 @@ public actor AnthropicSubscriptionGenerationClient: AgentRuntimeBackend {
     }
 
     private func compactSessionIfNeeded(
-        _ session: inout AgentSession
+        _ session: inout AgentSession,
+        modelLLMID: String
     ) -> AgentConversationCompactionResult? {
-        let result = AgentConversationCompactionSupport.compactedMessagesIfNeeded(
-            RemoteGenerationClient.agentRuntimeMessages(from: session.messages),
-            maxTokens: resolvedContextWindowTokenLimit(forLLMID: modelLLMID())
+        let result = Self.compactedMessagesIfNeeded(
+            session.messages,
+            maxTokens: resolvedContextWindowTokenLimit(forLLMID: modelLLMID),
+            maxOutputTokens: resolvedMaxOutputTokens(
+                forLLMID: modelLLMID,
+                thinkingSelection: session.thinkingSelection
+            )
         )
         guard result.wasCompacted else {
             return nil
@@ -591,6 +623,112 @@ public actor AnthropicSubscriptionGenerationClient: AgentRuntimeBackend {
             preservingRecentFrom: session.messages
         )
         return result
+    }
+
+    private func compactSessionForEstimatedContextIfNeeded(
+        _ session: inout AgentSession,
+        estimatedContextTokens: Int?,
+        modelLLMID: String,
+        maxOutputTokens: Int
+    ) -> AgentConversationCompactionResult? {
+        guard let result = Self.compactedMessagesForEstimatedContextIfNeeded(
+            session.messages,
+            estimatedContextTokens: estimatedContextTokens,
+            maxTokens: resolvedContextWindowTokenLimit(forLLMID: modelLLMID),
+            maxOutputTokens: maxOutputTokens
+        ) else {
+            return nil
+        }
+
+        session.messages = RemoteGenerationClient.remoteMessages(
+            compactionResult: result,
+            preservingRecentFrom: session.messages
+        )
+        return result
+    }
+
+    static func compactedMessagesIfNeeded(
+        _ messages: [[String: Any]],
+        maxTokens: Int?,
+        maxOutputTokens: Int? = nil,
+        force: Bool = false
+    ) -> AgentConversationCompactionResult {
+        let compactionLimit = compactionPolicyMaxTokens(
+            for: maxTokens,
+            maxOutputTokens: maxOutputTokens
+        )
+        return AgentConversationCompactionSupport.compactedMessagesIfNeeded(
+            RemoteGenerationClient.agentRuntimeMessages(from: messages),
+            maxTokens: compactionLimit,
+            force: force
+        )
+    }
+
+    static func compactedMessagesForEstimatedContextIfNeeded(
+        _ messages: [[String: Any]],
+        estimatedContextTokens: Int?,
+        maxTokens: Int?,
+        maxOutputTokens: Int? = nil
+    ) -> AgentConversationCompactionResult? {
+        guard shouldCompactEstimatedContext(
+            estimatedContextTokens: estimatedContextTokens,
+            maxTokens: maxTokens,
+            maxOutputTokens: maxOutputTokens,
+            messageCount: conversationMessageCount(in: messages)
+        ) else {
+            return nil
+        }
+
+        let result = compactedMessagesIfNeeded(
+            messages,
+            maxTokens: maxTokens,
+            maxOutputTokens: maxOutputTokens,
+            force: true
+        )
+        return result.wasCompacted ? result : nil
+    }
+
+    static func compactionPolicyMaxTokens(
+        for maxTokens: Int?,
+        maxOutputTokens: Int? = nil
+    ) -> Int? {
+        guard let maxTokens, maxTokens > 0 else {
+            return nil
+        }
+        let outputReserve = max(maxOutputTokens ?? 0, 0)
+        let usableTokens = max(1, maxTokens - outputReserve)
+        let adjustedMaxTokens = Double(usableTokens)
+            / AgentConversationCompactionPolicy.triggerFraction
+        return max(1, Int(adjustedMaxTokens.rounded(.up)))
+    }
+
+    private static func shouldCompactEstimatedContext(
+        estimatedContextTokens: Int?,
+        maxTokens: Int?,
+        maxOutputTokens: Int?,
+        messageCount: Int
+    ) -> Bool {
+        guard let estimatedContextTokens,
+              let compactionLimit = compactionPolicyMaxTokens(
+                  for: maxTokens,
+                  maxOutputTokens: maxOutputTokens
+              ) else {
+            return false
+        }
+        return AgentConversationCompactionPolicy.shouldCompactHistory(
+            usedTokens: estimatedContextTokens,
+            maxTokens: compactionLimit,
+            messageCount: messageCount
+        )
+    }
+
+    private static func conversationMessageCount(in messages: [[String: Any]]) -> Int {
+        if let firstRole = messages.first?["role"] as? String,
+           firstRole.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "system" {
+            return max(messages.count - 1, 0)
+        }
+        return messages.count
     }
 
     private static func compactionDiagnostic(

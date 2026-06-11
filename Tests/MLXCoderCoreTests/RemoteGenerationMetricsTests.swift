@@ -123,6 +123,75 @@ struct RemoteGenerationMetricsTests {
     }
 
     @Test
+    func anthropicSubscriptionPreflightCompactsWhenEstimatedPayloadExceedsUsableContext() throws {
+        let maxTokens = 30_000
+        let maxOutputTokens = 4_000
+        let messages = anthropicPreflightCompactionMessages()
+        let normalResult = AnthropicSubscriptionGenerationClient.compactedMessagesIfNeeded(
+            messages,
+            maxTokens: maxTokens,
+            maxOutputTokens: maxOutputTokens
+        )
+        let estimatedContextTokens = try #require(
+            AnthropicSubscriptionRequestBuilder.estimatedContextTokenCount(
+                system: [
+                    [
+                        "type": "text",
+                        "text": "System prompt"
+                    ]
+                ],
+                messages: [
+                    [
+                        "role": "user",
+                        "content": [
+                            [
+                                "type": "text",
+                                "text": "Current request"
+                            ]
+                        ]
+                    ] as [String: Any]
+                ],
+                tools: [
+                    [
+                        "name": "tool_large_context",
+                        "description": String(repeating: "large tool description ", count: 6_000),
+                        "input_schema": [
+                            "type": "object",
+                            "properties": [
+                                "query": ["type": "string"]
+                            ]
+                        ]
+                    ] as [String: Any]
+                ]
+            )
+        )
+        let policyMaxTokens = try #require(
+            AnthropicSubscriptionGenerationClient.compactionPolicyMaxTokens(
+                for: maxTokens,
+                maxOutputTokens: maxOutputTokens
+            )
+        )
+        let preflightResult = try #require(
+            AnthropicSubscriptionGenerationClient.compactedMessagesForEstimatedContextIfNeeded(
+                messages,
+                estimatedContextTokens: estimatedContextTokens,
+                maxTokens: maxTokens,
+                maxOutputTokens: maxOutputTokens
+            )
+        )
+        let compactedMessages = RemoteGenerationClient.remoteMessages(
+            compactionResult: preflightResult,
+            preservingRecentFrom: messages
+        )
+
+        #expect(normalResult.wasCompacted == false)
+        #expect(AgentConversationCompactionPolicy.triggerTokenCount(for: policyMaxTokens) == maxTokens - maxOutputTokens)
+        #expect(estimatedContextTokens > AgentConversationCompactionPolicy.triggerTokenCount(for: policyMaxTokens))
+        #expect(preflightResult.wasCompacted)
+        #expect(compactedMessages.count < messages.count)
+    }
+
+    @Test
     func anthropicSubscriptionUsageIncludesCachedInputTokens() throws {
         let usage = try #require(
             AnthropicSubscriptionRequestBuilder.usage(
@@ -209,4 +278,24 @@ struct RemoteGenerationMetricsTests {
         #expect(visibleMetrics.clearsPromptMetrics)
     }
 
+}
+
+private func anthropicPreflightCompactionMessages() -> [[String: Any]] {
+    var messages: [[String: Any]] = [
+        [
+            "role": "system",
+            "content": "System prompt"
+        ]
+    ]
+    for index in 0..<6 {
+        let role = index.isMultiple(of: 2) ? "user" : "assistant"
+        messages.append(
+            RemoteGenerationClient.remoteMessage(
+                role: role,
+                content: "brief message \(index) " + String(repeating: "detail ", count: 20),
+                attachments: []
+            )
+        )
+    }
+    return messages
 }

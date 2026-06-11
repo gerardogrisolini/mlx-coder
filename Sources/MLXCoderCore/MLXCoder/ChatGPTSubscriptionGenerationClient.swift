@@ -681,18 +681,38 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                     )
                 )
             }
-            let requestPayload = ChatGPTSubscriptionRequestBuilder.requestInputPayload(
+            var requestPayload = ChatGPTSubscriptionRequestBuilder.requestInputPayload(
                 from: toolCatalog.wireMessages(from: session.messages),
                 continuation: session.continuation
             )
-            let instructions = requestPayload.instructions?.nilIfBlank
+            var instructions = requestPayload.instructions?.nilIfBlank
                 ?? "You are a helpful coding assistant."
             let toolPayloads = toolCatalog.responsesToolPayloads
-            let estimatedContextTokens = ChatGPTSubscriptionRequestBuilder.estimatedContextTokenCount(
+            var estimatedContextTokens = ChatGPTSubscriptionRequestBuilder.estimatedContextTokenCount(
                 instructions: instructions,
                 input: requestPayload.input,
                 toolPayloads: toolPayloads
             )
+            if let result = compactSessionForEstimatedContextIfNeeded(
+                &session,
+                estimatedContextTokens: estimatedContextTokens,
+                maxTokens: maxContextWindowTokens,
+                maxOutputTokens: configuration.maxOutputTokens,
+                sessionIdentity: sessionIdentity
+            ) {
+                await onEvent(.diagnostic(Self.compactionDiagnostic(from: result)))
+                requestPayload = ChatGPTSubscriptionRequestBuilder.requestInputPayload(
+                    from: toolCatalog.wireMessages(from: session.messages),
+                    continuation: session.continuation
+                )
+                instructions = requestPayload.instructions?.nilIfBlank
+                    ?? "You are a helpful coding assistant."
+                estimatedContextTokens = ChatGPTSubscriptionRequestBuilder.estimatedContextTokenCount(
+                    instructions: instructions,
+                    input: requestPayload.input,
+                    toolPayloads: toolPayloads
+                )
+            }
             if let estimatedContextTokens {
                 await onEvent(
                     .contextWindow(
@@ -836,6 +856,33 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         return result
     }
 
+    private func compactSessionForEstimatedContextIfNeeded(
+        _ session: inout AgentSession,
+        estimatedContextTokens: Int?,
+        maxTokens: Int?,
+        maxOutputTokens: Int?,
+        sessionIdentity: SessionIdentity
+    ) -> AgentConversationCompactionResult? {
+        guard let result = Self.compactedMessagesForEstimatedContextIfNeeded(
+            session.messages,
+            estimatedContextTokens: estimatedContextTokens,
+            maxTokens: maxTokens,
+            maxOutputTokens: maxOutputTokens
+        ) else {
+            return nil
+        }
+
+        session.messages = RemoteGenerationClient.remoteMessages(
+            compactionResult: result,
+            preservingRecentFrom: session.messages
+        )
+        resetContinuationAfterCompaction(
+            session: &session,
+            sessionIdentity: sessionIdentity
+        )
+        return result
+    }
+
     private func resetContinuationAfterCompaction(
         session: inout AgentSession,
         sessionIdentity: SessionIdentity
@@ -852,7 +899,8 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
     static func compactedMessagesIfNeeded(
         _ messages: [[String: Any]],
         maxTokens: Int?,
-        maxOutputTokens: Int? = nil
+        maxOutputTokens: Int? = nil,
+        force: Bool = false
     ) -> AgentConversationCompactionResult {
         let compactionLimit = compactionPolicyMaxTokens(
             for: maxTokens,
@@ -860,8 +908,33 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         )
         return AgentConversationCompactionSupport.compactedMessagesIfNeeded(
             RemoteGenerationClient.agentRuntimeMessages(from: messages),
-            maxTokens: compactionLimit
+            maxTokens: compactionLimit,
+            force: force
         )
+    }
+
+    static func compactedMessagesForEstimatedContextIfNeeded(
+        _ messages: [[String: Any]],
+        estimatedContextTokens: Int?,
+        maxTokens: Int?,
+        maxOutputTokens: Int? = nil
+    ) -> AgentConversationCompactionResult? {
+        guard shouldCompactEstimatedContext(
+            estimatedContextTokens: estimatedContextTokens,
+            maxTokens: maxTokens,
+            maxOutputTokens: maxOutputTokens,
+            messageCount: conversationMessageCount(in: messages)
+        ) else {
+            return nil
+        }
+
+        let result = compactedMessagesIfNeeded(
+            messages,
+            maxTokens: maxTokens,
+            maxOutputTokens: maxOutputTokens,
+            force: true
+        )
+        return result.wasCompacted ? result : nil
     }
 
     static func compactionPolicyMaxTokens(
@@ -876,6 +949,35 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         let adjustedMaxTokens = Double(usableTokens)
             / AgentConversationCompactionPolicy.triggerFraction
         return max(1, Int(adjustedMaxTokens.rounded(.up)))
+    }
+
+    private static func shouldCompactEstimatedContext(
+        estimatedContextTokens: Int?,
+        maxTokens: Int?,
+        maxOutputTokens: Int?,
+        messageCount: Int
+    ) -> Bool {
+        guard let estimatedContextTokens,
+              let compactionLimit = compactionPolicyMaxTokens(
+                  for: maxTokens,
+                  maxOutputTokens: maxOutputTokens
+              ) else {
+            return false
+        }
+        return AgentConversationCompactionPolicy.shouldCompactHistory(
+            usedTokens: estimatedContextTokens,
+            maxTokens: compactionLimit,
+            messageCount: messageCount
+        )
+    }
+
+    private static func conversationMessageCount(in messages: [[String: Any]]) -> Int {
+        if let firstRole = messages.first?["role"] as? String,
+           firstRole.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "system" {
+            return max(messages.count - 1, 0)
+        }
+        return messages.count
     }
 
     private static func compactionDiagnostic(

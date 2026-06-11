@@ -666,6 +666,66 @@ struct RemoteSessionSnapshotTests {
         #expect(cachedPayload["previous_response_id"] == nil)
         #expect((cachedPayload["input"] as? [Any])?.count == payload.input.count)
     }
+
+    @Test
+    func chatGPTSubscriptionPreflightCompactsWhenEstimatedPayloadExceedsUsableContext() throws {
+        let maxTokens = 50_000
+        let maxOutputTokens = 1_000
+        let messages = chatGPTPreflightCompactionMessages()
+        let normalResult = ChatGPTSubscriptionGenerationClient.compactedMessagesIfNeeded(
+            messages,
+            maxTokens: maxTokens,
+            maxOutputTokens: maxOutputTokens
+        )
+        let requestPayload = ChatGPTSubscriptionRequestBuilder.requestInputPayload(
+            from: messages,
+            continuation: nil
+        )
+        let toolPayloads = RemoteToolWireCatalog(
+            descriptors: [
+                DirectToolDescriptor(
+                    name: "local.exec",
+                    description: String(repeating: "large tool description ", count: 7_000),
+                    inputSchema: #"{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}"#
+                )
+            ]
+        ).responsesToolPayloads
+        let estimatedContextTokens = try #require(
+            ChatGPTSubscriptionRequestBuilder.estimatedContextTokenCount(
+                instructions: requestPayload.instructions,
+                input: requestPayload.input,
+                toolPayloads: toolPayloads
+            )
+        )
+        let policyMaxTokens = try #require(
+            ChatGPTSubscriptionGenerationClient.compactionPolicyMaxTokens(
+                for: maxTokens,
+                maxOutputTokens: maxOutputTokens
+            )
+        )
+        let preflightResult = try #require(
+            ChatGPTSubscriptionGenerationClient.compactedMessagesForEstimatedContextIfNeeded(
+                messages,
+                estimatedContextTokens: estimatedContextTokens,
+                maxTokens: maxTokens,
+                maxOutputTokens: maxOutputTokens
+            )
+        )
+        let compactedMessages = RemoteGenerationClient.remoteMessages(
+            compactionResult: preflightResult,
+            preservingRecentFrom: messages
+        )
+
+        #expect(normalResult.wasCompacted == false)
+        #expect(estimatedContextTokens > AgentConversationCompactionPolicy.triggerTokenCount(for: policyMaxTokens))
+        #expect(preflightResult.wasCompacted)
+        #expect(compactedMessages.count < messages.count)
+        #expect(
+            preflightResult.compactedSystemPrompt?.contains(
+                AgentConversationCompactionSupport.memorySummaryHeader
+            ) == true
+        )
+    }
 #endif
 
     private func remoteHistory() -> [AgentRuntimeMessage] {
@@ -857,6 +917,26 @@ struct RemoteSessionSnapshotTests {
                 "content": "Saved memory entry to project MEMORY.md."
             ]
         ]
+    }
+
+    private func chatGPTPreflightCompactionMessages() -> [[String: Any]] {
+        var messages: [[String: Any]] = [
+            [
+                "role": "system",
+                "content": "System prompt"
+            ]
+        ]
+        for index in 0..<6 {
+            let role = index.isMultiple(of: 2) ? "user" : "assistant"
+            messages.append(
+                RemoteGenerationClient.remoteMessage(
+                    role: role,
+                    content: "brief message \(index) " + String(repeating: "detail ", count: 20),
+                    attachments: []
+                )
+            )
+        }
+        return messages
     }
 
     private func chatGPTCompactionMessages() -> [[String: Any]] {
