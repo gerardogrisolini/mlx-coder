@@ -9,6 +9,11 @@ actor MLXServerGenerationGate {
     private var activeLeaseID: UUID?
     private var waiters: [Waiter] = []
 
+        /// True when no generation holds the gate and none is queued.
+    var isIdle: Bool {
+        activeLeaseID == nil && waiters.isEmpty
+    }
+
     func acquire() async throws -> MLXServerGenerationLease {
         let leaseID = UUID()
         if activeLeaseID == nil {
@@ -78,6 +83,14 @@ actor MLXServerPerModelGenerationGate {
             return g
         }()
         return try await gate.acquire()
+    }
+
+            /// True when no generation is active or queued for the model.
+    func isIdle(modelID: String) async -> Bool {
+        guard let gate = gates[modelID] else {
+            return true
+        }
+        return await gate.isIdle
     }
 
     /// Acquires every per-model gate that exists at the time of the call.

@@ -12,6 +12,32 @@ import Dispatch
 import Foundation
 import os
 
+public struct TerminalGitStatusSummary: Equatable, Sendable {
+    public static let zero = TerminalGitStatusSummary(
+        changedFileCount: 0,
+        additions: 0,
+        deletions: 0
+    )
+
+    public let changedFileCount: Int
+    public let additions: Int
+    public let deletions: Int
+
+    public init(changedFileCount: Int, additions: Int, deletions: Int) {
+        self.changedFileCount = changedFileCount
+        self.additions = additions
+        self.deletions = deletions
+    }
+
+    public func adding(_ other: TerminalGitStatusSummary) -> TerminalGitStatusSummary {
+        TerminalGitStatusSummary(
+            changedFileCount: changedFileCount + other.changedFileCount,
+            additions: additions + other.additions,
+            deletions: deletions + other.deletions
+        )
+    }
+}
+
 public final class TerminalStatusBar: @unchecked Sendable {
     private struct InputPanelState {
         let text: String
@@ -39,6 +65,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
     private var latestModelRuntime: String?
     private var latestMetrics: DirectAgentGenerationMetrics?
     private var latestContextWindow: DirectAgentContextWindowStatus?
+    private var latestGitStatusSummary: TerminalGitStatusSummary?
     private static let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
     private static let inputPanelChromeRows = 3
     private static let minimumScrollableRows = 2
@@ -241,6 +268,19 @@ public final class TerminalStatusBar: @unchecked Sendable {
         defer { lock.unlock() }
 
         latestContextWindow = contextWindow
+        guard isStarted else {
+            return false
+        }
+        renderLocked()
+        return true
+    }
+
+    @discardableResult
+    public func update(gitStatusSummary: TerminalGitStatusSummary?) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        latestGitStatusSummary = gitStatusSummary
         guard isStarted else {
             return false
         }
@@ -568,7 +608,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
                 metricUsedTokens: tokensUsed,
                 maxTokens: latestContextWindow?.maxTokens
             )
-            fragments.append("ctx \(contextText)")
+            fragments.append(contextText)
         }
         if let duration = latestMetrics?.responseDurationSeconds {
             fragments.append("time \(Self.durationText(duration))")
@@ -579,7 +619,10 @@ public final class TerminalStatusBar: @unchecked Sendable {
         if let generationRate = latestMetrics?.completionTokensPerSecond {
             fragments.append("gen \(Self.rateText(generationRate)) tok/s")
         }
-        return fragments.joined(separator: " | ")
+        if let latestGitStatusSummary {
+            fragments.append(Self.gitStatusFragment(summary: latestGitStatusSummary))
+        }
+        return fragments.joined(separator: " · ")
     }
 
     static func modelStatusFragment(
@@ -591,6 +634,10 @@ public final class TerminalStatusBar: @unchecked Sendable {
             return modelName
         }
         return "\(modelName) · \(thinkingSelection.displayTitle)"
+    }
+
+    static func gitStatusFragment(summary: TerminalGitStatusSummary) -> String {
+        "git \(summary.changedFileCount) files +\(summary.additions) -\(summary.deletions)"
     }
 
     private static func modelDisplayName(_ modelID: String) -> String {

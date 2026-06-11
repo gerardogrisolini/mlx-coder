@@ -116,6 +116,10 @@ public struct MLXServerGenerationRequest: Sendable {
     public var tools: [ToolSpec]?
     public var additionalContext: [String: any Sendable]?
     public var retainsReasoningInHistory: Bool
+    /// Client-provided session identifier used to key the in-memory
+    /// `ChatSession` and the disk KV cache entry. When absent, a stable
+    /// key is derived from the conversation opening.
+    public var sessionID: String?
 
     public init(
         model: MLXServerModelDescriptor,
@@ -124,7 +128,8 @@ public struct MLXServerGenerationRequest: Sendable {
         mediaResize: CGSize? = nil,
         tools: [ToolSpec]? = nil,
         additionalContext: [String: any Sendable]? = nil,
-        retainsReasoningInHistory: Bool = false
+        retainsReasoningInHistory: Bool = false,
+        sessionID: String? = nil
     ) {
         self.model = model
         self.messages = messages
@@ -133,6 +138,8 @@ public struct MLXServerGenerationRequest: Sendable {
         self.tools = tools
         self.additionalContext = additionalContext
         self.retainsReasoningInHistory = retainsReasoningInHistory
+        let trimmedSessionID = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.sessionID = trimmedSessionID?.isEmpty == false ? trimmedSessionID : nil
     }
 
     public var requiresVisionRuntime: Bool {
@@ -147,6 +154,12 @@ public struct MLXServerGenerationRequest: Sendable {
 
     public var emitsThinking: Bool {
         additionalContext?["enable_thinking"] as? Bool ?? false
+    }
+
+    /// Effective session key: the client-provided identifier, or a stable
+    /// derivation from the conversation opening for stateless clients.
+    public var effectiveSessionKey: String {
+        sessionID ?? MLXServerChatSessionTranscript.derivedSessionKey(messages: messages)
     }
 }
 
@@ -273,8 +286,8 @@ public struct MLXServerChatCacheEvent: Sendable, Equatable {
         priorTranscriptCount: Int,
         bestCommonPrefixCount: Int,
         bestCachedTranscriptCount: Int,
-        bestModelCommonPrefixCount: Int,
-        bestModelCachedTranscriptCount: Int,
+        bestModelCommonPrefixCount: Int = 0,
+        bestModelCachedTranscriptCount: Int = 0,
         bestModelSameSystemSignature: Bool? = nil,
         bestModelSameToolsSignature: Bool? = nil,
         bestModelSameAdditionalContextSignature: Bool? = nil,
@@ -347,12 +360,14 @@ public enum MLXServerReasoningTranscript {
 public actor MLXServerRuntime {
     private var containers: [LoadedModelKey: ModelContainer] = [:]
     private var loadingTasks: [LoadedModelKey: ModelLoadingTask] = [:]
-    private var promptPrefixCaches: [PromptPrefixCacheKey: [PromptPrefixCacheState]] = [:]
-    /// Secondary index: modelID -> set of cache keys that exist for that model.
-    /// Kept in sync with `promptPrefixCaches` to avoid O(n) reduce scans
-    /// when probing per-model cache states.
-    private var modelPromptPrefixKeys: [String: Set<PromptPrefixCacheKey>] = [:]
-    private var promptPrefixCacheGeneration: UInt64 = 0
+
+    /// In-memory chat sessions, keyed by session identity. The KV cache for
+    /// each session is owned by MLXLMCommon's `ChatSession`; the runtime
+    /// only tracks which transcript each session represents.
+    private var chatSessions: [MLXServerChatSessionCacheKey: ChatSessionState] = [:]
+    private var chatSessionAccessGeneration: UInt64 = 0
+    private let maxChatSessionCount: Int
+
     private let generationGates = MLXServerPerModelGenerationGate()
     private let retentionPolicy: MLXServerModelRetentionPolicy
     private let diskKVCacheStore: MLXServerDiskKVCacheStore?
@@ -361,13 +376,20 @@ public actor MLXServerRuntime {
     private let modelUnloadLogger: (@Sendable (MLXServerModelUnloadEvent) -> Void)?
     private var lastChatCacheEvent: MLXServerChatCacheEvent?
 
+    /// Default bound on resident chat sessions. Each session retains a full
+    /// KV cache in unified memory, so the registry stays intentionally
+    /// small; older sessions remain restorable from disk.
+    public static let defaultMaxChatSessionCount = 4
+
     public init(
         retentionPolicy: MLXServerModelRetentionPolicy = .keepLoadedModels,
         diskKVCacheConfiguration: MLXServerDiskKVCacheConfiguration = .init(),
+        maxChatSessionCount: Int = MLXServerRuntime.defaultMaxChatSessionCount,
         modelLoadLogger: (@Sendable (MLXServerModelLoadEvent) -> Void)? = nil,
         modelUnloadLogger: (@Sendable (MLXServerModelUnloadEvent) -> Void)? = nil
     ) {
         self.retentionPolicy = retentionPolicy
+        self.maxChatSessionCount = max(1, maxChatSessionCount)
         if diskKVCacheConfiguration.isEnabled {
             self.diskKVCacheStore = MLXServerDiskKVCacheStore(configuration: diskKVCacheConfiguration)
             self.diskKVCachePersistenceWriter = MLXServerDiskKVCachePersistenceWriter()
@@ -414,8 +436,7 @@ public actor MLXServerRuntime {
         }
         containers.removeAll(keepingCapacity: true)
         loadingTasks.removeAll(keepingCapacity: true)
-        promptPrefixCaches.removeAll(keepingCapacity: true)
-        modelPromptPrefixKeys.removeAll(keepingCapacity: true)
+        chatSessions.removeAll(keepingCapacity: true)
         logUnloadedModels(unloadedModelIDs)
         await generationLeases.releaseAll()
     }
@@ -479,181 +500,68 @@ public actor MLXServerRuntime {
         guard request.messages.allSatisfy({ $0.imageURLs.isEmpty && $0.videoURLs.isEmpty }) else {
             return try await generate(request: request, progressHandler: progressHandler)
         }
+        guard !request.messages.isEmpty else {
+            throw MLXServerRuntimeError.emptyPrompt
+        }
 
         let generationLease = try await generationGates.acquire(modelID: request.model.id)
 
-        let container: ModelContainer
-        let rendering: PromptPrefixRendering
-        let cacheKey: PromptPrefixCacheKey
-        let cache: [KVCache]
-        let cachedPromptTokenCount: Int
-        let tokenStream: AsyncStream<TokenGeneration>
-        let generationTask: Task<Void, Never>
-        let tokenizer: any MLXLMCommon.Tokenizer
-        let toolCallFormat: ToolCallFormat
-        let toolCallSchemas = request.tools
-
+        let resolved: ResolvedChatSession
         do {
-            container = try await self.container(
+            let container = try await container(
                 for: request.model,
                 runtimeKind: request.runtimeKind,
                 parameters: request.parameters,
                 progressHandler: progressHandler
             )
-            rendering = try await renderedPrompt(
-                for: request,
-                container: container
-            )
-            guard !rendering.tokenIDs.isEmpty else {
-                throw MLXServerRuntimeError.emptyPrompt
-            }
-            tokenizer = rendering.tokenizer
-            toolCallFormat = rendering.toolCallFormat
-            cacheKey = PromptPrefixCacheKey(
-                modelID: request.model.id,
-                runtimeKind: request.runtimeKind,
-                cacheLayoutSignature: PromptPrefixSignature.cacheLayout(request.parameters)
-            )
-
-            let cacheProbe = promptPrefixCacheProbe(
-                key: cacheKey,
-                promptTokenIDs: rendering.tokenIDs
-            )
-
-            let selectedCache: [KVCache]
-            let selectedCachedPromptTokenCount: Int
-            let selectedCacheStatus: MLXServerChatCacheEvent.Status
-
-            if let memoryMatch = promptPrefixMemoryMatch(
-                key: cacheKey,
-                promptTokenIDs: rendering.tokenIDs
-            ) {
-                selectedCache = memoryMatch.cache
-                selectedCachedPromptTokenCount = memoryMatch.prefixTokenCount
-                selectedCacheStatus = .memoryHit
-                        } else if let diskMatch = await Self.diskPromptPrefixMatch(
-                store: diskKVCacheStore,
-                query: MLXServerDiskKVCachePrefixQuery(
-                    modelID: request.model.id,
-                    runtimeKind: request.runtimeKind,
-                    cacheLayoutSignature: PromptPrefixSignature.cacheLayout(request.parameters),
-                    promptTokenIDs: rendering.tokenIDs
-                )
-            ) {
-                selectedCache = diskMatch.cache
-                selectedCachedPromptTokenCount = diskMatch.promptTokenCount
-                selectedCacheStatus = .diskPrefixHit
-            } else {
-                selectedCache = try await newPromptCache(
-                    container: container,
-                    parameters: request.parameters
-                )
-                selectedCachedPromptTokenCount = 0
-                selectedCacheStatus = .miss
-            }
-
-            let effectiveCache = effectivePromptPrefixCache(
-                selectedCache,
-                cachedPromptTokenCount: selectedCachedPromptTokenCount,
-                promptTokenCount: rendering.tokenIDs.count
-            )
-            if effectiveCache.cache.isEmpty {
-                cache = try await newPromptCache(
-                    container: container,
-                    parameters: request.parameters
-                )
-                cachedPromptTokenCount = 0
-            } else {
-                cache = effectiveCache.cache
-                cachedPromptTokenCount = effectiveCache.prefixTokenCount
-            }
-            let effectiveCacheStatus: MLXServerChatCacheEvent.Status =
-                cachedPromptTokenCount > 0 ? selectedCacheStatus : .miss
-            lastChatCacheEvent = cacheProbe.event(
-                status: effectiveCacheStatus,
-                restoredPromptPrefixTokenCount: cachedPromptTokenCount > 0 ? cachedPromptTokenCount : nil,
-                cachedPromptTokenCount: cachedPromptTokenCount > 0 ? cachedPromptTokenCount : nil
-            )
-
-            let suffixTokenIDs = Array(rendering.tokenIDs.dropFirst(cachedPromptTokenCount))
-            guard !suffixTokenIDs.isEmpty else {
-                throw MLXServerRuntimeError.emptyPrompt
-            }
-
-            let generation = try await promptPrefixTokenStream(
-                cache: cache,
-                suffixTokenIDs: suffixTokenIDs,
-                parameters: request.parameters,
-                container: container
-            )
-            tokenStream = generation.stream
-            generationTask = generation.task
+            resolved = await resolveChatSession(request: request, container: container)
         } catch {
             await generationLease.release()
             throw error
         }
 
-        let promptTokenIDs = rendering.tokenIDs
-        let parameters = request.parameters
+        let cacheKey = resolved.cacheKey
+        let requestFingerprints = request.messages.map(\.transcriptFingerprint)
+        let toolsSignature = MLXServerChatSessionRequestSignature.tools(request.tools)
+        let contextSignature = MLXServerChatSessionRequestSignature.additionalContext(
+            request.additionalContext
+        )
+        let sessionTransfer = resolved.sessionTransfer
+        let suffixMessages = resolved.suffixMessages.map(\.mlxChatMessage)
+        let throwingStream = sessionTransfer.session.streamDetails(
+            to: suffixMessages
+        )
+
         return AsyncStream { continuation in
             let task = Task {
-                var detokenizer = NaiveStreamingDetokenizer(tokenizer: tokenizer)
-                let toolCallProcessor = ToolCallProcessor(
-                    format: toolCallFormat,
-                    tools: toolCallSchemas
+                do {
+                    for try await item in throwingStream {
+                        if Task.isCancelled {
+                            break
+                        }
+                        continuation.yield(item)
+                    }
+                } catch {
+                    // Mid-stream failures end the stream; the session is
+                    // not stored so the next request starts clean.
+                                        self.discardChatSession(for: cacheKey)
+                    await generationLease.release()
+                    continuation.finish()
+                    return
+                }
+
+                                self.finishChatSessionTurn(
+                    cacheKey: cacheKey,
+                    sessionTransfer: sessionTransfer,
+                    requestFingerprints: requestFingerprints,
+                    toolsSignature: toolsSignature,
+                    contextSignature: contextSignature
                 )
-                var generatedTokenIDs: [Int] = []
-                var toolCalls: [ToolCall] = []
-                var completionInfo: GenerateCompletionInfo?
-
-                for await event in tokenStream {
-                    if Task.isCancelled {
-                        break
-                    }
-                    switch event {
-                    case .token(let token):
-                        generatedTokenIDs.append(token)
-                        detokenizer.append(token: token)
-                        guard let chunk = detokenizer.next() else {
-                            continue
-                        }
-                        if let text = toolCallProcessor.processChunk(chunk) {
-                            continuation.yield(.chunk(text))
-                        }
-                        if let toolCall = toolCallProcessor.toolCalls.popLast() {
-                            toolCalls.append(toolCall)
-                            continuation.yield(.toolCall(toolCall))
-                        }
-                    case .info(let info):
-                        completionInfo = info
-                    }
-                }
-
-                toolCallProcessor.processEOS()
-                for toolCall in toolCallProcessor.toolCalls {
-                    toolCalls.append(toolCall)
-                    continuation.yield(.toolCall(toolCall))
-                }
-
-                await generationTask.value
-
-                if let completionInfo, !Task.isCancelled {
-                    await self.finishPromptPrefixGeneration(
-                        key: cacheKey,
-                        cache: cache,
-                        promptTokenIDs: promptTokenIDs,
-                        generatedTokenIDs: generatedTokenIDs,
-                        parameters: parameters
-                    )
-                    continuation.yield(.info(completionInfo))
-                }
-
                 await generationLease.release()
                 continuation.finish()
             }
             continuation.onTermination = { _ in
                 task.cancel()
-                generationTask.cancel()
             }
         }
     }
@@ -663,22 +571,7 @@ public actor MLXServerRuntime {
         progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
     ) async throws -> MLXServerGenerationOutput {
         let stream = try await generate(request: request, progressHandler: progressHandler)
-        var text = ""
-        var toolCalls: [ToolCall] = []
-        var info: GenerateCompletionInfo?
-
-        for await event in stream {
-            switch event {
-            case .chunk(let chunk):
-                text += chunk
-            case .info(let completionInfo):
-                info = completionInfo
-            case .toolCall(let toolCall):
-                toolCalls.append(toolCall)
-            }
-        }
-
-        return MLXServerGenerationOutput(text: text, toolCalls: toolCalls, info: info)
+        return await Self.collectGenerationOutput(stream)
     }
 
     public func generateChatSessionText(
@@ -686,6 +579,12 @@ public actor MLXServerRuntime {
         progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
     ) async throws -> MLXServerGenerationOutput {
         let stream = try await generateChatSession(request: request, progressHandler: progressHandler)
+        return await Self.collectGenerationOutput(stream)
+    }
+
+    private static func collectGenerationOutput(
+        _ stream: AsyncStream<Generation>
+    ) async -> MLXServerGenerationOutput {
         var text = ""
         var toolCalls: [ToolCall] = []
         var info: GenerateCompletionInfo?
@@ -703,6 +602,297 @@ public actor MLXServerRuntime {
 
         return MLXServerGenerationOutput(text: text, toolCalls: toolCalls, info: info)
     }
+
+    // MARK: - Chat session resolution
+
+    private struct ChatSessionState {
+        var sessionTransfer: ChatSessionTransfer
+        var fingerprints: [MLXServerChatTranscriptFingerprint]
+        var toolsSignature: String
+        var contextSignature: String
+        var lastAccessGeneration: UInt64
+    }
+
+    private struct ResolvedChatSession {
+        var cacheKey: MLXServerChatSessionCacheKey
+        var sessionTransfer: ChatSessionTransfer
+        var suffixMessages: [MLXServerChatMessage]
+    }
+
+    /// Finds or builds the `ChatSession` able to serve the request:
+    /// in-memory continuation first, then disk restore, then a fresh
+    /// session that prefills the whole transcript.
+    private func resolveChatSession(
+        request: MLXServerGenerationRequest,
+        container: ModelContainer
+    ) async -> ResolvedChatSession {
+        let cacheKey = MLXServerChatSessionCacheKey(
+            sessionKey: request.effectiveSessionKey,
+            modelID: request.model.id,
+            runtimeKind: request.runtimeKind,
+            cacheLayoutSignature: MLXServerChatSessionCacheSignature.cacheLayout(request.parameters)
+        )
+        let requestFingerprints = request.messages.map(\.transcriptFingerprint)
+        let toolsSignature = MLXServerChatSessionRequestSignature.tools(request.tools)
+        let contextSignature = MLXServerChatSessionRequestSignature.additionalContext(
+            request.additionalContext
+        )
+        let modelSessionCount = chatSessions.keys.count { $0.modelID == request.model.id }
+
+        // 1. In-memory continuation via the live ChatSession.
+        if let state = chatSessions[cacheKey] {
+            if state.toolsSignature == toolsSignature,
+               state.contextSignature == contextSignature,
+               let suffixStartIndex = MLXServerChatSessionTranscript.continuationSuffixStartIndex(
+                   stored: state.fingerprints,
+                   request: requestFingerprints
+               ) {
+                // Check the session out of the registry for the duration of
+                // the turn; it is re-inserted with updated fingerprints when
+                // the turn finishes.
+                chatSessions[cacheKey] = nil
+                let session = state.sessionTransfer.session
+                session.generateParameters = request.parameters
+                session.tools = request.tools
+                session.additionalContext = request.additionalContext
+                lastChatCacheEvent = MLXServerChatCacheEvent(
+                    status: .memoryHit,
+                    cachedSessionCount: 1,
+                    modelSessionCount: modelSessionCount,
+                    priorTranscriptCount: requestFingerprints.count,
+                    bestCommonPrefixCount: suffixStartIndex,
+                    bestCachedTranscriptCount: state.fingerprints.count
+                )
+                return ResolvedChatSession(
+                    cacheKey: cacheKey,
+                    sessionTransfer: state.sessionTransfer,
+                    suffixMessages: Array(request.messages.dropFirst(suffixStartIndex))
+                )
+            }
+            // Same session key but incompatible signatures or a diverged
+            // transcript: the cached session cannot serve this request.
+            chatSessions[cacheKey] = nil
+        }
+
+        // 2. Disk restore: rebuild the ChatSession around the persisted
+        // KV cache so a restarted server resumes without re-prefilling.
+        if let diskMatch = await Self.diskChatSessionMatch(
+            store: diskKVCacheStore,
+            key: cacheKey,
+            toolsSignature: toolsSignature,
+            contextSignature: contextSignature,
+            requestFingerprints: requestFingerprints
+        ),
+           let suffixStartIndex = MLXServerChatSessionTranscript.continuationSuffixStartIndex(
+               stored: diskMatch.fingerprints,
+               request: requestFingerprints
+           ) {
+            let session = ChatSession(
+                container,
+                cache: diskMatch.cache,
+                generateParameters: request.parameters,
+                processing: .init(resize: request.mediaResize),
+                additionalContext: request.additionalContext,
+                tools: request.tools
+            )
+            lastChatCacheEvent = MLXServerChatCacheEvent(
+                status: .diskHit,
+                cachedSessionCount: 0,
+                modelSessionCount: modelSessionCount,
+                priorTranscriptCount: requestFingerprints.count,
+                bestCommonPrefixCount: suffixStartIndex,
+                bestCachedTranscriptCount: diskMatch.fingerprints.count
+            )
+            return ResolvedChatSession(
+                cacheKey: cacheKey,
+                sessionTransfer: ChatSessionTransfer(session: session),
+                suffixMessages: Array(request.messages.dropFirst(suffixStartIndex))
+            )
+        }
+
+        // 3. Fresh session: the whole transcript is prefilled this turn.
+        let session = ChatSession(
+            container,
+            generateParameters: request.parameters,
+            processing: .init(resize: request.mediaResize),
+            additionalContext: request.additionalContext,
+            tools: request.tools
+        )
+        lastChatCacheEvent = MLXServerChatCacheEvent(
+            status: .miss,
+            cachedSessionCount: 0,
+            modelSessionCount: modelSessionCount,
+            priorTranscriptCount: requestFingerprints.count,
+            bestCommonPrefixCount: 0,
+            bestCachedTranscriptCount: 0
+        )
+        return ResolvedChatSession(
+            cacheKey: cacheKey,
+            sessionTransfer: ChatSessionTransfer(session: session),
+            suffixMessages: request.messages
+        )
+    }
+
+    /// Runs the disk lookup off the actor executor so heavy safetensors
+    /// reads do not block other runtime requests.
+    private static func diskChatSessionMatch(
+        store: MLXServerDiskKVCacheStore?,
+        key: MLXServerChatSessionCacheKey,
+        toolsSignature: String,
+        contextSignature: String,
+        requestFingerprints: [MLXServerChatTranscriptFingerprint]
+    ) async -> MLXServerDiskChatSessionMatch? {
+        guard let store, store.isEnabled else {
+            return nil
+        }
+        return await Task.detached(priority: .userInitiated) {
+            store.loadSession(
+                for: key,
+                toolsSignature: toolsSignature,
+                contextSignature: contextSignature,
+                requestFingerprints: requestFingerprints
+            )
+        }.value
+    }
+
+    /// Stores the session back into the registry at turn end and schedules
+    /// disk persistence of its KV cache.
+    private func finishChatSessionTurn(
+        cacheKey: MLXServerChatSessionCacheKey,
+        sessionTransfer: ChatSessionTransfer,
+        requestFingerprints: [MLXServerChatTranscriptFingerprint],
+        toolsSignature: String,
+        contextSignature: String
+    ) {
+        let fingerprints = requestFingerprints
+            + [MLXServerChatTranscriptFingerprint.generatedAssistantPlaceholder]
+        chatSessionAccessGeneration += 1
+                let state = ChatSessionState(
+            sessionTransfer: sessionTransfer,
+            fingerprints: fingerprints,
+            toolsSignature: toolsSignature,
+            contextSignature: contextSignature,
+            lastAccessGeneration: chatSessionAccessGeneration
+        )
+        chatSessions[cacheKey] = state
+        enqueueDiskChatSessionPersistence(cacheKey: cacheKey, state: state)
+        evictChatSessionsBeyondLimit()
+    }
+
+    private func discardChatSession(for cacheKey: MLXServerChatSessionCacheKey) {
+        chatSessions[cacheKey] = nil
+    }
+
+    /// Evicts least-recently-used sessions beyond the registry bound. Each
+    /// resident session retains a full KV cache in unified memory; evicted
+    /// sessions remain restorable from their disk entry.
+    private func evictChatSessionsBeyondLimit() {
+        while chatSessions.count > maxChatSessionCount {
+            guard let victimKey = chatSessions.min(by: {
+                $0.value.lastAccessGeneration < $1.value.lastAccessGeneration
+            })?.key else {
+                return
+            }
+            chatSessions[victimKey] = nil
+        }
+    }
+
+    // MARK: - Disk persistence
+
+    /// Maximum time a disk persistence job waits for the model to go idle
+    /// before writing anyway (durability beats contention avoidance under
+    /// sustained load).
+    private static let diskPersistenceIdleWaitPollInterval: Duration = .seconds(1)
+    private static let diskPersistenceIdleWaitMaxPolls = 30
+
+        private func enqueueDiskChatSessionPersistence(
+        cacheKey: MLXServerChatSessionCacheKey,
+        state: ChatSessionState
+    ) {
+        guard diskKVCacheStore != nil, let diskKVCachePersistenceWriter else {
+            return
+        }
+        // Coalesce per session entry: only rewrites of the same session
+        // coalesce; pending persists of other sessions are preserved. The
+        // closure captures the session so an LRU eviction before the writer
+        // drains does not lose disk durability.
+        diskKVCachePersistenceWriter.enqueue(coalescingKey: cacheKey.entryKey) { [weak self] in
+            await self?.persistChatSessionToDiskWhenIdle(
+                cacheKey: cacheKey,
+                sessionTransfer: state.sessionTransfer,
+                fingerprints: state.fingerprints,
+                toolsSignature: state.toolsSignature,
+                contextSignature: state.contextSignature
+            )
+        }
+    }
+
+        /// Runs on the persistence writer's queue. Waits for the model's
+    /// generation gate to go idle, then serializes the captured session KV
+    /// cache to disk. If the same session advanced while this older job was
+    /// waiting, it is skipped; a newer coalesced job persists the latest
+    /// state.
+    private func persistChatSessionToDiskWhenIdle(
+        cacheKey: MLXServerChatSessionCacheKey,
+        sessionTransfer: ChatSessionTransfer,
+        fingerprints: [MLXServerChatTranscriptFingerprint],
+        toolsSignature: String,
+        contextSignature: String
+    ) async {
+        guard let diskKVCacheStore else {
+            return
+        }
+
+        var polls = 0
+        while polls < Self.diskPersistenceIdleWaitMaxPolls,
+              !(await generationGates.isIdle(modelID: cacheKey.modelID)) {
+            polls += 1
+            try? await Task.sleep(for: Self.diskPersistenceIdleWaitPollInterval)
+        }
+
+        guard let persistenceLease = try? await generationGates.acquire(modelID: cacheKey.modelID) else {
+            return
+        }
+
+        // If a live in-memory session for this key already moved beyond the
+        // captured metadata, skip this stale job. If the session was evicted,
+        // the captured ChatSession is no longer mutable and can still be
+        // safely persisted for restart durability.
+        if let currentState = chatSessions[cacheKey],
+           currentState.fingerprints != fingerprints {
+            await persistenceLease.release()
+            return
+        }
+        guard diskKVCacheStore.needsPersistence(
+            for: cacheKey,
+            fingerprints: fingerprints
+        ) else {
+            await persistenceLease.release()
+            return
+        }
+        guard let target = try? diskKVCacheStore.preparePersistenceTarget(for: cacheKey) else {
+            await persistenceLease.release()
+            return
+        }
+
+        await Task.detached(priority: .utility) {
+            do {
+                try await sessionTransfer.session.saveCache(to: target.temporaryURL)
+                try diskKVCacheStore.commitPersistedSession(
+                    key: cacheKey,
+                    toolsSignature: toolsSignature,
+                    contextSignature: contextSignature,
+                    fingerprints: fingerprints,
+                    target: target
+                )
+            } catch {
+                diskKVCacheStore.discardPersistenceTarget(target)
+            }
+        }.value
+        await persistenceLease.release()
+    }
+
+    // MARK: - Model containers
 
     private func container(
         for model: MLXServerModelDescriptor,
@@ -763,8 +953,7 @@ public actor MLXServerRuntime {
     private func unloadOtherModelsBeforeLoading(_ key: LoadedModelKey) {
         let unloadedModelIDs = Set(containers.keys.filter { $0 != key }.map(\.modelID)).sorted()
         containers = containers.filter { $0.key == key }
-        promptPrefixCaches.removeAll(keepingCapacity: true)
-        modelPromptPrefixKeys.removeAll(keepingCapacity: true)
+        chatSessions = chatSessions.filter { $0.key.modelID == key.modelID }
         for (loadingKey, loadingTask) in loadingTasks where loadingKey != key {
             loadingTask.task.cancel()
         }
@@ -777,393 +966,13 @@ public actor MLXServerRuntime {
             modelUnloadLogger?(MLXServerModelUnloadEvent(modelID: modelID))
         }
     }
-
-    private func renderedPrompt(
-        for request: MLXServerGenerationRequest,
-        container: ModelContainer
-    ) async throws -> PromptPrefixRendering {
-        let payload = PromptPrefixRenderingPayload(
-            messages: request.messages.map {
-                PromptPrefixRenderingMessage(
-                    role: $0.role.rawValue,
-                    content: $0.content,
-                    toolCalls: $0.toolCalls,
-                    toolCallID: $0.toolCallID
-                )
-            },
-            tools: request.tools,
-            additionalContext: request.additionalContext
-        )
-
-        return try await container.perform(values: payload) { context, payload in
-            let messages: [[String: any Sendable]] = payload.messages.map { message in
-                var rendered: [String: any Sendable] = [
-                    "role": message.role,
-                    "content": message.content
-                ]
-                if !message.toolCalls.isEmpty {
-                    rendered["tool_calls"] = message.toolCalls.map(\.chatTemplatePayload)
-                }
-                if let toolCallID = message.toolCallID, !toolCallID.isEmpty {
-                    rendered["tool_call_id"] = toolCallID
-                }
-                return rendered
-            }
-            let templateMessages = messages.map(\.jinjaTemplatePayload)
-            let templateTools = payload.tools?.map(\.jinjaTemplatePayload)
-            let templateAdditionalContext = payload.additionalContext?.jinjaTemplatePayload
-
-            let tokenIDs: [Int]
-            do {
-                tokenIDs = try context.tokenizer.applyChatTemplate(
-                    messages: templateMessages,
-                    tools: templateTools,
-                    additionalContext: templateAdditionalContext
-                )
-            } catch {
-                guard let tokenizerError = error as? MLXLMCommon.TokenizerError,
-                      case .missingChatTemplate = tokenizerError else {
-                    throw error
-                }
-                tokenIDs = context.tokenizer.encode(
-                    text: messages
-                        .compactMap { $0["content"] as? String }
-                        .joined(separator: "\n\n")
-                )
-            }
-
-            return PromptPrefixRendering(
-                tokenIDs: tokenIDs,
-                tokenizer: context.tokenizer,
-                toolCallFormat: context.configuration.toolCallFormat ?? .json
-            )
-        }
-    }
-
-    private func newPromptCache(
-        container: ModelContainer,
-        parameters: GenerateParameters
-    ) async throws -> [KVCache] {
-        let transfer = await container.perform(values: parameters) { context, parameters in
-            MLXServerKVCacheTransfer(
-                cache: context.model.newCache(parameters: parameters)
-            )
-        }
-        return transfer.cache
-    }
-
-    private func promptPrefixTokenStream(
-        cache: [KVCache],
-        suffixTokenIDs: [Int],
-        parameters: GenerateParameters,
-        container: ModelContainer
-    ) async throws -> PromptPrefixTokenGeneration {
-        guard !suffixTokenIDs.isEmpty, !cache.isEmpty else {
-            throw MLXServerRuntimeError.emptyPrompt
-        }
-        let payload = PromptPrefixTokenGenerationPayload(
-            cache: cache,
-            suffixTokenIDs: suffixTokenIDs,
-            parameters: parameters
-        )
-
-        return try await container.perform(values: payload) { context, payload in
-            let input = LMInput(tokens: MLXArray(payload.suffixTokenIDs))
-            let (stream, task) = try MLXLMCommon.generateTokensTask(
-                input: input,
-                cache: payload.cache,
-                parameters: payload.parameters,
-                context: context
-            )
-            return PromptPrefixTokenGeneration(stream: stream, task: task)
-        }
-    }
-
-    private func effectivePromptPrefixCache(
-        _ cache: [KVCache],
-        cachedPromptTokenCount: Int,
-        promptTokenCount: Int
-    ) -> PromptPrefixMemoryMatch {
-        guard promptTokenCount > 0,
-              cachedPromptTokenCount >= promptTokenCount else {
-            return PromptPrefixMemoryMatch(
-                cache: cache,
-                prefixTokenCount: cachedPromptTokenCount
-            )
-        }
-
-        let targetCachedPromptTokenCount = promptTokenCount - 1
-        guard targetCachedPromptTokenCount > 0 else {
-            return PromptPrefixMemoryMatch(cache: [], prefixTokenCount: 0)
-        }
-
-        let cacheCopy = cache.map { $0.copy() }
-        let tokensToTrim = cachedPromptTokenCount - targetCachedPromptTokenCount
-        guard tokensToTrim > 0,
-              trimPromptPrefixCache(cacheCopy, numTokens: tokensToTrim) == tokensToTrim else {
-            return PromptPrefixMemoryMatch(cache: [], prefixTokenCount: 0)
-        }
-
-        return PromptPrefixMemoryMatch(
-            cache: cacheCopy,
-            prefixTokenCount: targetCachedPromptTokenCount
-        )
-    }
-
-    private func promptPrefixCacheProbe(
-        key: PromptPrefixCacheKey,
-        promptTokenIDs: [Int]
-    ) -> PromptPrefixCacheProbe {
-        let sameKeyStates = promptPrefixCaches[key] ?? []
-        let sameModelStates: [PromptPrefixCacheState] = {
-            guard let candidateKeys = modelPromptPrefixKeys[key.modelID] else {
-                return []
-            }
-            return candidateKeys
-                .filter { $0.runtimeKind == key.runtimeKind }
-                .flatMap { promptPrefixCaches[$0] ?? [] }
-        }()
-
-        var bestCommonPrefixCount = 0
-        var bestCachedTokenCount = 0
-        for state in sameKeyStates {
-            let commonPrefixCount = state.tokenIDs.reusablePrefixCount(
-                with: promptTokenIDs
-            )
-            if commonPrefixCount > bestCommonPrefixCount {
-                bestCommonPrefixCount = commonPrefixCount
-                bestCachedTokenCount = state.tokenIDs.count
-            }
-        }
-
-        var bestModelCommonPrefixCount = 0
-        var bestModelCachedTokenCount = 0
-        for state in sameModelStates {
-            let commonPrefixCount = state.tokenIDs.reusablePrefixCount(
-                with: promptTokenIDs
-            )
-            if commonPrefixCount > bestModelCommonPrefixCount {
-                bestModelCommonPrefixCount = commonPrefixCount
-                bestModelCachedTokenCount = state.tokenIDs.count
-            }
-        }
-
-        return PromptPrefixCacheProbe(
-            cachedSessionCount: sameKeyStates.count,
-            modelSessionCount: sameModelStates.count,
-            priorTranscriptCount: promptTokenIDs.count,
-            bestCommonPrefixCount: bestCommonPrefixCount,
-            bestCachedTranscriptCount: bestCachedTokenCount,
-            bestModelCommonPrefixCount: bestModelCommonPrefixCount,
-            bestModelCachedTranscriptCount: bestModelCachedTokenCount
-        )
-    }
-
-    private func promptPrefixMemoryMatch(
-        key: PromptPrefixCacheKey,
-        promptTokenIDs: [Int]
-    ) -> PromptPrefixMemoryMatch? {
-        guard var states = promptPrefixCaches[key], !states.isEmpty else {
-            return nil
-        }
-
-        var bestIndex: Int?
-        var bestPrefixTokenCount = 0
-        for index in states.indices {
-            let prefixTokenCount = states[index].tokenIDs.reusablePrefixCount(
-                with: promptTokenIDs
-            )
-            if prefixTokenCount > bestPrefixTokenCount {
-                bestPrefixTokenCount = prefixTokenCount
-                bestIndex = index
-            }
-        }
-
-        guard let bestIndex, bestPrefixTokenCount > 0 else {
-            return nil
-        }
-
-        promptPrefixCacheGeneration += 1
-        states[bestIndex].lastAccessGeneration = promptPrefixCacheGeneration
-        let state = states[bestIndex]
-        promptPrefixCaches[key] = states
-
-        if bestPrefixTokenCount == state.tokenIDs.count {
-            return PromptPrefixMemoryMatch(
-                cache: state.cache,
-                prefixTokenCount: bestPrefixTokenCount
-            )
-        }
-
-        let cacheCopy = state.cache.map { $0.copy() }
-        let tokensToTrim = state.tokenIDs.count - bestPrefixTokenCount
-        let trimmed = trimPromptPrefixCache(cacheCopy, numTokens: tokensToTrim)
-        guard trimmed == tokensToTrim else {
-            return nil
-        }
-        return PromptPrefixMemoryMatch(
-            cache: cacheCopy,
-            prefixTokenCount: bestPrefixTokenCount
-        )
-    }
-
-    private func finishPromptPrefixGeneration(
-        key: PromptPrefixCacheKey,
-        cache: [KVCache],
-        promptTokenIDs: [Int],
-        generatedTokenIDs: [Int],
-        parameters: GenerateParameters
-    ) async {
-        guard cache.hasPromptState else {
-            return
-        }
-        let cachedTokenIDs = promptTokenIDs + generatedTokenIDs
-        guard !cachedTokenIDs.isEmpty else {
-            return
-        }
-        guard normalizePromptCacheLength(
-            cache,
-            expectedTokenCount: cachedTokenIDs.count
-        ) else {
-            return
-        }
-
-        promptPrefixCacheGeneration += 1
-        var states = promptPrefixCaches[key] ?? []
-        states.removeAll { state in
-            state.tokenIDs == cachedTokenIDs || state.cache.hasSameStorage(as: cache)
-        }
-        states.append(
-            PromptPrefixCacheState(
-                cache: cache,
-                tokenIDs: cachedTokenIDs,
-                lastAccessGeneration: promptPrefixCacheGeneration
-            )
-        )
-        states.sort { $0.lastAccessGeneration > $1.lastAccessGeneration }
-        promptPrefixCaches[key] = Array(states.prefix(8))
-
-        // Maintain the per-model secondary index
-        if !states.isEmpty {
-            modelPromptPrefixKeys[key.modelID, default: []].insert(key)
-        } else {
-            modelPromptPrefixKeys[key.modelID]?.remove(key)
-            if modelPromptPrefixKeys[key.modelID]?.isEmpty == true {
-                modelPromptPrefixKeys[key.modelID] = nil
-            }
-        }
-
-        enqueueDiskPromptCachePersistenceIfNeeded(
-            cache: cache,
-            key: key,
-            tokenIDs: cachedTokenIDs,
-            parameters: parameters
-        )
-    }
-
-    /// Runs the disk prefix lookup off the actor executor so heavy
-    /// safetensors reads do not block other runtime requests.
-    private static func diskPromptPrefixMatch(
-        store: MLXServerDiskKVCacheStore?,
-        query: MLXServerDiskKVCachePrefixQuery
-    ) async -> MLXServerDiskKVCachePrefixMatch? {
-        guard let store, store.isEnabled else {
-            return nil
-        }
-        return await Task.detached(priority: .userInitiated) {
-            store.loadLongestPromptPrefix(for: query)
-        }.value
-    }
-
-    private func enqueueDiskPromptCachePersistenceIfNeeded(
-        cache: [KVCache],
-        key: PromptPrefixCacheKey,
-        tokenIDs: [Int],
-        parameters: GenerateParameters
-    ) {
-        guard let diskKVCacheStore,
-              let diskKVCachePersistenceWriter,
-              cache.hasPromptState else {
-            return
-        }
-
-        // Persist at an aligned token boundary instead of the exact turn
-        // length. Turns that do not cross a new boundary produce the same
-        // identity as the previous checkpoint and are deduplicated by the
-        // store, so long sessions write O(tokens / boundary) checkpoints
-        // instead of one full snapshot per turn. Trimming a small tail also
-        // avoids storing tokens that the next turn's template rendering may
-        // re-tokenize differently across the generation boundary.
-        let storeTokenCount = DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(
-            tokenIDs.count
-        )
-        guard storeTokenCount > 0 else {
-            return
-        }
-        let storeTokenIDs = Array(tokenIDs.prefix(storeTokenCount))
-        let identity = MLXServerDiskKVCacheIdentity(
-            promptPrefixKey: key,
-            tokenIDs: storeTokenIDs,
-            parameters: parameters
-        )
-        guard diskKVCacheStore.needsPersistence(for: identity) else {
-            return
-        }
-
-        // The live cache can be reused by the next turn; the disk writer
-        // needs its own snapshot, trimmed to the aligned boundary.
-        let snapshot = cache.map { $0.copy() }
-        if storeTokenCount < tokenIDs.count {
-            let tokensToTrim = tokenIDs.count - storeTokenCount
-            guard trimPromptPrefixCache(snapshot, numTokens: tokensToTrim) == tokensToTrim,
-                  normalizePromptCacheLength(snapshot, expectedTokenCount: storeTokenCount)
-            else {
-                return
-            }
-        }
-        let cacheSnapshot = MLXServerKVCacheTransfer(cache: snapshot)
-
-        // Coalesce per entry (prompt token digest), not per model: pending
-        // persists from concurrent sessions on the same model must not
-        // replace each other; only rewrites of the same entry coalesce.
-        diskKVCachePersistenceWriter.enqueue(coalescingKey: identity.entryKey) {
-            diskKVCacheStore.persistCache(
-                identity: identity,
-                cache: cacheSnapshot.cache
-            )
-        }
-    }
-
 }
 
-/// Disk checkpoint boundary policy, after ds4's kvstore: align stores down
-/// to a coarse token boundary (with a small tail trim) so consecutive turns
-/// that stay within one boundary produce identical checkpoint identities and
-/// the store's dedup skips the write entirely.
-enum DiskPersistenceBoundaryPolicy {
-    /// Minimum prompt length worth checkpointing to disk.
-    static let minimumStoreTokenCount = 512
-    /// Tail tokens dropped before aligning; the next turn's template
-    /// rendering can re-tokenize bytes around the generation boundary.
-    static let boundaryTrimTokenCount = 32
-    /// Store boundary alignment, in tokens.
-    static let boundaryAlignmentTokenCount = 1024
-
-    /// Returns the aligned number of tokens to persist, or 0 when the prompt
-    /// is too short to be worth a disk checkpoint.
-    static func alignedStoreTokenCount(_ tokenCount: Int) -> Int {
-        guard tokenCount >= minimumStoreTokenCount else {
-            return 0
-        }
-        if tokenCount > minimumStoreTokenCount + boundaryTrimTokenCount {
-            var stable = tokenCount - boundaryTrimTokenCount
-            stable -= stable % boundaryAlignmentTokenCount
-            if stable >= minimumStoreTokenCount {
-                return stable
-            }
-        }
-        return tokenCount
-    }
+/// `ChatSession` is a class with internal synchronization (its KV cache is
+/// guarded by a serial-access container); the wrapper lets the runtime pass
+/// it between the actor and detached persistence work.
+struct ChatSessionTransfer: @unchecked Sendable {
+    let session: ChatSession
 }
 
 private struct LoadedModelKey: Hashable, Sendable {
@@ -1178,307 +987,6 @@ private struct LoadedModelKey: Hashable, Sendable {
 private struct ModelLoadingTask {
     var id: UUID
     var task: Task<ModelContainer, any Error>
-}
-
-private struct PromptPrefixCacheKey: Hashable, Sendable {
-    var modelID: String
-    var runtimeKind: MLXServerModelRuntimeKind
-    var cacheLayoutSignature: String
-
-    var signature: String {
-        [
-            modelID,
-            runtimeKind.rawValue,
-            cacheLayoutSignature
-        ].joined(separator: "\u{1C}")
-    }
-}
-
-private struct PromptPrefixRenderingMessage: Sendable {
-    var role: String
-    var content: String
-    var toolCalls: [MLXServerChatToolCall]
-    var toolCallID: String?
-}
-
-private struct PromptPrefixRenderingPayload: Sendable {
-    var messages: [PromptPrefixRenderingMessage]
-    var tools: [ToolSpec]?
-    var additionalContext: [String: any Sendable]?
-}
-
-private struct PromptPrefixRendering: Sendable {
-    var tokenIDs: [Int]
-    var tokenizer: any MLXLMCommon.Tokenizer
-    var toolCallFormat: ToolCallFormat
-}
-
-private struct PromptPrefixTokenGenerationPayload: @unchecked Sendable {
-    var cache: [KVCache]
-    var suffixTokenIDs: [Int]
-    var parameters: GenerateParameters
-}
-
-private struct PromptPrefixTokenGeneration: Sendable {
-    var stream: AsyncStream<TokenGeneration>
-    var task: Task<Void, Never>
-}
-
-private struct PromptPrefixCacheState {
-    var cache: [KVCache]
-    var tokenIDs: [Int]
-    var lastAccessGeneration: UInt64
-}
-
-private struct PromptPrefixMemoryMatch {
-    var cache: [KVCache]
-    var prefixTokenCount: Int
-}
-
-private extension MLXServerChatToolCall {
-    var chatTemplatePayload: [String: any Sendable] {
-        var payload: [String: any Sendable] = [
-            "type": "function",
-            "function": [
-                "name": function.name,
-                "arguments": function.arguments.mapValues(\.chatTemplateValue)
-            ] as [String: any Sendable]
-        ]
-        if let id, !id.isEmpty {
-            payload["id"] = id
-        }
-        return payload
-    }
-}
-
-private extension JSONValue {
-    var chatTemplateValue: any Sendable {
-        switch self {
-        case .null:
-            JinjaTemplateNullValue()
-        case .bool(let value):
-            value
-        case .int(let value):
-            value
-        case .double(let value):
-            value
-        case .string(let value):
-            value
-        case .array(let values):
-            values.map(\.chatTemplateValue)
-        case .object(let values):
-            values.mapValues(\.chatTemplateValue)
-        }
-    }
-}
-
-private struct JinjaTemplateNullValue: Sendable {}
-
-private extension Dictionary where Key == String, Value == any Sendable {
-    var jinjaTemplatePayload: [String: any Sendable] {
-        compactMapValues { value in
-            Self.jinjaTemplateValue(from: value)
-        }
-    }
-
-    static func jinjaTemplateValue(from value: Any) -> (any Sendable)? {
-        let mirror = Mirror(reflecting: value)
-        if mirror.displayStyle == .optional {
-            guard let child = mirror.children.first else {
-                return nil
-            }
-            return jinjaTemplateValue(from: child.value)
-        }
-        if value is JinjaTemplateNullValue {
-            return nil
-        }
-        if let string = value as? String {
-            return string
-        }
-        if let bool = value as? Bool {
-            return bool
-        }
-        if let int = value as? Int {
-            return int
-        }
-        if let double = value as? Double {
-            return double
-        }
-        if let float = value as? Float {
-            return Double(float)
-        }
-        if mirror.displayStyle == .collection {
-            return mirror.children.compactMap { Self.jinjaTemplateValue(from: $0.value) }
-        }
-        if mirror.displayStyle == .dictionary {
-            var payload: [String: any Sendable] = [:]
-            for child in mirror.children {
-                let pair = Array(Mirror(reflecting: child.value).children)
-                guard pair.count == 2,
-                      let key = pair[0].value as? String,
-                      let value = Self.jinjaTemplateValue(from: pair[1].value) else {
-                    continue
-                }
-                payload[key] = value
-            }
-            return payload
-        }
-        return String(describing: value)
-    }
-}
-
-private struct MLXServerKVCacheTransfer: @unchecked Sendable {
-    var cache: [KVCache]
-}
-
-private struct MLXServerPromptTokenIdentity: Hashable, Sendable {
-    var tokenDigest: String
-    var tokenCount: Int
-    var tokenIDs: [Int]
-
-    init(tokenIDs: [Int]) {
-        self.tokenIDs = tokenIDs
-        tokenDigest = Self.digest(tokenIDs)
-        tokenCount = tokenIDs.count
-    }
-
-    private static func digest(_ tokenIDs: [Int]) -> String {
-        var hasher = SHA256()
-        append("mlx-server-prompt-token-identity-v1", to: &hasher)
-        for tokenID in tokenIDs {
-            var value = Int64(tokenID).littleEndian
-            withUnsafeBytes(of: &value) { buffer in
-                hasher.update(data: Data(buffer))
-            }
-        }
-        return hexString(from: hasher.finalize())
-    }
-
-    private static func append(_ value: String, to hasher: inout SHA256) {
-        let data = Data(value.utf8)
-        var count = UInt64(data.count).littleEndian
-        withUnsafeBytes(of: &count) { buffer in
-            hasher.update(data: Data(buffer))
-        }
-        hasher.update(data: data)
-    }
-
-    private static func hexString<D: Sequence>(
-        from digest: D
-    ) -> String where D.Element == UInt8 {
-        digest.map { String(format: "%02x", $0) }.joined()
-    }
-}
-
-private struct PromptPrefixCacheProbe {
-    var cachedSessionCount: Int
-    var modelSessionCount: Int
-    var priorTranscriptCount: Int
-    var bestCommonPrefixCount: Int
-    var bestCachedTranscriptCount: Int
-    var bestModelCommonPrefixCount: Int
-    var bestModelCachedTranscriptCount: Int
-
-    func event(
-        status: MLXServerChatCacheEvent.Status,
-        restoredPromptPrefixTokenCount: Int? = nil,
-        cachedPromptTokenCount: Int? = nil
-    ) -> MLXServerChatCacheEvent {
-        MLXServerChatCacheEvent(
-            status: status,
-            cachedSessionCount: cachedSessionCount,
-            modelSessionCount: modelSessionCount,
-            priorTranscriptCount: priorTranscriptCount,
-            bestCommonPrefixCount: bestCommonPrefixCount,
-            bestCachedTranscriptCount: bestCachedTranscriptCount,
-            bestModelCommonPrefixCount: bestModelCommonPrefixCount,
-            bestModelCachedTranscriptCount: bestModelCachedTranscriptCount,
-            restoredPromptPrefixTokenCount: restoredPromptPrefixTokenCount,
-            cachedPromptTokenCount: cachedPromptTokenCount
-        )
-    }
-}
-
-extension MLXServerDiskKVCacheIdentity {
-    fileprivate init(
-        promptPrefixKey key: PromptPrefixCacheKey,
-        tokenIDs: [Int],
-        parameters: GenerateParameters
-    ) {
-        let tokenIdentity = MLXServerPromptTokenIdentity(tokenIDs: tokenIDs)
-        self.init(
-            modelID: key.modelID,
-            runtimeKind: key.runtimeKind,
-            cacheLayoutSignature: PromptPrefixSignature.cacheLayout(parameters),
-            promptTokenDigest: tokenIdentity.tokenDigest,
-            promptTokenCount: tokenIdentity.tokenCount,
-            promptTokenIDs: tokenIdentity.tokenIDs
-        )
-    }
-
-}
-
-private extension Array where Element == Int {
-    func reusablePrefixCount(with promptTokenIDs: [Int]) -> Int {
-        let limit = Swift.min(count, promptTokenIDs.count - 1)
-        guard limit > 0 else {
-            return 0
-        }
-
-        var index = 0
-        while index < limit, self[index] == promptTokenIDs[index] {
-            index += 1
-        }
-        return index
-    }
-}
-
-private extension Array where Element == KVCache {
-    var hasPromptState: Bool {
-        let state = flatMap(\.state)
-        return !state.isEmpty && state.allSatisfy { $0.size > 0 }
-    }
-
-    func hasSameStorage(as other: [KVCache]) -> Bool {
-        guard count == other.count else {
-            return false
-        }
-        return zip(self, other).allSatisfy { left, right in
-            guard let leftObject = left as AnyObject?,
-                  let rightObject = right as AnyObject? else {
-                return false
-            }
-            return ObjectIdentifier(leftObject) == ObjectIdentifier(rightObject)
-        }
-    }
-}
-
-@discardableResult
-private func trimPromptPrefixCache(_ cache: [KVCache], numTokens: Int) -> Int {
-    guard numTokens > 0 else {
-        return 0
-    }
-
-    var didTrim = false
-    for entry in cache where !entry.state.isEmpty {
-        entry.trim(numTokens)
-        didTrim = true
-    }
-
-    guard didTrim else {
-        return 0
-    }
-    return numTokens
-}
-
-private enum PromptPrefixSignature {
-    static func cacheLayout(_ parameters: GenerateParameters) -> String {
-        [
-            "kvBits=\(parameters.kvBits.map(String.init) ?? "nil")",
-            "kvGroupSize=\(parameters.kvGroupSize)",
-            "quantizedKVStart=\(parameters.quantizedKVStart)"
-        ].joined(separator: "&")
-    }
 }
 
 public enum MLXServerChatSessionTranscriptText {
@@ -1537,7 +1045,46 @@ public enum MLXServerChatSessionTranscriptText {
         )
     }
 
+    public static func assistantHistoryMessages(
+        from generatedText: String,
+        startsInThinking: Bool,
+        preservesThinking: Bool
+    ) -> [MLXServerChatMessage] {
+        let historyVisibleText = visibleAssistantContentForHistory(
+            from: generatedText,
+            startsInThinking: startsInThinking
+        )
+        let reasoningText = reasoningContent(
+            from: generatedText,
+            startsInThinking: startsInThinking
+        )
+        let trimmedReasoningText = reasoningText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var messages: [MLXServerChatMessage] = []
+        if preservesThinking, !trimmedReasoningText.isEmpty {
+            messages.append(
+                .assistant(
+                    MLXServerReasoningTranscript.reasoningSummary(trimmedReasoningText)
+                )
+            )
+        }
+        let historyReasoningText = preservesThinking ? trimmedReasoningText : nil
+        if !historyVisibleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || historyReasoningText?.isEmpty == false {
+            messages.append(
+                .assistant(
+                    historyVisibleText,
+                    reasoningContent: historyReasoningText
+                )
+            )
+        }
+        if messages.isEmpty {
+            messages.append(.assistant(""))
+        }
+        return messages
+    }
+
     public static func reasoningContent(from generatedText: String, startsInThinking: Bool) -> String {
+
         var text = generatedText
         var reasoning = ""
 
@@ -1590,14 +1137,34 @@ public enum MLXServerChatSessionTranscriptText {
     }
 }
 
-private extension MLXServerChatMessage {
+extension MLXServerChatMessage {
     var mlxChatMessage: Chat.Message {
         Chat.Message(
             role: mlxRole,
-            content: content,
+            content: templateContent,
             images: imageURLs.map(UserInput.Image.url),
             videos: videoURLs.map(UserInput.Video.url)
         )
+    }
+
+    /// `Chat.Message` carries plain content only; assistant tool calls are
+    /// rendered inline so transcript rehydration keeps the calls visible to
+    /// the model even without template-native tool-call structures.
+    private var templateContent: String {
+        guard role == .assistant, !toolCalls.isEmpty else {
+            return content
+        }
+        let renderedCalls = toolCalls.map { toolCall in
+            let arguments = toolCall.function.arguments
+                .map { key, value in "\"\(key)\": \(String(describing: value))" }
+                .sorted()
+                .joined(separator: ", ")
+            return "{\"name\": \"\(toolCall.function.name)\", \"arguments\": {\(arguments)}}"
+        }
+        let callsText = renderedCalls
+            .map { "<tool_call>\n\($0)\n</tool_call>" }
+            .joined(separator: "\n")
+        return content.isEmpty ? callsText : "\(content)\n\(callsText)"
     }
 
     var mlxRole: Chat.Message.Role {

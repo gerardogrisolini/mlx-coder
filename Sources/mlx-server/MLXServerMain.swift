@@ -438,12 +438,13 @@ struct MLXServerMain {
             modelUnloadLogger: logModelUnloadEvent
         )
         let thinkingSelection = model.thinking.defaultEnabledSelection()
-        var additionalContext = model.thinking.additionalContext(for: thinkingSelection)
-        additionalContext["preserve_thinking"] = false
+        let additionalContext = model.thinking.additionalContext(for: thinkingSelection)
+        let retainsReasoningInHistory = thinkingSelection.isEnabled && model.thinking.supportsPreserveThinking
         var messages: [MLXServerChatMessage] = []
-        var pendingInitialPrompt = options.initialPrompt
+                var pendingInitialPrompt = options.initialPrompt
         var turnResults: [MLXServerChatTurnResult] = []
         var turnIndex = 1
+        let chatSessionID = "chat-\(UUID().uuidString)"
 
         try await runtime.preloadModel(
             model: model,
@@ -494,14 +495,16 @@ struct MLXServerMain {
                 messages: messages,
                 userText: trimmedUserText,
                 additionalContext: additionalContext,
-                options: options,
+                retainsReasoningInHistory: retainsReasoningInHistory,
+                                options: options,
                 kvCacheSettings: settings.kvCache,
+                sessionID: chatSessionID,
                 label: "turn \(turnIndex)",
                 printsOutput: !options.quiet
             )
             turnResults.append(result.metrics)
             messages.append(.user(trimmedUserText))
-            messages.append(.assistant(result.historyAssistantText))
+            messages.append(contentsOf: result.historyMessages)
             turnIndex += 1
 
         }
@@ -517,8 +520,10 @@ struct MLXServerMain {
         messages: [MLXServerChatMessage],
         userText: String,
         additionalContext: [String: any Sendable],
-        options: MLXServerChatOptions,
+        retainsReasoningInHistory: Bool,
+                options: MLXServerChatOptions,
         kvCacheSettings: MLXServerKVCacheSettings,
+        sessionID: String,
         label: String,
         printsOutput: Bool
     ) async throws -> MLXServerChatTurnOutput {
@@ -529,8 +534,9 @@ struct MLXServerMain {
                 maxTokens: options.maxTokens,
                 kvCacheSettings: kvCacheSettings
             ),
-            additionalContext: additionalContext,
-            retainsReasoningInHistory: false
+                        additionalContext: additionalContext,
+            retainsReasoningInHistory: retainsReasoningInHistory,
+            sessionID: sessionID
         )
         let stream = try await runtime.generateChatSession(request: request)
         var output = ""
@@ -585,9 +591,10 @@ struct MLXServerMain {
                 from: output,
                 startsInThinking: request.emitsThinking
             ),
-            historyAssistantText: MLXServerChatSessionTranscriptText.visibleAssistantContentForHistory(
+            historyMessages: MLXServerChatSessionTranscriptText.assistantHistoryMessages(
                 from: output,
-                startsInThinking: request.emitsThinking
+                startsInThinking: request.emitsThinking,
+                preservesThinking: request.retainsReasoningInHistory
             ),
             metrics: MLXServerChatTurnResult(
                 promptTokensPerSecond: completionInfo.promptTokensPerSecond,
@@ -784,7 +791,7 @@ private struct MLXServerChatOptions {
 
 private struct MLXServerChatTurnOutput {
     var visibleAssistantText: String
-    var historyAssistantText: String
+    var historyMessages: [MLXServerChatMessage]
     var metrics: MLXServerChatTurnResult
 }
 

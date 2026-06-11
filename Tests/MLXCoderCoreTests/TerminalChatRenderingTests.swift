@@ -86,6 +86,48 @@ struct TerminalChatRenderingTests {
     }
 
     @Test
+    func statusBarGitFragmentShowsDiffSummary() {
+        let summary = TerminalGitStatusSummary(
+            changedFileCount: 3,
+            additions: 12,
+            deletions: 4
+        )
+
+        #expect(TerminalStatusBar.gitStatusFragment(summary: summary) == "git 3 files +12 -4")
+    }
+
+    @Test
+    func gitNumstatSummaryCountsFilesAdditionsAndDeletions() {
+        let output = """
+        10\t2\tSources/App.swift
+        -\t-\tAssets/Icon.png
+        1\t0\tTests/AppTests.swift
+        """
+
+        #expect(
+            TerminalChat.gitNumstatSummary(from: output) == TerminalGitStatusSummary(
+                changedFileCount: 3,
+                additions: 11,
+                deletions: 2
+            )
+        )
+    }
+
+    @Test
+    func gitStatusSummaryReturnsNilOutsideGitRepository() async {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("terminal-chat-git-status-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        let summary = await TerminalChat.gitStatusSummary(in: directory)
+
+        #expect(summary == nil)
+    }
+
+    @Test
     func markdownFormatterStylesHeadingsAndInlineCode() {
         var formatter = TerminalMarkdownStreamFormatter(isEnabled: true)
 

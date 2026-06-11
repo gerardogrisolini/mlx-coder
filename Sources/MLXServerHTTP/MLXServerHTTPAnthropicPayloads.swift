@@ -13,8 +13,9 @@ struct AnthropicMessagesRequest: Decodable, Sendable {
     var system: FlexibleMessageContent?
     var messages: [AnthropicInputMessage]
     var stream: Bool?
-    var tools: [AnthropicToolDefinition]?
+        var tools: [AnthropicToolDefinition]?
     var thinking: AnthropicThinkingConfiguration?
+    var sessionID: String?
 
     enum CodingKeys: String, CodingKey {
         case model
@@ -22,8 +23,13 @@ struct AnthropicMessagesRequest: Decodable, Sendable {
         case system
         case messages
         case stream
-        case tools
+                case tools
         case thinking
+        case sessionID = "session_id"
+    }
+
+    var effectiveSessionID: String? {
+        sessionID
     }
 
     var serverMessages: [MLXServerChatMessage] {

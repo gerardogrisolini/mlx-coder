@@ -75,7 +75,8 @@ func chatCompletionsEndpointMapsThinkingProtocol() async throws {
         { "role": "user", "content": "ciao" }
       ],
       "reasoning_effort": "medium",
-      "max_tokens": 64
+      "max_tokens": 64,
+      "session_id": "chat-session-a"
     }
     """
 
@@ -91,6 +92,7 @@ func chatCompletionsEndpointMapsThinkingProtocol() async throws {
     #expect(request.messages.map(\.content) == ["ciao"])
     #expect(request.additionalContext?["enable_thinking"] as? Bool == true)
     #expect(request.additionalContext?["thinking_level"] as? String == "medium")
+    #expect(request.sessionID == "chat-session-a")
 }
 
 @Test
@@ -136,7 +138,8 @@ func responsesEndpointMapsReasoningProtocol() async throws {
         "effort": "high",
         "summary": "auto"
       },
-      "max_output_tokens": 64
+      "max_output_tokens": 64,
+      "prompt_cache_key": "responses-session-a"
     }
     """
 
@@ -156,6 +159,7 @@ func responsesEndpointMapsReasoningProtocol() async throws {
     #expect(request.messages.map(\.content) == ["ciao"])
     #expect(request.additionalContext?["enable_thinking"] as? Bool == true)
     #expect(request.additionalContext?["thinking_level"] as? String == "high")
+    #expect(request.sessionID == "responses-session-a")
 }
 
 @Test
@@ -247,7 +251,8 @@ func anthropicMessagesEndpointMapsThinkingProtocol() async throws {
       ],
       "thinking": {
         "type": "enabled"
-      }
+      },
+      "session_id": "anthropic-session-a"
     }
     """
 
@@ -264,6 +269,7 @@ func anthropicMessagesEndpointMapsThinkingProtocol() async throws {
     #expect(request.messages.map(\.content) == ["dove sei?"])
     #expect(request.additionalContext?["enable_thinking"] as? Bool == true)
     #expect(request.additionalContext?["thinking_level"] as? String == "medium")
+    #expect(request.sessionID == "anthropic-session-a")
 }
 
 @Test

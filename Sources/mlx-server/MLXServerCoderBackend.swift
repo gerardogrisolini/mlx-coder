@@ -288,7 +288,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
             if let result = compactSessionIfNeeded(&session) {
                 await onEvent(.diagnostic(Self.compactionDiagnostic(from: result)))
             }
-            let request = await generationRequest(for: session)
+                        let request = await generationRequest(for: session, sessionID: sessionID)
             await onEvent(.modelRuntime(request.runtimeKind.rawValue))
             let turn = try await runGenerationTurn(
                 request: request,
@@ -330,8 +330,9 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         throw MLXServerCoderBackendError.tooManyToolRounds(configuration.maxToolRounds)
     }
 
-    private func generationRequest(
-        for session: SessionState
+        private func generationRequest(
+        for session: SessionState,
+        sessionID: String
     ) async -> MLXServerGenerationRequest {
         let thinkingSelection = resolvedThinkingSelection(for: session)
         var additionalContext = model.thinking.additionalContext(for: thinkingSelection)
@@ -347,8 +348,9 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
                 allowedToolNames: session.allowedToolNames,
                 preferredWorkspaceRootURL: session.cwd
             ),
-            additionalContext: additionalContext,
-            retainsReasoningInHistory: session.preserveThinking && thinkingSelection.isEnabled
+                        additionalContext: additionalContext,
+            retainsReasoningInHistory: session.preserveThinking && thinkingSelection.isEnabled,
+            sessionID: session.cacheKey ?? sessionID
         )
     }
 

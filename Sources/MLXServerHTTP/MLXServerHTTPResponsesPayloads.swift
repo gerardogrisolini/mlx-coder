@@ -13,8 +13,10 @@ struct ResponsesRequest: Decodable, Sendable {
     var input: ResponsesInput
     var stream: Bool?
     var maxOutputTokens: Int?
-    var tools: [ResponsesToolDefinition]?
+        var tools: [ResponsesToolDefinition]?
     var reasoning: ResponsesReasoningConfiguration?
+    var sessionID: String?
+    var promptCacheKey: String?
 
     enum CodingKeys: String, CodingKey {
         case model
@@ -22,8 +24,14 @@ struct ResponsesRequest: Decodable, Sendable {
         case input
         case stream
         case maxOutputTokens = "max_output_tokens"
-        case tools
+                case tools
         case reasoning
+        case sessionID = "session_id"
+        case promptCacheKey = "prompt_cache_key"
+    }
+
+    var effectiveSessionID: String? {
+        sessionID ?? promptCacheKey
     }
 
     var serverMessages: [MLXServerChatMessage] {

@@ -303,7 +303,8 @@ private extension MLXServerHTTPApplication {
             ),
             tools: body.toolSpecs,
             additionalContext: model.thinking.additionalContext(for: thinkingSelection),
-            retainsReasoningInHistory: thinkingSelection.isEnabled && model.thinking.supportsPreserveThinking
+                        retainsReasoningInHistory: thinkingSelection.isEnabled && model.thinking.supportsPreserveThinking,
+            sessionID: body.effectiveSessionID
         )
 
         if body.stream == true {
@@ -394,7 +395,8 @@ private extension MLXServerHTTPApplication {
             ),
             tools: body.toolSpecs,
             additionalContext: model.thinking.additionalContext(for: thinkingSelection),
-            retainsReasoningInHistory: thinkingSelection.isEnabled && model.thinking.supportsPreserveThinking
+                        retainsReasoningInHistory: thinkingSelection.isEnabled && model.thinking.supportsPreserveThinking,
+            sessionID: body.effectiveSessionID
         )
 
         if body.stream == true {
@@ -484,7 +486,8 @@ private extension MLXServerHTTPApplication {
             ),
             tools: body.toolSpecs,
             additionalContext: model.thinking.additionalContext(for: thinkingSelection),
-            retainsReasoningInHistory: thinkingSelection.isEnabled && model.thinking.supportsPreserveThinking
+                        retainsReasoningInHistory: thinkingSelection.isEnabled && model.thinking.supportsPreserveThinking,
+            sessionID: body.effectiveSessionID
         )
 
         if body.stream == true {

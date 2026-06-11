@@ -13,8 +13,10 @@ struct OpenAIChatCompletionRequest: Decodable, Sendable {
     var stream: Bool?
     var maxTokens: Int?
     var maxCompletionTokens: Int?
-    var tools: [OpenAIChatToolDefinition]?
+        var tools: [OpenAIChatToolDefinition]?
     var reasoningEffort: String?
+    var sessionID: String?
+    var promptCacheKey: String?
 
     enum CodingKeys: String, CodingKey {
         case model
@@ -22,8 +24,14 @@ struct OpenAIChatCompletionRequest: Decodable, Sendable {
         case stream
         case maxTokens = "max_tokens"
         case maxCompletionTokens = "max_completion_tokens"
-        case tools
+                case tools
         case reasoningEffort = "reasoning_effort"
+        case sessionID = "session_id"
+        case promptCacheKey = "prompt_cache_key"
+    }
+
+    var effectiveSessionID: String? {
+        sessionID ?? promptCacheKey
     }
 
     var serverMessages: [MLXServerChatMessage] {

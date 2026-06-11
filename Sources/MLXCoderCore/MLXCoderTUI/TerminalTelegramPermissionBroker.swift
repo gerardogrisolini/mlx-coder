@@ -168,14 +168,17 @@ actor TerminalTelegramPermissionBroker {
             return nil
         }
 
+        guard String(rawCommand).hasPrefix("/") else {
+            return nil
+        }
         let command = normalizedCommand(String(rawCommand))
         let decision: TerminalTelegramPermissionDecision
         switch command {
-        case "allow", "approve", "yes", "y", "si", "ok", "consenti", "approva":
+        case "allow":
             decision = .allowOnce
-        case "always", "allow_always", "allowalways", "always_allow", "sempre", "trust", "fidati":
+        case "always":
             decision = .allowAlways
-        case "deny", "reject", "no", "n", "cancel", "stop", "annulla", "rifiuta", "nega":
+        case "deny":
             decision = .deny
         default:
             return nil

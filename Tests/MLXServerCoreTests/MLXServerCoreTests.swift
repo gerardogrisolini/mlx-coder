@@ -95,6 +95,21 @@ func perModelGenerationGateAcquireAllWaitsForActiveModelLeases() async throws {
 }
 
 @Test
+func perModelGenerationGateReportsIdleState() async throws {
+    let gate = MLXServerPerModelGenerationGate()
+
+    // Unknown models are idle.
+    #expect(await gate.isIdle(modelID: "model-a"))
+
+    let lease = try await gate.acquire(modelID: "model-a")
+    #expect(!(await gate.isIdle(modelID: "model-a")))
+    #expect(await gate.isIdle(modelID: "model-b"))
+
+    await lease.release()
+    #expect(await gate.isIdle(modelID: "model-a"))
+}
+
+@Test
 func transcriptKeepsDirectAnswerVisibleWhenThinkingWasRequested() {
     let text = "Ciao, risposta diretta."
 
@@ -179,6 +194,31 @@ func transcriptSeparatesImplicitThinkingBlockClosedByEndTag() {
 }
 
 @Test
+func assistantHistoryMessagesPreserveThinkingWhenEnabled() {
+    let messages = MLXServerChatSessionTranscriptText.assistantHistoryMessages(
+        from: "Ragionamento.</think>Risposta.",
+        startsInThinking: true,
+        preservesThinking: true
+    )
+
+    #expect(messages.count == 2)
+    #expect(messages[0].content == MLXServerReasoningTranscript.reasoningSummary("Ragionamento."))
+    #expect(messages[1].content == "Risposta.")
+    #expect(messages[1].reasoningContent == "Ragionamento.")
+}
+
+@Test
+func assistantHistoryMessagesDropThinkingWhenDisabled() {
+    let messages = MLXServerChatSessionTranscriptText.assistantHistoryMessages(
+        from: "Ragionamento.</think>Risposta.",
+        startsInThinking: true,
+        preservesThinking: false
+    )
+
+    #expect(messages == [.assistant("Risposta.")])
+}
+
+@Test
 func serverSupportFilesDefaultToHomeMlxServerDirectory() {
     let supportDirectory = MLXServerUserHomeDirectory.current()
         .appendingPathComponent(".mlx-server", isDirectory: true)
@@ -215,167 +255,84 @@ func diskKVCacheRejectsUnreasonableLimit() {
 }
 
 @Test
-func diskKVCachePromptTokenIdentityUsesDigestAndCount() {
-    let firstIdentity = MLXServerDiskKVCacheIdentity(
-        modelID: "mlx-community/test-a",
-        runtimeKind: .llm,
-        cacheLayoutSignature: "standard",
-        promptTokenDigest: "same-rendered-prompt",
-        promptTokenCount: 42,
-        promptTokenIDs: []
+func diskKVCacheSessionKeyScopesEntryBySessionAndLayout() {
+    let firstKey = testChatSessionCacheKey(sessionKey: "session-a", layout: "standard")
+    let sameKey = testChatSessionCacheKey(sessionKey: "session-a", layout: "standard")
+    let differentSessionKey = testChatSessionCacheKey(sessionKey: "session-b", layout: "standard")
+    let differentLayoutKey = testChatSessionCacheKey(sessionKey: "session-a", layout: "quantized")
+
+    #expect(firstKey.entryKey == sameKey.entryKey)
+    #expect(firstKey.entryKey != differentSessionKey.entryKey)
+    #expect(firstKey.entryKey != differentLayoutKey.entryKey)
+}
+
+@Test
+func chatSessionTranscriptContinuationMatchesAssistantByRoleOnly() {
+    let stored = [
+        MLXServerChatMessage.system("You are concise.").transcriptFingerprint,
+        MLXServerChatMessage.user("Hello").transcriptFingerprint,
+        MLXServerChatTranscriptFingerprint.generatedAssistantPlaceholder
+    ]
+    let request = [
+        MLXServerChatMessage.system("You are concise.").transcriptFingerprint,
+        MLXServerChatMessage.user("Hello").transcriptFingerprint,
+        MLXServerChatMessage.assistant("Client-side visible text only").transcriptFingerprint,
+        MLXServerChatMessage.user("Continue").transcriptFingerprint
+    ]
+
+    #expect(
+        MLXServerChatSessionTranscript.continuationSuffixStartIndex(
+            stored: stored,
+            request: request
+        ) == 3
     )
-    let secondIdentity = MLXServerDiskKVCacheIdentity(
-        modelID: "mlx-community/test-a",
-        runtimeKind: .llm,
-        cacheLayoutSignature: "standard",
-        promptTokenDigest: "same-rendered-prompt",
-        promptTokenCount: 42,
-        promptTokenIDs: []
+}
+
+@Test
+func chatSessionTranscriptContinuationConsumesAssistantReplayRun() {
+    let stored = [
+        MLXServerChatMessage.system("You are concise.").transcriptFingerprint,
+        MLXServerChatMessage.user("Hello").transcriptFingerprint,
+        MLXServerChatTranscriptFingerprint.generatedAssistantPlaceholder
+    ]
+    let request = [
+        MLXServerChatMessage.system("You are concise.").transcriptFingerprint,
+        MLXServerChatMessage.user("Hello").transcriptFingerprint,
+        MLXServerChatMessage.assistant("reasoning_summary:\n...").transcriptFingerprint,
+        MLXServerChatMessage.assistant("Visible content").transcriptFingerprint,
+        MLXServerChatMessage.user("Continue").transcriptFingerprint
+    ]
+
+    #expect(
+        MLXServerChatSessionTranscript.continuationSuffixStartIndex(
+            stored: stored,
+            request: request
+        ) == 4
     )
-    let thirdIdentity = MLXServerDiskKVCacheIdentity(
-        modelID: "mlx-community/test-a",
-        runtimeKind: .llm,
-        cacheLayoutSignature: "standard",
-        promptTokenDigest: "same-rendered-prompt",
-        promptTokenCount: 43,
-        promptTokenIDs: []
+}
+
+@Test
+func chatSessionTranscriptRejectsDivergedUserPrefix() {
+    let stored = [
+        MLXServerChatMessage.system("You are concise.").transcriptFingerprint,
+        MLXServerChatMessage.user("Hello").transcriptFingerprint
+    ]
+    let request = [
+        MLXServerChatMessage.system("You are concise.").transcriptFingerprint,
+        MLXServerChatMessage.user("Different").transcriptFingerprint,
+        MLXServerChatMessage.user("Continue").transcriptFingerprint
+    ]
+
+    #expect(
+        MLXServerChatSessionTranscript.continuationSuffixStartIndex(
+            stored: stored,
+            request: request
+        ) == nil
     )
-
-    #expect(firstIdentity.entryKey == secondIdentity.entryKey)
-    #expect(firstIdentity.entryKey != thirdIdentity.entryKey)
 }
 
 @Test
-func savesAndLoadsServerSettingsJSON() throws {
-    let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("mlx-server-settings-\(UUID().uuidString)", isDirectory: true)
-    let settingsURL = directory.appendingPathComponent("settings.json")
-    defer {
-        try? FileManager.default.removeItem(at: directory)
-    }
-
-    let settings = MLXServerSettings(
-        host: " 127.0.0.1 ",
-        port: 9090,
-        webServerThreadCount: 4,
-        loadOneModelAtATime: true,
-        http2PriorKnowledge: true,
-        apiKey: " test-key ",
-        metricsLogPath: " /tmp/mlx-server.metrics.jsonl ",
-        kvCache: MLXServerKVCacheSettings(
-            mode: .quantized,
-            quantizedBits: 4,
-            quantizedGroupSize: 64,
-            quantizedStart: 2_048
-        ),
-        diskKVCache: MLXServerDiskKVCacheSettings(
-            enabled: true,
-            directoryPath: " /tmp/mlx-server-kv ",
-            limitGB: 42
-        ),
-        huggingFaceCache: MLXServerHuggingFaceCacheSettings(
-            directoryPath: " /tmp/huggingface/hub ",
-            bookmark: " dGVzdA== "
-        )
-    )
-
-    try MLXServerSettingsStore.save(settings, to: settingsURL)
-    let loaded = try MLXServerSettingsStore.loadRequired(from: settingsURL)
-
-    #expect(loaded.host == "127.0.0.1")
-    #expect(loaded.port == 9090)
-    #expect(loaded.webServerThreadCount == 4)
-    #expect(loaded.loadOneModelAtATime)
-    #expect(loaded.http2PriorKnowledge)
-    #expect(loaded.apiKey == "test-key")
-    #expect(loaded.metricsLogPath == "/tmp/mlx-server.metrics.jsonl")
-    #expect(loaded.kvCache.mode == .quantized)
-    #expect(loaded.kvCache.quantizedBits == 4)
-    #expect(loaded.kvCache.quantizedGroupSize == 64)
-    #expect(loaded.kvCache.quantizedStart == 2_048)
-    #expect(loaded.diskKVCache.directoryPath == "/tmp/mlx-server-kv")
-    #expect(loaded.diskKVCache.limitGB == 42)
-    #expect(loaded.huggingFaceCache.directoryPath == "/tmp/huggingface/hub")
-    #expect(loaded.huggingFaceCache.bookmark == "dGVzdA==")
-    #expect(loaded.huggingFaceCache.bookmarkData == Data("test".utf8))
-}
-
-@Test
-func serverSettingsLoadsOlderJSONWithoutHuggingFaceCache() throws {
-    let data = Data(
-        """
-        {
-          "host": "127.0.0.1",
-          "port": 8080,
-          "load_one_model_at_a_time": true,
-          "disk_kv_cache": {
-            "enabled": true,
-            "limit_gb": 100
-          }
-        }
-        """.utf8
-    )
-
-    let settings = try JSONDecoder().decode(MLXServerSettings.self, from: data).validated()
-
-    #expect(settings.huggingFaceCache.directoryPath == nil)
-    #expect(settings.huggingFaceCache.bookmark == nil)
-    #expect(settings.kvCache.mode == .standard)
-    #expect(settings.webServerThreadCount == MLXServerSettings.defaultWebServerThreadCount)
-}
-
-@Test
-func kvCacheSettingsLoadPartialJSONWithDefaults() throws {
-    let data = Data(#"{"mode":"quantized"}"#.utf8)
-
-    let settings = try JSONDecoder().decode(MLXServerKVCacheSettings.self, from: data)
-
-    #expect(settings.mode == .quantized)
-    #expect(settings.quantizedBits == MLXServerKVCacheSettings.defaultQuantizedBits)
-    #expect(settings.quantizedGroupSize == MLXServerKVCacheSettings.defaultQuantizedGroupSize)
-    #expect(settings.quantizedStart == MLXServerKVCacheSettings.defaultQuantizedStart)
-}
-
-@Test
-func generationDefaultsApplyQuantizedKVCacheSettings() {
-    let defaults = MLXServerModelGenerationDefaults(maxOutputTokens: 256)
-    let parameters = defaults.generateParameters(
-        kvCacheSettings: MLXServerKVCacheSettings(
-            mode: .quantized,
-            quantizedBits: 4,
-            quantizedGroupSize: 64,
-            quantizedStart: 1_024
-        )
-    )
-
-    #expect(parameters.maxTokens == 256)
-    #expect(parameters.kvBits == 4)
-    #expect(parameters.kvGroupSize == 64)
-    #expect(parameters.quantizedKVStart == 1_024)
-}
-
-@Test
-func serverSettingsRejectInvalidWebServerThreadCount() {
-    let settings = MLXServerSettings(webServerThreadCount: 0)
-
-    #expect(throws: MLXServerSettingsError.invalidWebServerThreadCount(0)) {
-        try settings.validated()
-    }
-}
-
-@Test
-func missingServerSettingsReportsSetupInstruction() {
-    let settingsURL = FileManager.default.temporaryDirectory
-        .appendingPathComponent("missing-\(UUID().uuidString)")
-        .appendingPathComponent("settings.json")
-
-    #expect(throws: MLXServerSettingsError.missingSettings(settingsURL)) {
-        try MLXServerSettingsStore.loadRequired(from: settingsURL)
-    }
-}
-
-@Test
-func diskKVCacheEvictsLeastRecentlyUsedEntries() throws {
+func diskKVCacheEvictsLeastRecentlyUsedSessionEntries() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("mlx-server-tests-\(UUID().uuidString)", isDirectory: true)
     defer {
@@ -388,30 +345,28 @@ func diskKVCacheEvictsLeastRecentlyUsedEntries() throws {
             limitBytes: 24
         )
     )
-    let firstIdentity = MLXServerDiskKVCacheIdentity(
-        modelID: "mlx-community/test-a",
-        runtimeKind: .llm,
-        cacheLayoutSignature: "standard",
-        promptTokenDigest: "first",
-        promptTokenCount: 2,
-        promptTokenIDs: [1, 2]
-    )
-    let secondIdentity = MLXServerDiskKVCacheIdentity(
-        modelID: "mlx-community/test-a",
-        runtimeKind: .llm,
-        cacheLayoutSignature: "standard",
-        promptTokenDigest: "second",
-        promptTokenCount: 2,
-        promptTokenIDs: [3, 4]
-    )
+    let firstKey = testChatSessionCacheKey(sessionKey: "session-a")
+    let secondKey = testChatSessionCacheKey(sessionKey: "session-b")
 
-    let firstTarget = try #require(try store.preparePersistenceTarget(for: firstIdentity))
+    let firstTarget = try #require(try store.preparePersistenceTarget(for: firstKey))
     try Data(repeating: 1, count: 32).write(to: firstTarget.temporaryURL)
-    try store.commitPersistedCache(identity: firstIdentity, target: firstTarget)
+    try store.commitPersistedSession(
+        key: firstKey,
+        toolsSignature: "none",
+        contextSignature: "none",
+        fingerprints: [testFingerprint("first")],
+        target: firstTarget
+    )
 
-    let secondTarget = try #require(try store.preparePersistenceTarget(for: secondIdentity))
+    let secondTarget = try #require(try store.preparePersistenceTarget(for: secondKey))
     try Data(repeating: 2, count: 32).write(to: secondTarget.temporaryURL)
-    try store.commitPersistedCache(identity: secondIdentity, target: secondTarget)
+    try store.commitPersistedSession(
+        key: secondKey,
+        toolsSignature: "none",
+        contextSignature: "none",
+        fingerprints: [testFingerprint("second")],
+        target: secondTarget
+    )
 
     #expect(!FileManager.default.fileExists(atPath: firstTarget.cacheURL.path))
     #expect(!FileManager.default.fileExists(atPath: firstTarget.metadataURL.path))
@@ -420,10 +375,9 @@ func diskKVCacheEvictsLeastRecentlyUsedEntries() throws {
 }
 
 @Test
-func diskKVCacheKeepsWarmIndexAcrossCommits() throws {
-    let indexProbe = DiskKVCacheIndexRebuildProbe()
+func diskKVCacheSkipsPersistenceForUnchangedSessionTranscript() throws {
     let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("mlx-server-index-\(UUID().uuidString)", isDirectory: true)
+        .appendingPathComponent("mlx-server-dedup-\(UUID().uuidString)", isDirectory: true)
     defer {
         try? FileManager.default.removeItem(at: directory)
     }
@@ -432,48 +386,30 @@ func diskKVCacheKeepsWarmIndexAcrossCommits() throws {
         configuration: MLXServerDiskKVCacheConfiguration(
             directory: directory,
             limitBytes: 1_000_000
-        ),
-        indexRebuildObserver: {
-            indexProbe.recordRebuild()
-        }
+        )
     )
-    let firstIdentity = MLXServerDiskKVCacheIdentity(
-        modelID: "mlx-community/test-a",
-        runtimeKind: .llm,
-        cacheLayoutSignature: "standard",
-        promptTokenDigest: "first",
-        promptTokenCount: 2,
-        promptTokenIDs: [1, 2]
-    )
-    let secondIdentity = MLXServerDiskKVCacheIdentity(
-        modelID: "mlx-community/test-a",
-        runtimeKind: .llm,
-        cacheLayoutSignature: "standard",
-        promptTokenDigest: "second",
-        promptTokenCount: 2,
-        promptTokenIDs: [3, 4]
+    let key = testChatSessionCacheKey(sessionKey: "session-a")
+    let fingerprints = [testFingerprint("first")]
+
+    let target = try #require(try store.preparePersistenceTarget(for: key))
+    try Data(repeating: 1, count: 16).write(to: target.temporaryURL)
+    try store.commitPersistedSession(
+        key: key,
+        toolsSignature: "none",
+        contextSignature: "none",
+        fingerprints: fingerprints,
+        target: target
     )
 
-    let firstTarget = try #require(try store.preparePersistenceTarget(for: firstIdentity))
-    try Data(repeating: 1, count: 16).write(to: firstTarget.temporaryURL)
-    try store.commitPersistedCache(identity: firstIdentity, target: firstTarget)
-    let rebuildsAfterFirstCommit = indexProbe.rebuildCount
-    #expect(rebuildsAfterFirstCommit == 1)
-
-    let secondTarget = try #require(try store.preparePersistenceTarget(for: secondIdentity))
-    try Data(repeating: 2, count: 16).write(to: secondTarget.temporaryURL)
-    try store.commitPersistedCache(identity: secondIdentity, target: secondTarget)
-
-    #expect(indexProbe.rebuildCount == rebuildsAfterFirstCommit)
-    #expect(FileManager.default.fileExists(atPath: firstTarget.cacheURL.path))
-    #expect(FileManager.default.fileExists(atPath: secondTarget.cacheURL.path))
+    #expect(!store.needsPersistence(for: key, fingerprints: fingerprints))
+    #expect(store.needsPersistence(for: key, fingerprints: fingerprints + [testFingerprint("second")]))
+    #expect(store.needsPersistence(for: testChatSessionCacheKey(sessionKey: "other"), fingerprints: fingerprints))
 }
 
 @Test
-func diskKVCacheWarmIndexUpdatesRewrittenEntryByteCount() throws {
-    let indexProbe = DiskKVCacheIndexRebuildProbe()
+func diskKVCacheCommitOverwritesSameSessionEntry() throws {
     let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("mlx-server-index-rewrite-\(UUID().uuidString)", isDirectory: true)
+        .appendingPathComponent("mlx-server-overwrite-\(UUID().uuidString)", isDirectory: true)
     defer {
         try? FileManager.default.removeItem(at: directory)
     }
@@ -481,60 +417,119 @@ func diskKVCacheWarmIndexUpdatesRewrittenEntryByteCount() throws {
     let store = MLXServerDiskKVCacheStore(
         configuration: MLXServerDiskKVCacheConfiguration(
             directory: directory,
-            limitBytes: 96
-        ),
-        indexRebuildObserver: {
-            indexProbe.recordRebuild()
-        }
+            limitBytes: 1_000_000
+        )
     )
-    let firstIdentity = MLXServerDiskKVCacheIdentity(
-        modelID: "mlx-community/test-a",
-        runtimeKind: .llm,
-        cacheLayoutSignature: "standard",
-        promptTokenDigest: "first",
-        promptTokenCount: 2,
-        promptTokenIDs: [1, 2]
-    )
-    let secondIdentity = MLXServerDiskKVCacheIdentity(
-        modelID: "mlx-community/test-a",
-        runtimeKind: .llm,
-        cacheLayoutSignature: "standard",
-        promptTokenDigest: "second",
-        promptTokenCount: 2,
-        promptTokenIDs: [3, 4]
+    let key = testChatSessionCacheKey(sessionKey: "session-a")
+
+    let firstTarget = try #require(try store.preparePersistenceTarget(for: key))
+    try Data(repeating: 1, count: 16).write(to: firstTarget.temporaryURL)
+    try store.commitPersistedSession(
+        key: key,
+        toolsSignature: "none",
+        contextSignature: "none",
+        fingerprints: [testFingerprint("first")],
+        target: firstTarget
     )
 
-    let firstTarget = try #require(try store.preparePersistenceTarget(for: firstIdentity))
-    try Data(repeating: 1, count: 32).write(to: firstTarget.temporaryURL)
-    try store.commitPersistedCache(identity: firstIdentity, target: firstTarget)
-    let rebuildsAfterFirstCommit = indexProbe.rebuildCount
-
-    let secondTarget = try #require(try store.preparePersistenceTarget(for: secondIdentity))
+    let secondTarget = try #require(try store.preparePersistenceTarget(for: key))
     try Data(repeating: 2, count: 32).write(to: secondTarget.temporaryURL)
-    try store.commitPersistedCache(identity: secondIdentity, target: secondTarget)
-    #expect(indexProbe.rebuildCount == rebuildsAfterFirstCommit)
+    try store.commitPersistedSession(
+        key: key,
+        toolsSignature: "none",
+        contextSignature: "none",
+        fingerprints: [testFingerprint("first"), testFingerprint("second")],
+        target: secondTarget
+    )
 
-    let rewrittenFirstTarget = try #require(try store.preparePersistenceTarget(for: firstIdentity))
-    try Data(repeating: 3, count: 96).write(to: rewrittenFirstTarget.temporaryURL)
-    try store.commitPersistedCache(identity: firstIdentity, target: rewrittenFirstTarget)
+    #expect(firstTarget.cacheURL == secondTarget.cacheURL)
+    let attributes = try FileManager.default.attributesOfItem(atPath: firstTarget.cacheURL.path)
+    #expect((attributes[.size] as? NSNumber)?.intValue == 32)
+}
 
-    #expect(indexProbe.rebuildCount == rebuildsAfterFirstCommit)
-    #expect(FileManager.default.fileExists(atPath: firstTarget.cacheURL.path))
-    #expect(!FileManager.default.fileExists(atPath: secondTarget.cacheURL.path))
-    #expect(!FileManager.default.fileExists(atPath: secondTarget.metadataURL.path))
+@Test
+func diskKVCacheIndexRebuildRemovesOrphanedCacheFiles() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("mlx-server-orphans-\(UUID().uuidString)", isDirectory: true)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let store = MLXServerDiskKVCacheStore(
+        configuration: MLXServerDiskKVCacheConfiguration(
+            directory: directory,
+            limitBytes: 1_000_000
+        )
+    )
+    let key = testChatSessionCacheKey(sessionKey: "session-a")
+
+    let target = try #require(try store.preparePersistenceTarget(for: key))
+    try Data(repeating: 1, count: 16).write(to: target.temporaryURL)
+    try store.commitPersistedSession(
+        key: key,
+        toolsSignature: "none",
+        contextSignature: "none",
+        fingerprints: [testFingerprint("first")],
+        target: target
+    )
+
+    let modelDirectory = target.cacheURL.deletingLastPathComponent()
+    let orphanedCacheURL = modelDirectory.appendingPathComponent("orphan.safetensors")
+    try Data(repeating: 2, count: 16).write(to: orphanedCacheURL)
+    let staleTemporaryURL = modelDirectory.appendingPathComponent("stale.tmp.safetensors")
+    try Data(repeating: 3, count: 16).write(to: staleTemporaryURL)
+    try FileManager.default.setAttributes(
+        [.modificationDate: Date(timeIntervalSinceNow: -3 * 60 * 60)],
+        ofItemAtPath: staleTemporaryURL.path
+    )
+    let freshTemporaryURL = modelDirectory.appendingPathComponent("fresh.tmp.safetensors")
+    try Data(repeating: 4, count: 16).write(to: freshTemporaryURL)
+
+    // A fresh store (e.g. after a server restart) enumerates disk entries
+    // and must clean orphan payloads up.
+    let restartedStore = MLXServerDiskKVCacheStore(
+        configuration: MLXServerDiskKVCacheConfiguration(
+            directory: directory,
+            limitBytes: 1_000_000
+        )
+    )
+    restartedStore.enforceDiskLimit()
+
+    #expect(FileManager.default.fileExists(atPath: target.cacheURL.path))
+    #expect(FileManager.default.fileExists(atPath: target.metadataURL.path))
+    #expect(!FileManager.default.fileExists(atPath: orphanedCacheURL.path))
+    #expect(!FileManager.default.fileExists(atPath: staleTemporaryURL.path))
+    #expect(FileManager.default.fileExists(atPath: freshTemporaryURL.path))
+}
+
+@Test
+func chatSessionAdditionalContextSignatureIsStableAcrossDictionaryOrder() {
+    let first: [String: any Sendable] = [
+        "b": 2,
+        "a": true
+    ]
+    let second: [String: any Sendable] = [
+        "a": true,
+        "b": 2
+    ]
+
+    #expect(
+        MLXServerChatSessionRequestSignature.additionalContext(first)
+            == MLXServerChatSessionRequestSignature.additionalContext(second)
+    )
 }
 
 @Test
 func diskKVCachePersistenceWriterDoesNotBlockEnqueueBehindRunningJob() {
     let writer = MLXServerDiskKVCachePersistenceWriter()
     let firstStarted = DispatchSemaphore(value: 0)
-    let releaseFirst = DispatchSemaphore(value: 0)
+    let releaseFirst = AsyncTestSemaphore()
     let secondStarted = DispatchSemaphore(value: 0)
     let enqueueReturned = DispatchSemaphore(value: 0)
 
     writer.enqueue(coalescingKey: "first") {
         firstStarted.signal()
-        _ = releaseFirst.wait(timeout: .now() + .seconds(2))
+        await releaseFirst.wait()
     }
     #expect(firstStarted.wait(timeout: .now() + .seconds(2)) == .success)
 
@@ -556,13 +551,13 @@ func diskKVCachePersistenceWriterDoesNotBlockEnqueueBehindRunningJob() {
 func diskKVCachePersistenceWriterCoalescesPendingJobsByKey() {
     let writer = MLXServerDiskKVCachePersistenceWriter()
     let firstStarted = DispatchSemaphore(value: 0)
-    let releaseFirst = DispatchSemaphore(value: 0)
+    let releaseFirst = AsyncTestSemaphore()
     let replacementFinished = DispatchSemaphore(value: 0)
     let recorder = DiskKVCacheWriterExecutionRecorder()
 
     writer.enqueue(coalescingKey: "blocking") {
         firstStarted.signal()
-        _ = releaseFirst.wait(timeout: .now() + .seconds(2))
+        await releaseFirst.wait()
     }
     #expect(firstStarted.wait(timeout: .now() + .seconds(2)) == .success)
 
@@ -580,233 +575,32 @@ func diskKVCachePersistenceWriterCoalescesPendingJobsByKey() {
 }
 
 @Test
-func diskPersistenceBoundaryPolicyAlignsStoreLength() {
-    // Too short: not worth a disk checkpoint.
-    #expect(DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(0) == 0)
-    #expect(DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(511) == 0)
-    // Short prompts above the minimum are stored as-is.
-    #expect(DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(512) == 512)
-    #expect(DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(544) == 544)
-    // Once past minimum + trim, lengths align down to the boundary.
-    #expect(DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(1_060) == 1_024)
-    #expect(DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(2_100) == 2_048)
-    // Consecutive turns within one boundary produce the same store length.
-    #expect(
-        DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(5_200)
-            == DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(6_100)
-    )
-    // Aligned-down results below the minimum fall back to the full length.
-    #expect(DiskPersistenceBoundaryPolicy.alignedStoreTokenCount(1_040) == 1_040)
-}
-
-@Test
-func diskKVCacheSkipsPersistenceForDominatedIdentities() throws {
-    let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("mlx-server-dedup-\(UUID().uuidString)", isDirectory: true)
-    defer {
-        try? FileManager.default.removeItem(at: directory)
-    }
-
-    let store = MLXServerDiskKVCacheStore(
-        configuration: MLXServerDiskKVCacheConfiguration(
-            directory: directory,
-            limitBytes: 1_000_000
-        )
-    )
-    let storedIdentity = MLXServerDiskKVCacheIdentity(
-        modelID: "mlx-community/test-a",
-        runtimeKind: .llm,
-        cacheLayoutSignature: "standard",
-        promptTokenDigest: "stored",
-        promptTokenCount: 4,
-        promptTokenIDs: [1, 2, 3, 4]
-    )
-
-    let target = try #require(try store.preparePersistenceTarget(for: storedIdentity))
-    try Data(repeating: 1, count: 16).write(to: target.temporaryURL)
-    try store.commitPersistedCache(identity: storedIdentity, target: target)
-
-    // Identical identity: already on disk, no rewrite needed.
-    #expect(!store.needsPersistence(for: storedIdentity))
-
-    // Strict prefix of the stored entry: dominated, no write needed.
-    let prefixIdentity = MLXServerDiskKVCacheIdentity(
-        modelID: "mlx-community/test-a",
-        runtimeKind: .llm,
-        cacheLayoutSignature: "standard",
-        promptTokenDigest: "prefix",
-        promptTokenCount: 2,
-        promptTokenIDs: [1, 2]
-    )
-    #expect(!store.needsPersistence(for: prefixIdentity))
-
-    // Extension of the stored entry: new tokens, must be written.
-    let extendedIdentity = MLXServerDiskKVCacheIdentity(
-        modelID: "mlx-community/test-a",
-        runtimeKind: .llm,
-        cacheLayoutSignature: "standard",
-        promptTokenDigest: "extended",
-        promptTokenCount: 6,
-        promptTokenIDs: [1, 2, 3, 4, 5, 6]
-    )
-    #expect(store.needsPersistence(for: extendedIdentity))
-
-    // Divergent prompt: unrelated, must be written.
-    let divergentIdentity = MLXServerDiskKVCacheIdentity(
-        modelID: "mlx-community/test-a",
-        runtimeKind: .llm,
-        cacheLayoutSignature: "standard",
-        promptTokenDigest: "divergent",
-        promptTokenCount: 4,
-        promptTokenIDs: [1, 2, 9, 9]
-    )
-    #expect(store.needsPersistence(for: divergentIdentity))
-}
-
-@Test
-func diskKVCacheCommitPrunesSupersededPrefixEntries() throws {
-    let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("mlx-server-superseded-\(UUID().uuidString)", isDirectory: true)
-    defer {
-        try? FileManager.default.removeItem(at: directory)
-    }
-
-    let store = MLXServerDiskKVCacheStore(
-        configuration: MLXServerDiskKVCacheConfiguration(
-            directory: directory,
-            limitBytes: 1_000_000
-        )
-    )
-    let firstTurnIdentity = MLXServerDiskKVCacheIdentity(
-        modelID: "mlx-community/test-a",
-        runtimeKind: .llm,
-        cacheLayoutSignature: "standard",
-        promptTokenDigest: "turn-1",
-        promptTokenCount: 3,
-        promptTokenIDs: [1, 2, 3]
-    )
-    let unrelatedIdentity = MLXServerDiskKVCacheIdentity(
-        modelID: "mlx-community/test-a",
-        runtimeKind: .llm,
-        cacheLayoutSignature: "standard",
-        promptTokenDigest: "other-session",
-        promptTokenCount: 3,
-        promptTokenIDs: [9, 8, 7]
-    )
-    let secondTurnIdentity = MLXServerDiskKVCacheIdentity(
-        modelID: "mlx-community/test-a",
-        runtimeKind: .llm,
-        cacheLayoutSignature: "standard",
-        promptTokenDigest: "turn-2",
-        promptTokenCount: 5,
-        promptTokenIDs: [1, 2, 3, 4, 5]
-    )
-
-    let firstTarget = try #require(try store.preparePersistenceTarget(for: firstTurnIdentity))
-    try Data(repeating: 1, count: 16).write(to: firstTarget.temporaryURL)
-    try store.commitPersistedCache(identity: firstTurnIdentity, target: firstTarget)
-
-    let unrelatedTarget = try #require(try store.preparePersistenceTarget(for: unrelatedIdentity))
-    try Data(repeating: 2, count: 16).write(to: unrelatedTarget.temporaryURL)
-    try store.commitPersistedCache(identity: unrelatedIdentity, target: unrelatedTarget)
-
-    let secondTarget = try #require(try store.preparePersistenceTarget(for: secondTurnIdentity))
-    try Data(repeating: 3, count: 16).write(to: secondTarget.temporaryURL)
-    try store.commitPersistedCache(identity: secondTurnIdentity, target: secondTarget)
-
-    // The first turn's entry is a strict prefix of the second turn's entry
-    // and must be pruned; the unrelated session's entry must survive.
-    #expect(!FileManager.default.fileExists(atPath: firstTarget.cacheURL.path))
-    #expect(!FileManager.default.fileExists(atPath: firstTarget.metadataURL.path))
-    #expect(FileManager.default.fileExists(atPath: unrelatedTarget.cacheURL.path))
-    #expect(FileManager.default.fileExists(atPath: unrelatedTarget.metadataURL.path))
-    #expect(FileManager.default.fileExists(atPath: secondTarget.cacheURL.path))
-    #expect(FileManager.default.fileExists(atPath: secondTarget.metadataURL.path))
-}
-
-@Test
-func diskKVCacheIndexRebuildRemovesOrphanedCacheFiles() throws {
-    let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("mlx-server-orphans-\(UUID().uuidString)", isDirectory: true)
-    defer {
-        try? FileManager.default.removeItem(at: directory)
-    }
-
-    let store = MLXServerDiskKVCacheStore(
-        configuration: MLXServerDiskKVCacheConfiguration(
-            directory: directory,
-            limitBytes: 1_000_000
-        )
-    )
-    let identity = MLXServerDiskKVCacheIdentity(
-        modelID: "mlx-community/test-a",
-        runtimeKind: .llm,
-        cacheLayoutSignature: "standard",
-        promptTokenDigest: "first",
-        promptTokenCount: 2,
-        promptTokenIDs: [1, 2]
-    )
-
-    let target = try #require(try store.preparePersistenceTarget(for: identity))
-    try Data(repeating: 1, count: 16).write(to: target.temporaryURL)
-    try store.commitPersistedCache(identity: identity, target: target)
-
-    let modelDirectory = target.cacheURL.deletingLastPathComponent()
-    let orphanedCacheURL = modelDirectory.appendingPathComponent("orphan.safetensors")
-    try Data(repeating: 2, count: 16).write(to: orphanedCacheURL)
-    let staleTemporaryURL = modelDirectory.appendingPathComponent("stale.tmp.safetensors")
-    try Data(repeating: 3, count: 16).write(to: staleTemporaryURL)
-    try FileManager.default.setAttributes(
-        [.modificationDate: Date(timeIntervalSinceNow: -3 * 60 * 60)],
-        ofItemAtPath: staleTemporaryURL.path
-    )
-    let freshTemporaryURL = modelDirectory.appendingPathComponent("fresh.tmp.safetensors")
-    try Data(repeating: 4, count: 16).write(to: freshTemporaryURL)
-
-    // A fresh store (e.g. after a server restart) rebuilds the index from
-    // disk and must clean orphans up; the original store's index is warm.
-    let restartedStore = MLXServerDiskKVCacheStore(
-        configuration: MLXServerDiskKVCacheConfiguration(
-            directory: directory,
-            limitBytes: 1_000_000
-        )
-    )
-    restartedStore.enforceDiskLimit()
-
-    #expect(FileManager.default.fileExists(atPath: target.cacheURL.path))
-    #expect(FileManager.default.fileExists(atPath: target.metadataURL.path))
-    #expect(!FileManager.default.fileExists(atPath: orphanedCacheURL.path))
-    #expect(!FileManager.default.fileExists(atPath: staleTemporaryURL.path))
-    #expect(FileManager.default.fileExists(atPath: freshTemporaryURL.path))
-}
-
-@Test
 func diskKVCachePersistenceWriterRunsPendingJobsWithDistinctKeys() {
     let writer = MLXServerDiskKVCachePersistenceWriter()
     let firstStarted = DispatchSemaphore(value: 0)
-    let releaseFirst = DispatchSemaphore(value: 0)
+    let releaseFirst = AsyncTestSemaphore()
     let bothFinished = DispatchSemaphore(value: 0)
     let recorder = DiskKVCacheWriterExecutionRecorder()
 
     writer.enqueue(coalescingKey: "blocking") {
         firstStarted.signal()
-        _ = releaseFirst.wait(timeout: .now() + .seconds(2))
+        await releaseFirst.wait()
     }
     #expect(firstStarted.wait(timeout: .now() + .seconds(2)) == .success)
 
-    // Pending persists for different entries (e.g. concurrent sessions on the
-    // same model) must not replace each other.
-    writer.enqueue(coalescingKey: "entry-a") {
-        recorder.record("entry-a")
+    // Pending persists for different sessions on the same model must not
+    // replace each other.
+    writer.enqueue(coalescingKey: "session-a") {
+        recorder.record("session-a")
     }
-    writer.enqueue(coalescingKey: "entry-b") {
-        recorder.record("entry-b")
+    writer.enqueue(coalescingKey: "session-b") {
+        recorder.record("session-b")
         bothFinished.signal()
     }
 
     releaseFirst.signal()
     #expect(bothFinished.wait(timeout: .now() + .seconds(2)) == .success)
-    #expect(recorder.values == ["entry-a", "entry-b"])
+    #expect(recorder.values == ["session-a", "session-b"])
 }
 
 @Test
@@ -1000,6 +794,24 @@ func selectsVLMRuntimeWhenMediaIsAttached() throws {
     #expect(request.runtimeKind == .vlm)
 }
 
+private func testChatSessionCacheKey(
+    sessionKey: String,
+    modelID: String = "mlx-community/test-a",
+    runtimeKind: MLXServerModelRuntimeKind = .llm,
+    layout: String = "standard"
+) -> MLXServerChatSessionCacheKey {
+    MLXServerChatSessionCacheKey(
+        sessionKey: sessionKey,
+        modelID: modelID,
+        runtimeKind: runtimeKind,
+        cacheLayoutSignature: layout
+    )
+}
+
+private func testFingerprint(_ text: String) -> MLXServerChatTranscriptFingerprint {
+    MLXServerChatMessage.user(text).transcriptFingerprint
+}
+
 private final class DiskKVCacheIndexRebuildProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var _rebuildCount = 0
@@ -1016,6 +828,39 @@ private final class DiskKVCacheIndexRebuildProbe: @unchecked Sendable {
         lock.lock()
         _rebuildCount += 1
         lock.unlock()
+    }
+}
+
+/// Async-friendly semaphore for blocking persistence-writer jobs in tests.
+private final class AsyncTestSemaphore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var signalCount = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func signal() {
+        lock.lock()
+        if waiters.isEmpty {
+            signalCount += 1
+            lock.unlock()
+            return
+        }
+        let waiter = waiters.removeFirst()
+        lock.unlock()
+        waiter.resume()
+    }
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if signalCount > 0 {
+                signalCount -= 1
+                lock.unlock()
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+                lock.unlock()
+            }
+        }
     }
 }
 

@@ -2,6 +2,14 @@
 //  MLXServerDiskKVCache.swift
 //  mlx-server
 //
+//  Session-keyed disk persistence for chat KV caches.
+//
+//  The in-memory KV cache is owned by MLXLMCommon's `ChatSession`; this
+//  store only persists each session's cache to disk (one safetensors file
+//  per session entry, overwritten in place as the session grows) so a
+//  restarted server can rehydrate the session and continue without
+//  re-prefilling the transcript.
+//
 
 import CryptoKit
 import Foundation
@@ -38,224 +46,108 @@ public struct MLXServerDiskKVCacheConfiguration: Sendable, Equatable {
     }
 }
 
-struct MLXServerDiskKVCacheIdentity: Hashable, Sendable {
-    var modelID: String
-    var runtimeKind: MLXServerModelRuntimeKind
-    var cacheLayoutSignature: String
-    var promptTokenDigest: String
-    var promptTokenCount: Int
-    var promptTokenIDs: [Int]
-
-    init(
-        modelID: String,
-        runtimeKind: MLXServerModelRuntimeKind,
-        cacheLayoutSignature: String,
-        promptTokenDigest: String,
-        promptTokenCount: Int,
-        promptTokenIDs: [Int]
-    ) {
-        self.modelID = modelID
-        self.runtimeKind = runtimeKind
-        self.cacheLayoutSignature = cacheLayoutSignature
-        self.promptTokenDigest = promptTokenDigest
-        self.promptTokenCount = promptTokenCount
-        self.promptTokenIDs = promptTokenIDs
-    }
-
-    var entryKey: String {
-        var hasher = SHA256()
-        append("mlx-server-disk-kv-cache-v3", to: &hasher)
-        append(modelID, to: &hasher)
-        append(runtimeKind.rawValue, to: &hasher)
-        append(cacheLayoutSignature, to: &hasher)
-        append("prompt-tokens", to: &hasher)
-        append(promptTokenDigest, to: &hasher)
-        append(String(promptTokenCount), to: &hasher)
-        return Self.hexString(from: hasher.finalize())
-    }
-
-    private static func hexString<D: Sequence>(
-        from digest: D
-    ) -> String where D.Element == UInt8 {
-        digest.map { String(format: "%02x", $0) }.joined()
-    }
-
-    private func append(
-        _ value: String,
-        to hasher: inout SHA256
-    ) {
-        let data = Data(value.utf8)
-        var count = UInt64(data.count).littleEndian
-        withUnsafeBytes(of: &count) { rawBuffer in
-            hasher.update(data: Data(rawBuffer))
-        }
-        hasher.update(data: data)
-    }
-}
-
-struct MLXServerDiskKVCachePrefixQuery: Sendable {
-    var modelID: String
-    var runtimeKind: MLXServerModelRuntimeKind
-    var cacheLayoutSignature: String
-    var promptTokenIDs: [Int]
-}
-
-// `@unchecked Sendable`: the loaded `[KVCache]` is freshly deserialized from
-// disk and owned exclusively by the requesting generation task.
-struct MLXServerDiskKVCachePrefixMatch: @unchecked Sendable {
+/// Result of restoring a persisted chat session cache from disk.
+/// `@unchecked Sendable`: the loaded `[KVCache]` is freshly deserialized
+/// from disk and owned exclusively by the requesting generation task.
+struct MLXServerDiskChatSessionMatch: @unchecked Sendable {
     var cache: [KVCache]
-    var promptTokenCount: Int
-    var storedPromptTokenCount: Int
+    var fingerprints: [MLXServerChatTranscriptFingerprint]
+}
+
+struct MLXServerPersistedChatSessionMetadata: Codable, Sendable {
+    var version: Int
+    var sessionKey: String
+    var modelID: String
+    var runtimeKind: String
+    var cacheLayoutSignature: String
+    var toolsSignature: String
+    var contextSignature: String
+    var entryKey: String
+    var fingerprints: [MLXServerChatTranscriptFingerprint]
+    var byteCount: Int64
+    var createdAt: Date
+    var updatedAt: Date
+    var lastAccessedAt: Date
+
+    func matches(
+        key: MLXServerChatSessionCacheKey,
+        toolsSignature: String,
+        contextSignature: String
+    ) -> Bool {
+        version == MLXServerDiskKVCacheStore.metadataVersion
+            && sessionKey == key.sessionKey
+            && modelID == key.modelID
+            && runtimeKind == key.runtimeKind.rawValue
+            && cacheLayoutSignature == key.cacheLayoutSignature
+            && entryKey == key.entryKey
+            && self.toolsSignature == toolsSignature
+            && self.contextSignature == contextSignature
+    }
+}
+
+struct MLXServerDiskKVCachePersistenceTarget: Sendable {
+    var cacheURL: URL
+    var metadataURL: URL
+    var temporaryURL: URL
 }
 
 final class MLXServerDiskKVCacheStore: @unchecked Sendable {
-    fileprivate static let metadataVersion = 3
+    static let metadataVersion = 4
+
     private let configuration: MLXServerDiskKVCacheConfiguration
     private let fileManager: FileManager
-    private let indexRebuildObserver: (@Sendable () -> Void)?
     private let storeLock = OSAllocatedUnfairLock()
     private let ensuredDirectoryLock = OSAllocatedUnfairLock()
     private var ensuredDirectoryPaths = Set<String>()
 
-    // MARK: - In-memory index
-
-    /// Lazily-built in-memory index of all persisted entries on disk.
-    /// Avoids enumerating the filesystem on every call to
-    /// `loadLongestPromptPrefix` or `enforceDiskLimit`.
-    private var entriesIndex: [DiskCacheEntryIndexKey: [MLXServerPersistedDiskKVCacheEntry]]?
-
-    private struct DiskCacheEntryIndexKey: Hashable {
-        var modelID: String
-        var runtimeKind: String
-        var cacheLayoutSignature: String
-    }
-
-    private func diskCacheEntries() -> [MLXServerPersistedDiskKVCacheEntry] {
-        entriesIndex?.values.flatMap { $0 } ?? []
-    }
-
-    private func diskCacheEntries(
-        modelID: String,
-        runtimeKind: String,
-        cacheLayoutSignature: String
-    ) -> [MLXServerPersistedDiskKVCacheEntry] {
-        let key = DiskCacheEntryIndexKey(
-            modelID: modelID,
-            runtimeKind: runtimeKind,
-            cacheLayoutSignature: cacheLayoutSignature
-        )
-        return entriesIndex?[key] ?? []
-    }
-
-    private func rebuildIndexIfNeeded() {
-        guard entriesIndex == nil else { return }
-        rebuildIndex()
-    }
-
-    private func rebuildIndex() {
-        indexRebuildObserver?()
-        var index: [DiskCacheEntryIndexKey: [MLXServerPersistedDiskKVCacheEntry]] = [:]
-        for entry in persistedEntriesFromDisk() {
-            index[indexKey(for: entry.metadata), default: []].append(entry)
-        }
-        entriesIndex = index
-    }
-
-    private func indexKey(
-        for metadata: MLXServerPersistedDiskKVCacheMetadata
-    ) -> DiskCacheEntryIndexKey {
-        DiskCacheEntryIndexKey(
-            modelID: metadata.modelID,
-            runtimeKind: metadata.runtimeKind,
-            cacheLayoutSignature: metadata.cacheLayoutSignature
-        )
-    }
-
-    private func upsertIndexedEntry(
-        _ entry: MLXServerPersistedDiskKVCacheEntry
-    ) {
-        guard entriesIndex != nil else {
-            return
-        }
-
-        // Same model/runtime/layout entries always share one index bucket,
-        // so the stale-entry removal can stay scoped to that bucket.
-        removeIndexedEntry(
-            cacheURL: entry.cacheURL,
-            metadataURL: entry.metadataURL,
-            entryKey: entry.metadata.entryKey,
-            scopedTo: indexKey(for: entry.metadata)
-        )
-        entriesIndex?[indexKey(for: entry.metadata), default: []].append(entry)
-    }
-
-    private func removeIndexedEntry(
-        cacheURL: URL,
-        metadataURL: URL,
-        entryKey: String? = nil,
-        scopedTo scopedKey: DiskCacheEntryIndexKey? = nil
-    ) {
-        guard entriesIndex != nil else {
-            return
-        }
-
-        let standardizedCacheURL = cacheURL.standardizedFileURL
-        let standardizedMetadataURL = metadataURL.standardizedFileURL
-        let keys: [DiskCacheEntryIndexKey]
-        if let scopedKey {
-            keys = entriesIndex?[scopedKey] != nil ? [scopedKey] : []
-        } else {
-            keys = entriesIndex.map { Array($0.keys) } ?? []
-        }
-        for key in keys {
-            entriesIndex?[key]?.removeAll { entry in
-                entry.cacheURL.standardizedFileURL == standardizedCacheURL
-                    || entry.metadataURL.standardizedFileURL == standardizedMetadataURL
-                    || entry.metadata.entryKey == entryKey
-            }
-            if entriesIndex?[key]?.isEmpty == true {
-                entriesIndex?[key] = nil
-            }
-        }
-    }
-
     init(
         configuration: MLXServerDiskKVCacheConfiguration,
-        fileManager: FileManager = .default,
-        indexRebuildObserver: (@Sendable () -> Void)? = nil
+        fileManager: FileManager = .default
     ) {
         self.configuration = configuration
         self.fileManager = fileManager
-        self.indexRebuildObserver = indexRebuildObserver
     }
 
     var isEnabled: Bool {
         configuration.isEnabled
     }
 
-    func loadCache(
-        for identity: MLXServerDiskKVCacheIdentity
-    ) -> [KVCache]? {
+    // MARK: - Load
+
+    /// Restores the persisted cache for a session entry when it can serve
+    /// the requested transcript as a strict continuation.
+    func loadSession(
+        for key: MLXServerChatSessionCacheKey,
+        toolsSignature: String,
+        contextSignature: String,
+        requestFingerprints: [MLXServerChatTranscriptFingerprint]
+    ) -> MLXServerDiskChatSessionMatch? {
         guard configuration.isEnabled else {
             return nil
         }
 
-        let urls = entryURLs(for: identity)
-        guard
-            let metadata = loadMetadata(from: urls.metadataURL),
-            metadata.matches(identity),
-            fileManager.fileExists(atPath: urls.cacheURL.path)
+        let urls = entryURLs(for: key.entryKey, modelID: key.modelID)
+        guard let metadata = loadMetadata(from: urls.metadataURL),
+              metadata.matches(
+                  key: key,
+                  toolsSignature: toolsSignature,
+                  contextSignature: contextSignature
+              ),
+              MLXServerChatSessionTranscript.continuationSuffixStartIndex(
+                  stored: metadata.fingerprints,
+                  request: requestFingerprints
+              ) != nil,
+              fileManager.fileExists(atPath: urls.cacheURL.path)
         else {
             return nil
         }
 
-        // Heavy safetensors I/O happens outside the store lock so concurrent
-        // lookups and persistence are not serialized behind disk reads.
+        // Heavy safetensors I/O happens outside the store lock so
+        // concurrent lookups and persistence are not serialized behind
+        // disk reads.
         do {
             let (cache, _) = try loadPromptCache(url: urls.cacheURL)
-            guard cache.hasPromptState,
-                  normalizePromptCacheLength(cache, expectedTokenCount: metadata.promptTokenCount)
-            else {
+            guard cache.hasPromptState else {
                 removeEntryIfUnchanged(
                     cacheURL: urls.cacheURL,
                     metadataURL: urls.metadataURL,
@@ -263,7 +155,6 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
                 )
                 return nil
             }
-
             withStoreLock {
                 touchEntry(
                     metadata: metadata,
@@ -271,7 +162,10 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
                     metadataURL: urls.metadataURL
                 )
             }
-            return cache
+            return MLXServerDiskChatSessionMatch(
+                cache: cache,
+                fingerprints: metadata.fingerprints
+            )
         } catch {
             removeEntryIfUnchanged(
                 cacheURL: urls.cacheURL,
@@ -282,100 +176,37 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
         }
     }
 
-        func loadLongestPromptPrefix(
-        for query: MLXServerDiskKVCachePrefixQuery
-    ) -> MLXServerDiskKVCachePrefixMatch? {
-        guard configuration.isEnabled, !query.promptTokenIDs.isEmpty else {
-            return nil
+    // MARK: - Persist
+
+    /// Returns false when the entry on disk already represents exactly this
+    /// transcript, making a rewrite pointless.
+    func needsPersistence(
+        for key: MLXServerChatSessionCacheKey,
+        fingerprints: [MLXServerChatTranscriptFingerprint]
+    ) -> Bool {
+        guard configuration.isEnabled else {
+            return false
         }
-
-        // Only index consultation happens under the store lock; the heavy
-        // safetensors reads below run unlocked so concurrent lookups and
-        // persistence are not serialized behind disk I/O.
-        let candidates = withStoreLock { () -> [MLXServerDiskKVCachePrefixCandidate] in
-            rebuildIndexIfNeeded()
-            return diskCacheEntries(
-                modelID: query.modelID,
-                runtimeKind: query.runtimeKind.rawValue,
-                cacheLayoutSignature: query.cacheLayoutSignature
-            )
-                .compactMap { entry -> MLXServerDiskKVCachePrefixCandidate? in
-                    entry.metadata.reusablePromptPrefixCandidate(
-                        for: query,
-                        cacheURL: entry.cacheURL,
-                        metadataURL: entry.metadataURL
-                    )
-                }
-                .sorted { lhs, rhs in
-                    if lhs.reusablePromptTokenCount != rhs.reusablePromptTokenCount {
-                        return lhs.reusablePromptTokenCount > rhs.reusablePromptTokenCount
-                    }
-                    return lhs.metadata.lastAccessedAt > rhs.metadata.lastAccessedAt
-                }
+        let urls = entryURLs(for: key.entryKey, modelID: key.modelID)
+        guard let metadata = loadMetadata(from: urls.metadataURL),
+              metadata.entryKey == key.entryKey,
+              fileManager.fileExists(atPath: urls.cacheURL.path) else {
+            return true
         }
-
-        for candidate in candidates {
-            do {
-                let (cache, _) = try loadPromptCache(url: candidate.cacheURL)
-                guard cache.hasPromptState else {
-                    removeEntryIfUnchanged(for: candidate)
-                    continue
-                }
-                guard normalizePromptCacheLength(
-                    cache,
-                    expectedTokenCount: candidate.storedPromptTokenCount
-                ) else {
-                    removeEntryIfUnchanged(for: candidate)
-                    continue
-                }
-                let tokensToTrim = candidate.storedPromptTokenCount - candidate.reusablePromptTokenCount
-                if tokensToTrim > 0 {
-                    let trimmedTokenCount = trimPromptPrefixCache(cache, numTokens: tokensToTrim)
-                    guard trimmedTokenCount == tokensToTrim else {
-                        continue
-                    }
-                }
-                guard cache.hasPromptState else {
-                    continue
-                }
-                guard normalizePromptCacheLength(
-                    cache,
-                    expectedTokenCount: candidate.reusablePromptTokenCount
-                ) else {
-                    continue
-                }
-
-                withStoreLock {
-                    touchEntry(
-                        metadata: candidate.metadata,
-                        cacheURL: candidate.cacheURL,
-                        metadataURL: candidate.metadataURL
-                    )
-                }
-                return MLXServerDiskKVCachePrefixMatch(
-                    cache: cache,
-                    promptTokenCount: candidate.reusablePromptTokenCount,
-                    storedPromptTokenCount: candidate.storedPromptTokenCount
-                )
-            } catch {
-                removeEntryIfUnchanged(for: candidate)
-            }
-        }
-
-        return nil
+        return metadata.fingerprints != fingerprints
     }
 
     func preparePersistenceTarget(
-        for identity: MLXServerDiskKVCacheIdentity
+        for key: MLXServerChatSessionCacheKey
     ) throws -> MLXServerDiskKVCachePersistenceTarget? {
         try withStoreLock {
             guard configuration.isEnabled else {
                 return nil
             }
-            let urls = entryURLs(for: identity)
+            let urls = entryURLs(for: key.entryKey, modelID: key.modelID)
             let temporaryURL = urls.cacheURL
                 .deletingLastPathComponent()
-                .appendingPathComponent("\(identity.entryKey).tmp.safetensors")
+                .appendingPathComponent("\(key.entryKey).tmp.safetensors")
 
             try ensureDirectoryExists(urls.cacheURL.deletingLastPathComponent())
             try? fileManager.removeItem(at: temporaryURL)
@@ -388,8 +219,11 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
         }
     }
 
-    func commitPersistedCache(
-        identity: MLXServerDiskKVCacheIdentity,
+    func commitPersistedSession(
+        key: MLXServerChatSessionCacheKey,
+        toolsSignature: String,
+        contextSignature: String,
+        fingerprints: [MLXServerChatTranscriptFingerprint],
         target: MLXServerDiskKVCachePersistenceTarget
     ) throws {
         try withStoreLock {
@@ -398,56 +232,23 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
 
             let now = Date()
             let existingMetadata = loadMetadata(from: target.metadataURL)
-            let metadata = MLXServerPersistedDiskKVCacheMetadata(
+            let metadata = MLXServerPersistedChatSessionMetadata(
                 version: Self.metadataVersion,
-                modelID: identity.modelID,
-                runtimeKind: identity.runtimeKind.rawValue,
-                cacheLayoutSignature: identity.cacheLayoutSignature,
-                promptTokenDigest: identity.promptTokenDigest,
-                promptTokenCount: identity.promptTokenCount,
-                promptTokenIDs: identity.promptTokenIDs,
-                entryKey: identity.entryKey,
+                sessionKey: key.sessionKey,
+                modelID: key.modelID,
+                runtimeKind: key.runtimeKind.rawValue,
+                cacheLayoutSignature: key.cacheLayoutSignature,
+                toolsSignature: toolsSignature,
+                contextSignature: contextSignature,
+                entryKey: key.entryKey,
+                fingerprints: fingerprints,
                 byteCount: byteCount(of: target.cacheURL),
                 createdAt: existingMetadata?.createdAt ?? now,
                 updatedAt: now,
                 lastAccessedAt: now
             )
             saveMetadata(metadata, to: target.metadataURL)
-            rebuildIndexIfNeeded()
-            upsertIndexedEntry(
-                MLXServerPersistedDiskKVCacheEntry(
-                    metadataURL: target.metadataURL,
-                    cacheURL: target.cacheURL,
-                    metadata: metadata
-                )
-            )
-            removeEntriesSuperseded(by: metadata, preserving: target.cacheURL)
             enforceDiskLimit(preserving: target.cacheURL)
-        }
-    }
-
-    /// Removes entries whose prompt is a strict prefix of a newly committed
-    /// entry. Such entries are dominated: any query that could reuse them
-    /// reuses at least as much from the new entry. Pruning them at commit
-    /// keeps long sessions from accumulating near-identical multi-GB
-    /// snapshots, one per turn, until LRU eviction kicks in.
-    private func removeEntriesSuperseded(
-        by metadata: MLXServerPersistedDiskKVCacheMetadata,
-        preserving preservedCacheURL: URL
-    ) {
-        let supersededEntries = diskCacheEntries(
-            modelID: metadata.modelID,
-            runtimeKind: metadata.runtimeKind,
-            cacheLayoutSignature: metadata.cacheLayoutSignature
-        ).filter { entry in
-            entry.metadata.entryKey != metadata.entryKey
-                && entry.cacheURL.standardizedFileURL != preservedCacheURL.standardizedFileURL
-                && entry.metadata.promptTokenCount < metadata.promptTokenCount
-                && entry.metadata.promptTokenCount == entry.metadata.promptTokenIDs.count
-                && metadata.promptTokenIDs.starts(with: entry.metadata.promptTokenIDs)
-        }
-        for entry in supersededEntries {
-            removeEntry(cacheURL: entry.cacheURL, metadataURL: entry.metadataURL)
         }
     }
 
@@ -457,57 +258,13 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
         }
     }
 
-    /// Returns false when an entry already on disk makes writing this
-    /// identity pointless: either the exact same entry, or one whose prompt
-    /// extends it (any query that could reuse this identity reuses at least
-    /// as much from the longer entry). This is the content-addressed dedup
-    /// step: aligned store boundaries make repeated turns produce identical
-    /// identities, which are skipped here instead of rewritten.
-    func needsPersistence(
-        for identity: MLXServerDiskKVCacheIdentity
-    ) -> Bool {
-        withStoreLock {
-            guard configuration.isEnabled else {
-                return false
-            }
-            rebuildIndexIfNeeded()
-            let isDominated = diskCacheEntries(
-                modelID: identity.modelID,
-                runtimeKind: identity.runtimeKind.rawValue,
-                cacheLayoutSignature: identity.cacheLayoutSignature
-            ).contains { entry in
-                entry.metadata.promptTokenCount >= identity.promptTokenCount
-                    && entry.metadata.promptTokenCount == entry.metadata.promptTokenIDs.count
-                    && entry.metadata.promptTokenIDs.starts(with: identity.promptTokenIDs)
-            }
-            return !isDominated
-        }
-    }
-
-    func persistCache(
-        identity: MLXServerDiskKVCacheIdentity,
-        cache: [KVCache]
-    ) {
-        guard needsPersistence(for: identity) else {
-            return
-        }
-        guard let target = try? preparePersistenceTarget(for: identity) else {
-            return
-        }
-
-        do {
-            try savePromptCache(url: target.temporaryURL, cache: cache)
-            try commitPersistedCache(identity: identity, target: target)
-        } catch {
-            discardPersistenceTarget(target)
-        }
-    }
-
     func enforceDiskLimit() {
         withStoreLock {
             enforceDiskLimit(preserving: nil)
         }
     }
+
+    // MARK: - Internals
 
     private func withStoreLock<T>(_ body: () throws -> T) rethrows -> T {
         storeLock.lock()
@@ -517,12 +274,13 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
         return try body()
     }
 
-    private func entryURLs(
-        for identity: MLXServerDiskKVCacheIdentity
+    func entryURLs(
+        for entryKey: String,
+        modelID: String
     ) -> (cacheURL: URL, metadataURL: URL) {
         let modelDirectory = configuration.directory
-            .appendingPathComponent(modelDirectoryName(identity.modelID), isDirectory: true)
-        let baseURL = modelDirectory.appendingPathComponent(identity.entryKey)
+            .appendingPathComponent(modelDirectoryName(modelID), isDirectory: true)
+        let baseURL = modelDirectory.appendingPathComponent(entryKey)
         return (
             cacheURL: baseURL.appendingPathExtension("safetensors"),
             metadataURL: baseURL.appendingPathExtension("json")
@@ -532,27 +290,28 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
     private func modelDirectoryName(_ modelID: String) -> String {
         var hasher = SHA256()
         hasher.update(data: Data(modelID.utf8))
-        return SHA256Digest.hexString(from: hasher.finalize()).prefix(16).description
+        return SHA256.hexString(from: hasher.finalize()).prefix(16).description
     }
 
     private func loadMetadata(
         from url: URL
-    ) -> MLXServerPersistedDiskKVCacheMetadata? {
+    ) -> MLXServerPersistedChatSessionMetadata? {
         guard let data = try? Data(contentsOf: url) else {
             return nil
         }
-        return try? JSONDecoder().decode(MLXServerPersistedDiskKVCacheMetadata.self, from: data)
+        return try? JSONDecoder().decode(
+            MLXServerPersistedChatSessionMetadata.self,
+            from: data
+        )
     }
 
     private func saveMetadata(
-        _ metadata: MLXServerPersistedDiskKVCacheMetadata,
+        _ metadata: MLXServerPersistedChatSessionMetadata,
         to url: URL
     ) {
         do {
             try ensureDirectoryExists(url.deletingLastPathComponent())
             let encoder = JSONEncoder()
-            // No pretty-printing: promptTokenIDs can hold tens of thousands
-            // of integers and compact output keeps metadata files small.
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
             try encoder.encode(metadata).write(to: url, options: .atomic)
         } catch {
@@ -581,6 +340,153 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
         ensuredDirectoryLock.unlock()
     }
 
+    /// Minimum interval between on-disk `lastAccessedAt` rewrites. Eviction
+    /// tolerates access times that are stale by up to one interval.
+    static let accessTimePersistenceInterval: TimeInterval = 15 * 60
+
+    /// Records a cache hit. Must be called while holding the store lock.
+    private func touchEntry(
+        metadata: MLXServerPersistedChatSessionMetadata,
+        cacheURL: URL,
+        metadataURL: URL
+    ) {
+        guard fileManager.fileExists(atPath: cacheURL.path) else {
+            return
+        }
+        var touched = metadata
+        let now = Date()
+        touched.lastAccessedAt = now
+        touched.byteCount = byteCount(of: cacheURL)
+
+        let byteCountChanged = touched.byteCount != metadata.byteCount
+        let persistedAccessIsStale =
+            now.timeIntervalSince(metadata.lastAccessedAt) > Self.accessTimePersistenceInterval
+        if byteCountChanged || persistedAccessIsStale {
+            saveMetadata(touched, to: metadataURL)
+        }
+    }
+
+    /// Removes an entry detected as invalid during unlocked disk reads, but
+    /// only if it has not been rewritten by a concurrent commit since its
+    /// metadata was read.
+    private func removeEntryIfUnchanged(
+        cacheURL: URL,
+        metadataURL: URL,
+        expectedUpdatedAt: Date
+    ) {
+        withStoreLock {
+            if let currentMetadata = loadMetadata(from: metadataURL),
+               currentMetadata.updatedAt != expectedUpdatedAt {
+                return
+            }
+            removeEntry(cacheURL: cacheURL, metadataURL: metadataURL)
+        }
+    }
+
+    private func removeEntry(
+        cacheURL: URL,
+        metadataURL: URL
+    ) {
+        try? fileManager.removeItem(at: cacheURL)
+        try? fileManager.removeItem(at: metadataURL)
+    }
+
+    private struct PersistedEntry {
+        var metadataURL: URL
+        var cacheURL: URL
+        var metadata: MLXServerPersistedChatSessionMetadata
+    }
+
+    /// Temporary persistence files older than this are considered leftovers
+    /// from a crashed or interrupted write and are removed while
+    /// enumerating. Recent ones may belong to an in-flight
+    /// `savePromptCache`, which runs outside the store lock.
+    static let orphanedTemporaryFileMaxAge: TimeInterval = 60 * 60
+
+    private func persistedEntriesFromDisk() -> [PersistedEntry] {
+        guard
+            fileManager.fileExists(atPath: configuration.directory.path),
+            let enumerator = fileManager.enumerator(
+                at: configuration.directory,
+                includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            )
+        else {
+            return []
+        }
+
+        var entries: [PersistedEntry] = []
+        var cacheFileURLs: [URL] = []
+        var referencedCachePaths = Set<String>()
+        while let url = enumerator.nextObject() as? URL {
+            if url.pathExtension == "safetensors" {
+                cacheFileURLs.append(url)
+                continue
+            }
+            guard url.pathExtension == "json",
+                  var metadata = loadMetadata(from: url) else {
+                continue
+            }
+
+            let cacheURL = url.deletingPathExtension().appendingPathExtension("safetensors")
+            guard metadata.version == Self.metadataVersion else {
+                removeEntry(cacheURL: cacheURL, metadataURL: url)
+                continue
+            }
+
+            guard fileManager.fileExists(atPath: cacheURL.path) else {
+                try? fileManager.removeItem(at: url)
+                continue
+            }
+
+            referencedCachePaths.insert(cacheURL.standardizedFileURL.path)
+            let currentByteCount = byteCount(of: cacheURL)
+            if metadata.byteCount != currentByteCount {
+                metadata.byteCount = currentByteCount
+                saveMetadata(metadata, to: url)
+            }
+            entries.append(
+                PersistedEntry(
+                    metadataURL: url,
+                    cacheURL: cacheURL,
+                    metadata: metadata
+                )
+            )
+        }
+
+        removeOrphanedCacheFiles(
+            cacheFileURLs,
+            referencedCachePaths: referencedCachePaths
+        )
+        return entries
+    }
+
+    /// Deletes cache payloads that no metadata references: `.safetensors`
+    /// files left behind by a crash between move and metadata write, and
+    /// stale `.tmp.safetensors` files from interrupted writes.
+    private func removeOrphanedCacheFiles(
+        _ cacheFileURLs: [URL],
+        referencedCachePaths: Set<String>
+    ) {
+        for url in cacheFileURLs {
+            let standardizedURL = url.standardizedFileURL
+            if standardizedURL.deletingPathExtension().pathExtension == "tmp" {
+                let modificationDate =
+                    (try? fileManager.attributesOfItem(atPath: standardizedURL.path))?[
+                        .modificationDate
+                    ] as? Date
+                let age = Date().timeIntervalSince(modificationDate ?? .distantPast)
+                if age > Self.orphanedTemporaryFileMaxAge {
+                    try? fileManager.removeItem(at: standardizedURL)
+                }
+                continue
+            }
+            if !referencedCachePaths.contains(standardizedURL.path) {
+                try? fileManager.removeItem(at: standardizedURL)
+            }
+        }
+    }
+
     private func enforceDiskLimit(
         preserving preservedCacheURL: URL?
     ) {
@@ -588,8 +494,7 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
             return
         }
 
-        rebuildIndexIfNeeded()
-        let entries = diskCacheEntries()
+        let entries = persistedEntriesFromDisk()
         let totalByteCount = entries.reduce(Int64(0)) { partial, entry in
             partial + max(entry.metadata.byteCount, 0)
         }
@@ -622,171 +527,6 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
         }
     }
 
-    /// Temporary persistence files older than this are considered leftovers
-    /// from a crashed or interrupted write and are removed during index
-    /// rebuilds. Recent ones may belong to an in-flight `savePromptCache`,
-    /// which runs outside the store lock.
-    fileprivate static let orphanedTemporaryFileMaxAge: TimeInterval = 60 * 60
-
-    private func persistedEntriesFromDisk() -> [MLXServerPersistedDiskKVCacheEntry] {
-        guard
-            fileManager.fileExists(atPath: configuration.directory.path),
-            let enumerator = fileManager.enumerator(
-                at: configuration.directory,
-                includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
-                options: [.skipsHiddenFiles]
-            )
-        else {
-            return []
-        }
-
-        var entries: [MLXServerPersistedDiskKVCacheEntry] = []
-        var cacheFileURLs: [URL] = []
-        var referencedCachePaths = Set<String>()
-        while let url = enumerator.nextObject() as? URL {
-            if url.pathExtension == "safetensors" {
-                cacheFileURLs.append(url)
-                continue
-            }
-            guard url.pathExtension == "json",
-                  var metadata = loadMetadata(from: url) else {
-                continue
-            }
-
-            let cacheURL = url.deletingPathExtension().appendingPathExtension("safetensors")
-            guard metadata.version == Self.metadataVersion else {
-                removeEntry(cacheURL: cacheURL, metadataURL: url)
-                continue
-            }
-
-            guard fileManager.fileExists(atPath: cacheURL.path) else {
-                try? fileManager.removeItem(at: url)
-                continue
-            }
-
-            referencedCachePaths.insert(cacheURL.standardizedFileURL.path)
-            let currentByteCount = byteCount(of: cacheURL)
-            if metadata.byteCount != currentByteCount {
-                metadata.byteCount = currentByteCount
-                saveMetadata(metadata, to: url)
-            }
-            entries.append(
-                MLXServerPersistedDiskKVCacheEntry(
-                    metadataURL: url,
-                    cacheURL: cacheURL,
-                    metadata: metadata
-                )
-            )
-        }
-
-        removeOrphanedCacheFiles(
-            cacheFileURLs,
-            referencedCachePaths: referencedCachePaths
-        )
-        return entries
-    }
-
-    /// Deletes cache payloads that no metadata references: `.safetensors`
-    /// files left behind by a crash between move and metadata write, and
-    /// stale `.tmp.safetensors` files from interrupted writes. Without this
-    /// they would occupy disk space invisible to `enforceDiskLimit`.
-    private func removeOrphanedCacheFiles(
-        _ cacheFileURLs: [URL],
-        referencedCachePaths: Set<String>
-    ) {
-        for url in cacheFileURLs {
-            let standardizedURL = url.standardizedFileURL
-            if standardizedURL.deletingPathExtension().pathExtension == "tmp" {
-                let modificationDate =
-                    (try? fileManager.attributesOfItem(atPath: standardizedURL.path))?[
-                        .modificationDate
-                    ] as? Date
-                let age = Date().timeIntervalSince(modificationDate ?? .distantPast)
-                if age > Self.orphanedTemporaryFileMaxAge {
-                    try? fileManager.removeItem(at: standardizedURL)
-                }
-                continue
-            }
-            if !referencedCachePaths.contains(standardizedURL.path) {
-                try? fileManager.removeItem(at: standardizedURL)
-            }
-        }
-    }
-
-    /// Minimum interval between on-disk `lastAccessedAt` rewrites. The
-    /// in-memory index is always updated; the metadata file (which carries
-    /// the full promptTokenIDs and can be large) is only rewritten when the
-    /// payload size changed or the persisted access time is older than this.
-    /// Eviction tolerates access times that are stale by up to one interval.
-    fileprivate static let accessTimePersistenceInterval: TimeInterval = 15 * 60
-
-    /// Records a cache hit: refreshes the in-memory index immediately and
-    /// rewrites the metadata file only when meaningful. Must be called while
-    /// holding the store lock.
-    private func touchEntry(
-        metadata: MLXServerPersistedDiskKVCacheMetadata,
-        cacheURL: URL,
-        metadataURL: URL
-    ) {
-        guard fileManager.fileExists(atPath: cacheURL.path) else {
-            return
-        }
-        var touched = metadata
-        let now = Date()
-        touched.lastAccessedAt = now
-        touched.byteCount = byteCount(of: cacheURL)
-
-        let byteCountChanged = touched.byteCount != metadata.byteCount
-        let persistedAccessIsStale =
-            now.timeIntervalSince(metadata.lastAccessedAt) > Self.accessTimePersistenceInterval
-        if byteCountChanged || persistedAccessIsStale {
-            saveMetadata(touched, to: metadataURL)
-        }
-        upsertIndexedEntry(
-            MLXServerPersistedDiskKVCacheEntry(
-                metadataURL: metadataURL,
-                cacheURL: cacheURL,
-                metadata: touched
-            )
-        )
-    }
-
-    /// Removes an entry detected as invalid during unlocked disk reads, but
-    /// only if it has not been rewritten by a concurrent commit since its
-    /// metadata was read.
-    private func removeEntryIfUnchanged(
-        cacheURL: URL,
-        metadataURL: URL,
-        expectedUpdatedAt: Date
-    ) {
-        withStoreLock {
-            if let currentMetadata = loadMetadata(from: metadataURL),
-               currentMetadata.updatedAt != expectedUpdatedAt {
-                return
-            }
-            removeEntry(cacheURL: cacheURL, metadataURL: metadataURL)
-        }
-    }
-
-    private func removeEntryIfUnchanged(
-        for candidate: MLXServerDiskKVCachePrefixCandidate
-    ) {
-        removeEntryIfUnchanged(
-            cacheURL: candidate.cacheURL,
-            metadataURL: candidate.metadataURL,
-            expectedUpdatedAt: candidate.metadata.updatedAt
-        )
-    }
-
-    private func removeEntry(
-        cacheURL: URL,
-        metadataURL: URL
-    ) {
-        try? fileManager.removeItem(at: cacheURL)
-        try? fileManager.removeItem(at: metadataURL)
-        removeIndexedEntry(cacheURL: cacheURL, metadataURL: metadataURL)
-    }
-
     private func byteCount(of url: URL) -> Int64 {
         let attributes = try? fileManager.attributesOfItem(atPath: url.path)
         return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
@@ -795,7 +535,7 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
 
 final class MLXServerDiskKVCachePersistenceWriter: @unchecked Sendable {
     private struct Job: Sendable {
-        var operation: @Sendable () -> Void
+        var operation: @Sendable () async -> Void
     }
 
     private let lock = OSAllocatedUnfairLock()
@@ -805,7 +545,7 @@ final class MLXServerDiskKVCachePersistenceWriter: @unchecked Sendable {
 
     func enqueue(
         coalescingKey: String,
-        operation: @escaping @Sendable () -> Void
+        operation: @escaping @Sendable () async -> Void
     ) {
         let job = Job(operation: operation)
         let shouldStartDrain: Bool
@@ -828,13 +568,13 @@ final class MLXServerDiskKVCachePersistenceWriter: @unchecked Sendable {
         }
 
         Task.detached(priority: .utility) { [self] in
-            drain()
+            await drain()
         }
     }
 
-    private func drain() {
+    private func drain() async {
         while let job = nextJob() {
-            job.operation()
+            await job.operation()
         }
     }
 
@@ -856,144 +596,9 @@ final class MLXServerDiskKVCachePersistenceWriter: @unchecked Sendable {
     }
 }
 
-private enum SHA256Digest {
-    static func hexString<D: Sequence>(
-        from digest: D
-    ) -> String where D.Element == UInt8 {
-        digest.map { String(format: "%02x", $0) }.joined()
-    }
-}
-
-private extension Array where Element == KVCache {
+extension Array where Element == KVCache {
     var hasPromptState: Bool {
         let state = flatMap(\.state)
         return !state.isEmpty && state.allSatisfy { $0.size > 0 }
-    }
-}
-
-@discardableResult
-private func trimPromptPrefixCache(_ cache: [KVCache], numTokens: Int) -> Int {
-    trimPromptCache(cache, numTokens: numTokens)
-}
-
-@discardableResult
-func normalizePromptCacheLength(
-    _ cache: [KVCache],
-    expectedTokenCount: Int
-) -> Bool {
-    guard expectedTokenCount > 0,
-          cache.hasPromptState,
-          let firstOffset = cache.first?.offset,
-          cache.allSatisfy({ $0.offset == firstOffset }) else {
-        return false
-    }
-
-    if firstOffset == expectedTokenCount {
-        return true
-    }
-    guard firstOffset > expectedTokenCount else {
-        return false
-    }
-
-    let tokensToTrim = firstOffset - expectedTokenCount
-    guard trimPromptPrefixCache(cache, numTokens: tokensToTrim) == tokensToTrim else {
-        return false
-    }
-    return cache.allSatisfy { $0.offset == expectedTokenCount }
-}
-
-private struct MLXServerPersistedDiskKVCacheEntry {
-    var metadataURL: URL
-    var cacheURL: URL
-    var metadata: MLXServerPersistedDiskKVCacheMetadata
-}
-
-private struct MLXServerDiskKVCachePrefixCandidate {
-    var cacheURL: URL
-    var metadataURL: URL
-    var metadata: MLXServerPersistedDiskKVCacheMetadata
-    var reusablePromptTokenCount: Int
-    var storedPromptTokenCount: Int
-}
-
-struct MLXServerDiskKVCachePersistenceTarget {
-    var cacheURL: URL
-    var metadataURL: URL
-    var temporaryURL: URL
-}
-
-private struct MLXServerPersistedDiskKVCacheMetadata: Codable {
-    private static let minimumReusablePromptPrefixTokenCount = 256
-
-    var version: Int
-    var modelID: String
-    var runtimeKind: String
-    var cacheLayoutSignature: String
-    var promptTokenDigest: String
-    var promptTokenCount: Int
-    var promptTokenIDs: [Int]
-    var entryKey: String
-    var byteCount: Int64
-    var createdAt: Date
-    var updatedAt: Date
-    var lastAccessedAt: Date
-
-    func matches(_ identity: MLXServerDiskKVCacheIdentity) -> Bool {
-        guard version == MLXServerDiskKVCacheStore.metadataVersion,
-              modelID == identity.modelID,
-              runtimeKind == identity.runtimeKind.rawValue,
-              cacheLayoutSignature == identity.cacheLayoutSignature,
-              entryKey == identity.entryKey else {
-            return false
-        }
-
-        return promptTokenDigest == identity.promptTokenDigest
-            && promptTokenCount == identity.promptTokenCount
-    }
-
-    func reusablePromptPrefixCandidate(
-        for query: MLXServerDiskKVCachePrefixQuery,
-        cacheURL: URL,
-        metadataURL: URL
-    ) -> MLXServerDiskKVCachePrefixCandidate? {
-        guard version == MLXServerDiskKVCacheStore.metadataVersion,
-              modelID == query.modelID,
-              runtimeKind == query.runtimeKind.rawValue,
-              cacheLayoutSignature == query.cacheLayoutSignature,
-              promptTokenCount == promptTokenIDs.count,
-              promptTokenCount > 0,
-              query.promptTokenIDs.count > 1 else {
-            return nil
-        }
-
-        let commonPrefixTokenCount = promptTokenIDs.commonPrefixCount(
-            with: query.promptTokenIDs
-        )
-        let reusablePromptTokenCount = min(
-            commonPrefixTokenCount,
-            query.promptTokenIDs.count - 1
-        )
-        guard reusablePromptTokenCount >= Self.minimumReusablePromptPrefixTokenCount else {
-            return nil
-        }
-
-        return MLXServerDiskKVCachePrefixCandidate(
-            cacheURL: cacheURL,
-            metadataURL: metadataURL,
-            metadata: self,
-            reusablePromptTokenCount: reusablePromptTokenCount,
-            storedPromptTokenCount: promptTokenCount
-        )
-    }
-}
-
-private extension Array where Element == Int {
-    func commonPrefixCount(with other: [Int]) -> Int {
-        let limit = Swift.min(count, other.count)
-        var index = 0
-        while index < limit, self[index] == other[index] {
-            index += 1
-        }
-        return index
     }
 }
