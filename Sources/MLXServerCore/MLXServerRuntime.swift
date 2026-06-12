@@ -536,9 +536,11 @@ public actor MLXServerRuntime {
         return AsyncStream { continuation in
             let task = Task {
                 var completionInfo: GenerateCompletionInfo?
+                var wasCancelled = false
                 do {
                     for try await item in throwingStream {
                         if Task.isCancelled {
+                            wasCancelled = true
                             break
                         }
                         if case .info(let info) = item {
@@ -549,13 +551,24 @@ public actor MLXServerRuntime {
                 } catch {
                     // Mid-stream failures end the stream; the session is
                     // not stored so the next request starts clean.
-                                        self.discardChatSession(for: cacheKey)
+                    self.discardChatSession(for: cacheKey)
                     await generationLease.release()
                     continuation.finish()
                     return
                 }
 
-                                self.finishChatSessionTurn(
+                if wasCancelled || Task.isCancelled {
+                    // A cancelled turn leaves a truncated assistant turn in
+                    // the KV cache; storing it would make later requests
+                    // continue on top of tokens that do not match the
+                    // client transcript. Drop the session instead.
+                    self.discardChatSession(for: cacheKey)
+                    await generationLease.release()
+                    continuation.finish()
+                    return
+                }
+
+                self.finishChatSessionTurn(
                     cacheKey: cacheKey,
                     sessionTransfer: sessionTransfer,
                     requestFingerprints: requestFingerprints,

@@ -17,6 +17,12 @@ import Darwin
 import Glibc
 #endif
 
+/// Tracks whether a termination signal was already handled. Only accessed
+/// from signal handlers scheduled on the main queue.
+private final class MLXServerShutdownFlag: @unchecked Sendable {
+    var fired = false
+}
+
 @main
 struct MLXServerMain {
     @MainActor
@@ -139,7 +145,31 @@ struct MLXServerMain {
             eventLoopThreadCount: settings.webServerThreadCount
         )
         try server.start()
-        dispatchMain()
+
+        // Persist live chat session KV caches before terminating so a
+        // restarted server can resume them from disk. Handlers run on the
+        // main queue, so the flag needs no synchronization.
+        let shutdownFlag = MLXServerShutdownFlag()
+        let signalSources = [SIGINT, SIGTERM].map { signalNumber -> DispatchSourceSignal in
+            signal(signalNumber, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
+            source.setEventHandler {
+                guard !shutdownFlag.fired else {
+                    return
+                }
+                shutdownFlag.fired = true
+                Task {
+                    await runtime.persistChatSessionsToDisk()
+                    try? server.stop()
+                    Foundation.exit(0)
+                }
+            }
+            source.resume()
+            return source
+        }
+        withExtendedLifetime(signalSources) {
+            dispatchMain()
+        }
     }
 
     private static func runCoder(arguments: [String]) async throws {
@@ -431,9 +461,11 @@ struct MLXServerMain {
         settings: MLXServerSettings,
         options: MLXServerChatOptions
     ) async throws {
+        // Interactive chat uses an ephemeral per-process session ID, so a
+        // disk KV cache entry could never be resumed: keep it disabled.
         let runtime = MLXServerRuntime(
             retentionPolicy: settings.modelRetentionPolicy,
-            diskKVCacheConfiguration: settings.diskKVCache.configuration,
+            diskKVCacheConfiguration: .disabled,
             modelLoadLogger: logModelLoadEvent,
             modelUnloadLogger: logModelUnloadEvent
         )

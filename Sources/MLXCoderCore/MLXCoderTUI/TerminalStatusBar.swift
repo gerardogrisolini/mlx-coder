@@ -586,7 +586,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
             ?? latestMetrics?.totalTokenCount
         var fragments: [String] = []
         if isProcessing {
-            var loader = Self.spinnerFrames[spinnerIndex % Self.spinnerFrames.count]
+            let loader = Self.spinnerFrames[spinnerIndex % Self.spinnerFrames.count]
             fragments.append(loader)
             if let latestModelRuntime {
                 fragments.append(latestModelRuntime)
@@ -642,9 +642,9 @@ public final class TerminalStatusBar: @unchecked Sendable {
 
     private static func modelDisplayName(_ modelID: String) -> String {
         modelID
-//            .split(separator: "/")
-//            .last
-//            .map(String.init) ?? modelID
+            .split(separator: "/")
+            .last
+            .map(String.init) ?? modelID
     }
 
     private static func runtimeDisplayName(_ runtime: String?) -> String? {
@@ -652,14 +652,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
               !runtime.isEmpty else {
             return nil
         }
-        switch runtime.lowercased() {
-        case "llm":
-            return "LLM"
-        case "vlm":
-            return "VLM"
-        default:
-            return runtime.uppercased()
-        }
+        return runtime.uppercased()
     }
 
     private func mergedMetrics(

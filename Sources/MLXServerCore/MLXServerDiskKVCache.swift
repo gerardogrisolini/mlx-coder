@@ -207,12 +207,17 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
                 return nil
             }
             let urls = entryURLs(for: key.entryKey, modelID: key.modelID)
+            // Unique per attempt: concurrent persists of the same entry
+            // (background writer job racing a shutdown flush) must not
+            // share a temporary file. Orphaned files are swept by
+            // `removeOrphanedCacheFiles` after `orphanedTemporaryFileMaxAge`.
             let temporaryURL = urls.cacheURL
                 .deletingLastPathComponent()
-                .appendingPathComponent("\(key.entryKey).tmp.safetensors")
+                .appendingPathComponent(
+                    "\(key.entryKey).\(UUID().uuidString).tmp.safetensors"
+                )
 
             try ensureDirectoryExists(urls.cacheURL.deletingLastPathComponent())
-            try? fileManager.removeItem(at: temporaryURL)
 
             return MLXServerDiskKVCachePersistenceTarget(
                 cacheURL: urls.cacheURL,
