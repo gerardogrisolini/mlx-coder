@@ -585,22 +585,20 @@ public final class TerminalStatusBar: @unchecked Sendable {
         let tokensUsed = latestContextWindow?.usedTokens
             ?? latestMetrics?.totalTokenCount
         var fragments: [String] = []
-        if isProcessing {
-            let loader = Self.spinnerFrames[spinnerIndex % Self.spinnerFrames.count]
-            fragments.append(loader)
-            if let latestModelRuntime {
-                fragments.append(latestModelRuntime)
-            }
-        } else if let latestModelRuntime {
-            fragments.append(latestModelRuntime)
-        }
         if let latestModelID {
-            fragments.append(
-                Self.modelStatusFragment(
-                    modelID: latestModelID,
-                    thinkingSelection: latestThinkingSelection
-                )
+            let model = Self.modelStatusFragment(
+                modelID: latestModelID,
+                thinkingSelection: latestThinkingSelection
             )
+            if isProcessing {
+                let loader = Self.spinnerFrames[spinnerIndex % Self.spinnerFrames.count]
+                fragments.append("\(loader) \(model)")
+            } else {
+                fragments.append(model)
+            }
+        }
+        if let latestModelRuntime {
+            fragments.append(latestModelRuntime)
         }
         if tokensUsed != nil || latestContextWindow?.maxTokens != nil {
             let contextText = Self.tokenWindowText(

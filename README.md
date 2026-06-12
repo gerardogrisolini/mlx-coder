@@ -46,7 +46,7 @@ Or download a specific release from [GitHub Releases](https://github.com/gerardo
 
 ```bash
 tar xzf mlx-server-v0.1.1-macos-arm64.tar.gz
-sudo cp mlx-server mlx-coder mlx-voice-transcriber /usr/local/bin/
+sudo cp mlx-server mlx-coder /usr/local/bin/
 ```
 
 ### Build from Source

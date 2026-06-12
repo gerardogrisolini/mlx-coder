@@ -173,80 +173,31 @@ public actor AgentVoiceSynthesisService {
             throw AgentVoiceSynthesisError.missingConfiguration
         }
 
+        #if os(macOS)
+        await progress?("Synthesizing speech")
         let outputURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("mlx-coder-speech-\(UUID().uuidString)")
-            .appendingPathExtension("m4a")
-        let result = try await AgentVoiceToolRunner.run(
-            executablePath: settings.executablePath,
-            arguments: Self.synthesisArguments(
-                settings: settings,
-                text: speechText,
-                outputURL: outputURL
-            ),
-            progress: progress
-        )
-        guard result.exitCode == 0 else {
-            try? FileManager.default.removeItem(at: outputURL)
-            throw AgentVoiceSynthesisError.toolFailed(
-                result.exitCode,
-                AgentVoiceToolRunner.errorDetail(from: result.stderr)
-            )
-        }
+            .appendingPathExtension("caf")
 
-        let producedURL = Self.producedAudioURL(from: result.stdout) ?? outputURL
-        guard FileManager.default.fileExists(atPath: producedURL.path) else {
-            throw AgentVoiceSynthesisError.missingOutput(producedURL.path)
+        try await AgentVoiceSpeechWriter.write(
+            text: speechText,
+            language: settings.language,
+            speaker: settings.speaker,
+            to: outputURL
+        )
+
+        guard FileManager.default.fileExists(atPath: outputURL.path) else {
+            throw AgentVoiceSynthesisError.missingOutput(outputURL.path)
         }
         return AgentVoiceSynthesisOutput(
-            fileURL: producedURL,
-            filename: producedURL.lastPathComponent,
-            contentType: Self.contentType(for: producedURL),
+            fileURL: outputURL,
+            filename: outputURL.lastPathComponent,
+            contentType: "audio/x-caf",
             removeAfterUse: true
         )
-    }
-
-    public nonisolated static func synthesisArguments(
-        settings: AgentVoiceSettingsManifest,
-        text: String,
-        outputURL: URL
-    ) -> [String] {
-        var arguments = [
-            "synthesize",
-            "--text",
-            text,
-            "--output",
-            outputURL.path,
-            "--format",
-            outputURL.pathExtension.nilIfBlank ?? "m4a"
-        ]
-        if let language = settings.language?.nilIfBlank {
-            arguments.append(contentsOf: ["--language", language])
-        }
-        if let speaker = settings.speaker?.nilIfBlank {
-            arguments.append(contentsOf: ["--voice", speaker])
-        }
-        return arguments
-    }
-
-    private nonisolated static func producedAudioURL(from output: String) -> URL? {
-        let trimmedOutput = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let data = trimmedOutput.data(using: .utf8),
-              let response = try? JSONDecoder().decode(LocalVoiceSynthesisResponse.self, from: data),
-              let audioPath = response.audioPath.nilIfBlank else {
-            return nil
-        }
-        return URL(fileURLWithPath: audioPath)
-    }
-
-    private nonisolated static func contentType(for url: URL) -> String {
-        switch url.pathExtension.lowercased() {
-        case "m4a":
-            return "audio/mp4"
-        case "wav":
-            return "audio/wav"
-        default:
-            return "application/octet-stream"
-        }
+        #else
+        throw AgentVoiceSynthesisError.unsupportedPlatform
+        #endif
     }
 }
 
@@ -255,7 +206,7 @@ public enum AgentVoiceSynthesisError: LocalizedError, Sendable, Equatable {
     case missingConfiguration
     case emptyText
     case missingOutput(String)
-    case toolFailed(Int32, String?)
+    case synthesisFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -267,16 +218,105 @@ public enum AgentVoiceSynthesisError: LocalizedError, Sendable, Equatable {
             return "Voice output needs text to speak."
         case let .missingOutput(path):
             return "Voice synthesis did not produce an audio file: \(path)"
-        case let .toolFailed(exitCode, detail):
-            if let detail = detail?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !detail.isEmpty {
-                return "Voice synthesis failed with exit code \(exitCode): \(detail)"
-            }
-            return "Voice synthesis failed with exit code \(exitCode)."
+        case let .synthesisFailed(detail):
+            return "Voice synthesis failed: \(detail)"
         }
     }
 }
 
-private struct LocalVoiceSynthesisResponse: Decodable {
-    let audioPath: String
+#if os(macOS)
+import AVFoundation
+
+private enum AgentVoiceSpeechWriter {
+    static func write(
+        text: String,
+        language: String?,
+        speaker: String?,
+        to outputURL: URL
+    ) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let synthesizer = AVSpeechSynthesizer()
+            let utterance = AVSpeechUtterance(string: text)
+            if let voice = resolveVoice(speaker: speaker, language: language) {
+                utterance.voice = voice
+            }
+
+            let resumeState = SynthesisResumeGuard()
+            var audioFile: AVAudioFile?
+
+            synthesizer.write(utterance) { buffer in
+                guard let pcmBuffer = buffer as? AVAudioPCMBuffer else {
+                    return
+                }
+                if pcmBuffer.frameLength == 0 {
+                    // End-of-stream marker.
+                    if resumeState.consume() {
+                        if audioFile == nil {
+                            continuation.resume(throwing: AgentVoiceSynthesisError.synthesisFailed(
+                                "No audio was produced."
+                            ))
+                        } else {
+                            continuation.resume(returning: ())
+                        }
+                    }
+                    return
+                }
+
+                do {
+                    if audioFile == nil {
+                        audioFile = try AVAudioFile(
+                            forWriting: outputURL,
+                            settings: pcmBuffer.format.settings,
+                            commonFormat: pcmBuffer.format.commonFormat,
+                            interleaved: pcmBuffer.format.isInterleaved
+                        )
+                    }
+                    try audioFile?.write(from: pcmBuffer)
+                } catch {
+                    if resumeState.consume() {
+                        continuation.resume(throwing: AgentVoiceSynthesisError.synthesisFailed(
+                            error.localizedDescription
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
+    private static func resolveVoice(
+        speaker: String?,
+        language: String?
+    ) -> AVSpeechSynthesisVoice? {
+        let voices = AVSpeechSynthesisVoice.speechVoices()
+        if let speaker = speaker?.nilIfBlank,
+           let match = voices.first(where: {
+               $0.name.caseInsensitiveCompare(speaker) == .orderedSame
+           }) {
+            return match
+        }
+        if let language = language?.nilIfBlank {
+            let prefix = language.lowercased()
+            if let match = voices.first(where: {
+                $0.language.lowercased().hasPrefix(prefix)
+            }) {
+                return match
+            }
+            return AVSpeechSynthesisVoice(language: language)
+        }
+        return nil
+    }
 }
+
+private final class SynthesisResumeGuard: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didResume = false
+
+    func consume() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !didResume else { return false }
+        didResume = true
+        return true
+    }
+}
+#endif

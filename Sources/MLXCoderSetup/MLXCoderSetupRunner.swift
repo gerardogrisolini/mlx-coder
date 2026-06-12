@@ -525,7 +525,7 @@ public enum MLXCoderSetupRunner {
         existingSettings: AgentVoiceSettingsManifest?
     ) throws -> AgentVoiceSettingsManifest? {
         let shouldEnableVoice = try promptYesNo(
-            "Enable local voice tools?",
+            "Enable voice tools?",
             defaultValue: existingSettings?.isConfigured == true
         )
         guard shouldEnableVoice else {
@@ -536,9 +536,9 @@ public enum MLXCoderSetupRunner {
         print(
             """
 
-            Voice uses a local Swift executable, mlx-voice-transcriber.
-            It provides speech-to-text with WhisperKit and text-to-speech with macOS voices.
-            No external API key is required.
+            Voice uses the built-in macOS speech frameworks.
+            Speech-to-text uses SFSpeechRecognizer and text-to-speech uses AVSpeechSynthesizer.
+            No external executable or API key is required.
 
             """
         )
@@ -546,23 +546,14 @@ public enum MLXCoderSetupRunner {
         print(
             """
 
-            Voice uses a local Swift executable, mlx-voice-transcriber.
+            Voice uses the built-in Apple speech frameworks.
             Audio generation is available only on macOS and will not be enabled on this platform.
-            No external API key is required.
+            No external executable or API key is required.
 
             """
         )
         #endif
 
-        let executablePath = try resolvedVoiceExecutableURL(existingSettings: existingSettings).path
-        AgentOutput.standardError.writeString("Voice executable: \(executablePath)\n")
-
-        let modelID = try selectVoiceSetupOption(
-            title: "Voice transcription model",
-            options: voiceTranscriptionModelOptions,
-            defaultValue: existingSettings?.modelID.nilIfBlank
-                ?? AgentVoiceSettingsManifest.defaultModelID
-        )
         let language = try selectVoiceSetupOption(
             title: "Voice language",
             options: voiceLanguageOptions,
@@ -582,25 +573,10 @@ public enum MLXCoderSetupRunner {
 
         return AgentVoiceSettingsManifest(
             enabled: true,
-            modelID: modelID,
-            executablePath: executablePath,
             language: language,
             speaker: speaker
         )
     }
-
-    private static let voiceTranscriptionModelOptions: [VoiceSetupOption] = [
-        VoiceSetupOption(
-            value: "tiny",
-            title: "Whisper tiny",
-            detail: "fastest startup and short prompts"
-        ),
-        VoiceSetupOption(
-            value: "large-v3-v20240930_626MB",
-            title: "Whisper large-v3",
-            detail: "best multilingual accuracy, slower first run"
-        )
-    ]
 
     private static let voiceLanguageOptions: [VoiceSetupOption] = [
         VoiceSetupOption(value: "it", title: "Italiano", aliases: ["italian"]),
@@ -657,132 +633,6 @@ public enum MLXCoderSetupRunner {
             return option.value
         }
         throw MLXCoderSetupError.invalidChoice(value)
-    }
-
-    private static func resolvedVoiceExecutableURL(
-        existingSettings: AgentVoiceSettingsManifest?
-    ) throws -> URL {
-        if let installedURL = installedVoiceExecutableURL(existingSettings: existingSettings) {
-            return installedURL
-        }
-        if let packageRoot = detectedPackageRootURL() {
-            return try buildLocalVoiceExecutable(packageRoot: packageRoot)
-        }
-        throw MLXCoderSetupError.voiceToolExecutableNotFound
-    }
-
-    private static func installedVoiceExecutableURL(
-        existingSettings: AgentVoiceSettingsManifest?
-    ) -> URL? {
-        for url in installedVoiceExecutableCandidates(existingSettings: existingSettings) {
-            if isExecutableFile(url) {
-                return url
-            }
-        }
-        return nil
-    }
-
-    private static func installedVoiceExecutableCandidates(
-        existingSettings: AgentVoiceSettingsManifest?
-    ) -> [URL] {
-        var candidates: [URL] = []
-        if let executableDirectory = Bundle.main.executableURL?.deletingLastPathComponent() {
-            candidates.append(
-                executableDirectory.appendingPathComponent(
-                    AgentVoiceSettingsManifest.defaultExecutablePath
-                )
-            )
-        }
-        if let pathURL = executableURLFromPATH(named: AgentVoiceSettingsManifest.defaultExecutablePath) {
-            candidates.append(pathURL)
-        }
-        if let existingPath = existingSettings?.executablePath.nilIfBlank,
-           existingPath.contains("/") {
-            candidates.append(URL(fileURLWithPath: existingPath))
-        }
-        return uniqueURLs(candidates)
-    }
-
-    private static func buildLocalVoiceExecutable(packageRoot: URL) throws -> URL {
-        let voicePackageURL = packageRoot.appendingPathComponent(
-            "Tools/MLXVoiceTranscriber",
-            isDirectory: true
-        )
-        let executableURL = voicePackageURL
-            .appendingPathComponent(".build/release")
-            .appendingPathComponent(AgentVoiceSettingsManifest.defaultExecutablePath)
-
-        AgentOutput.standardError.writeString(
-            """
-            Building local voice executable...
-              cd \(voicePackageURL.path)
-              swift build -c release
-
-            """
-        )
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["swift", "build", "-c", "release"]
-        process.currentDirectoryURL = voicePackageURL
-        process.standardOutput = FileHandle.standardError
-        process.standardError = FileHandle.standardError
-        try process.run()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            throw MLXCoderSetupError.voiceToolBuildFailed(process.terminationStatus)
-        }
-        guard isExecutableFile(executableURL) else {
-            throw MLXCoderSetupError.voiceToolExecutableMissing(executableURL.path)
-        }
-        return executableURL
-    }
-
-    private static func detectedPackageRootURL() -> URL? {
-        var candidates: [URL] = [
-            URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
-        ]
-        if let executableURL = Bundle.main.executableURL {
-            candidates.append(executableURL.deletingLastPathComponent())
-        }
-
-        for candidate in candidates {
-            var current = candidate.standardizedFileURL
-            while current.path != "/" {
-                let packageManifest = current.appendingPathComponent("Package.swift")
-                let voicePackage = current.appendingPathComponent("Tools/MLXVoiceTranscriber/Package.swift")
-                if FileManager.default.fileExists(atPath: packageManifest.path),
-                   FileManager.default.fileExists(atPath: voicePackage.path) {
-                    return current
-                }
-                current.deleteLastPathComponent()
-            }
-        }
-        return nil
-    }
-
-    private static func executableURLFromPATH(named executableName: String) -> URL? {
-        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
-        for directory in path.split(separator: ":").map(String.init) {
-            let url = URL(fileURLWithPath: directory, isDirectory: true)
-                .appendingPathComponent(executableName)
-            if isExecutableFile(url) {
-                return url
-            }
-        }
-        return nil
-    }
-
-    private static func isExecutableFile(_ url: URL) -> Bool {
-        FileManager.default.isExecutableFile(atPath: url.path)
-    }
-
-    private static func uniqueURLs(_ urls: [URL]) -> [URL] {
-        var seen = Set<String>()
-        return urls.filter { url in
-            seen.insert(url.standardizedFileURL.path).inserted
-        }
     }
 
     private static func reconfigureExistingProviders(
@@ -2065,9 +1915,6 @@ private enum MLXCoderSetupError: LocalizedError {
     case noRemoteModelsReturned
     case chatGPTSubscriptionUnsupported
     case anthropicSubscriptionUnsupported
-    case voiceToolExecutableNotFound
-    case voiceToolBuildFailed(Int32)
-    case voiceToolExecutableMissing(String)
 
     var errorDescription: String? {
         switch self {
@@ -2087,12 +1934,6 @@ private enum MLXCoderSetupError: LocalizedError {
             return "ChatGPT Subscription setup is available on macOS."
         case .anthropicSubscriptionUnsupported:
             return "Claude Subscription setup is available on macOS."
-        case .voiceToolExecutableNotFound:
-            return "Local voice executable was not found. Install or update mlx-coder so mlx-voice-transcriber is available next to mlx-coder or in PATH."
-        case let .voiceToolBuildFailed(exitCode):
-            return "Local voice tool build failed with exit code \(exitCode)."
-        case let .voiceToolExecutableMissing(path):
-            return "Local voice tool build completed, but the executable was not found: \(path)"
         }
     }
 }

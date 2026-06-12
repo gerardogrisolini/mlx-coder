@@ -4,7 +4,11 @@
 //
 
 import Foundation
+#if canImport(Speech)
+import Speech
+#endif
 
+public typealias AgentVoiceToolProgress = @Sendable (String) async -> Void
 public typealias AgentVoiceTranscriptionProgress = AgentVoiceToolProgress
 
 public struct AgentVoiceAudioInput: Equatable, Sendable {
@@ -55,53 +59,121 @@ public actor AgentVoiceTranscriptionService {
             throw AgentVoiceTranscriptionError.missingAudioFile(audio.fileURL.path)
         }
 
-        let result = try await AgentVoiceToolRunner.run(
-            executablePath: settings.executablePath,
-            arguments: Self.transcriptionArguments(settings: settings, audioURL: audio.fileURL),
-            progress: progress
-        )
-        guard result.exitCode == 0 else {
-            throw AgentVoiceTranscriptionError.toolFailed(
-                result.exitCode,
-                AgentVoiceToolRunner.errorDetail(from: result.stderr)
-            )
+        #if canImport(Speech)
+        await progress?("Preparing speech recognizer")
+        try await Self.requestAuthorization()
+
+        let locale = Self.locale(for: settings.language)
+        guard let recognizer = SFSpeechRecognizer(locale: locale) else {
+            throw AgentVoiceTranscriptionError.unsupportedLanguage(locale.identifier)
+        }
+        guard recognizer.isAvailable else {
+            throw AgentVoiceTranscriptionError.recognizerUnavailable
         }
 
-        let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        await progress?("Transcribing audio")
+        let transcript = try await Self.recognize(
+            fileURL: audio.fileURL,
+            recognizer: recognizer
+        )
+        let output = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !output.isEmpty else {
             throw AgentVoiceTranscriptionError.emptyTranscript
         }
-
-        if let data = output.data(using: .utf8),
-           let decoded = try? JSONDecoder().decode(LocalVoiceTranscriptionResponse.self, from: data),
-           let text = decoded.text.nilIfBlank {
-            return text
-        }
-
-        throw AgentVoiceTranscriptionError.invalidToolOutput(output)
+        return output
+        #else
+        throw AgentVoiceTranscriptionError.unsupportedPlatform
+        #endif
     }
 
-    public nonisolated static func transcriptionArguments(
-        settings: AgentVoiceSettingsManifest,
-        audioURL: URL
-    ) -> [String] {
-        var arguments = [
-            "transcribe",
-            "--audio",
-            audioURL.path,
-            "--model",
-            settings.transcriptionModelID,
-            "--format",
-            "json"
-        ]
-        if let language = settings.language?.nilIfBlank {
-            arguments.append(contentsOf: ["--language", language])
+    #if canImport(Speech)
+    private static func requestAuthorization() async throws {
+        switch SFSpeechRecognizer.authorizationStatus() {
+        case .authorized:
+            return
+        case .notDetermined:
+            let status = await withCheckedContinuation { continuation in
+                SFSpeechRecognizer.requestAuthorization { status in
+                    continuation.resume(returning: status)
+                }
+            }
+            guard status == .authorized else {
+                throw AgentVoiceTranscriptionError.authorizationDenied
+            }
+        case .denied, .restricted:
+            throw AgentVoiceTranscriptionError.authorizationDenied
+        @unknown default:
+            throw AgentVoiceTranscriptionError.authorizationDenied
         }
-        return arguments
     }
 
-    public nonisolated static func voiceProgressMessage(from line: String) -> String? {
-        AgentVoiceToolRunner.progressMessage(from: line)
+    private static func recognize(
+        fileURL: URL,
+        recognizer: SFSpeechRecognizer
+    ) async throws -> String {
+        let request = SFSpeechURLRecognitionRequest(url: fileURL)
+        request.shouldReportPartialResults = false
+        if recognizer.supportsOnDeviceRecognition {
+            request.requiresOnDeviceRecognition = true
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let resumeState = ResumeGuard()
+            recognizer.recognitionTask(with: request) { result, error in
+                if let error {
+                    if resumeState.consume() {
+                        continuation.resume(throwing: AgentVoiceTranscriptionError.recognitionFailed(
+                            error.localizedDescription
+                        ))
+                    }
+                    return
+                }
+                guard let result, result.isFinal else {
+                    return
+                }
+                if resumeState.consume() {
+                    continuation.resume(returning: result.bestTranscription.formattedString)
+                }
+            }
+        }
+    }
+
+    private static func locale(for language: String?) -> Locale {
+        guard let language = language?.nilIfBlank?.lowercased() else {
+            return Locale(identifier: "en-US")
+        }
+        if let mapped = localeIdentifiersByLanguage[language] {
+            return Locale(identifier: mapped)
+        }
+        return Locale(identifier: language)
+    }
+
+    private static let localeIdentifiersByLanguage: [String: String] = [
+        "it": "it-IT",
+        "en": "en-US",
+        "es": "es-ES",
+        "fr": "fr-FR",
+        "de": "de-DE",
+        "pt": "pt-BR",
+        "ja": "ja-JP",
+        "ko": "ko-KR",
+        "zh": "zh-CN",
+        "ru": "ru-RU"
+    ]
+    #endif
+}
+
+/// Ensures a single resume of the recognition continuation.
+private final class ResumeGuard: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didResume = false
+
+    func consume() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !didResume else { return false }
+        didResume = true
+        return true
     }
 }
 
@@ -109,8 +181,11 @@ public enum AgentVoiceTranscriptionError: LocalizedError, Sendable, Equatable {
     case missingConfiguration
     case missingAudioFile(String)
     case emptyTranscript
-    case invalidToolOutput(String)
-    case toolFailed(Int32, String?)
+    case unsupportedPlatform
+    case unsupportedLanguage(String)
+    case recognizerUnavailable
+    case authorizationDenied
+    case recognitionFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -120,18 +195,16 @@ public enum AgentVoiceTranscriptionError: LocalizedError, Sendable, Equatable {
             return "Voice audio file does not exist: \(path)"
         case .emptyTranscript:
             return "Voice transcription returned no text."
-        case let .invalidToolOutput(output):
-            return "Voice transcription returned invalid output: \(output)"
-        case let .toolFailed(exitCode, detail):
-            if let detail = detail?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !detail.isEmpty {
-                return "Voice transcription failed with exit code \(exitCode): \(detail)"
-            }
-            return "Voice transcription failed with exit code \(exitCode)."
+        case .unsupportedPlatform:
+            return "Voice input is available only on Apple platforms."
+        case let .unsupportedLanguage(identifier):
+            return "Voice transcription does not support the language \(identifier)."
+        case .recognizerUnavailable:
+            return "The macOS speech recognizer is not available right now. Make sure the language is installed in System Settings."
+        case .authorizationDenied:
+            return "Speech recognition permission was denied. Enable it in System Settings → Privacy & Security → Speech Recognition."
+        case let .recognitionFailed(detail):
+            return "Voice transcription failed: \(detail)"
         }
     }
-}
-
-private struct LocalVoiceTranscriptionResponse: Decodable {
-    let text: String
 }

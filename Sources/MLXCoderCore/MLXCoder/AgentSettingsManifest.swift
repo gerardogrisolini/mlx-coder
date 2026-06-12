@@ -283,77 +283,33 @@ public struct AgentTelegramSettingsManifest: Codable, Equatable, Sendable {
 public struct AgentVoiceSettingsManifest: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case enabled
-        case provider
-        case executablePath
-        case transcriptionModelID
-        case modelID
         case language
         case speaker
     }
 
-    public enum Provider: String, Codable, Equatable, Sendable {
-        case local = "local"
-    }
-
-    public static let defaultProvider: Provider = .local
-    public static let defaultExecutablePath = "mlx-voice-transcriber"
-    public static let defaultTranscriptionModelID = "tiny"
     public static let defaultLanguage = "it"
     public static let defaultSpeaker = "Alice"
-    public static let defaultModelID = defaultTranscriptionModelID
 
     public let enabled: Bool
-    public let provider: Provider
-    public let executablePath: String
-    public let transcriptionModelID: String
     public let language: String?
     public let speaker: String?
 
     public init(
         enabled: Bool = false,
-        provider: Provider = Self.defaultProvider,
-        modelID: String = Self.defaultModelID,
-        executablePath: String = Self.defaultExecutablePath,
         language: String? = Self.defaultLanguage,
         speaker: String? = Self.defaultSpeaker
     ) {
-        let normalizedExecutablePath = executablePath.nilIfBlank ?? Self.defaultExecutablePath
-        let normalizedModelID = modelID.nilIfBlank ?? Self.defaultModelID
         let normalizedLanguage = language?.nilIfBlank
         let normalizedSpeaker = speaker?.nilIfBlank
-        let shouldStoreConfiguration = enabled
-            && !normalizedExecutablePath.isEmpty
-            && !normalizedModelID.isEmpty
-        self.enabled = shouldStoreConfiguration
-        self.provider = provider
-        self.executablePath = shouldStoreConfiguration
-            ? normalizedExecutablePath
-            : Self.defaultExecutablePath
-        self.transcriptionModelID = shouldStoreConfiguration
-            ? normalizedModelID
-            : Self.defaultModelID
-        self.language = shouldStoreConfiguration ? normalizedLanguage : nil
-        self.speaker = shouldStoreConfiguration ? normalizedSpeaker : nil
+        self.enabled = enabled
+        self.language = enabled ? normalizedLanguage : nil
+        self.speaker = enabled ? normalizedSpeaker : nil
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let providerValue = try container.decodeIfPresent(String.self, forKey: .provider)
-        let provider = providerValue.flatMap(Provider.init(rawValue:)) ?? Self.defaultProvider
-        let usesLegacyProvider = providerValue?.lowercased() == "openai"
-        let transcriptionModelID = try container.decodeIfPresent(
-            String.self,
-            forKey: .transcriptionModelID
-        ) ?? (usesLegacyProvider
-            ? Self.defaultModelID
-            : container.decodeIfPresent(String.self, forKey: .modelID))
-        ?? Self.defaultModelID
         self.init(
             enabled: try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false,
-            provider: provider,
-            modelID: transcriptionModelID,
-            executablePath: try container.decodeIfPresent(String.self, forKey: .executablePath)
-                ?? Self.defaultExecutablePath,
             language: try container.decodeIfPresent(String.self, forKey: .language),
             speaker: try container.decodeIfPresent(String.self, forKey: .speaker)
                 ?? Self.defaultSpeaker
@@ -363,9 +319,6 @@ public struct AgentVoiceSettingsManifest: Codable, Equatable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(enabled, forKey: .enabled)
-        try container.encode(provider, forKey: .provider)
-        try container.encode(executablePath, forKey: .executablePath)
-        try container.encode(transcriptionModelID, forKey: .transcriptionModelID)
         if let language {
             try container.encode(language, forKey: .language)
         }
@@ -374,15 +327,8 @@ public struct AgentVoiceSettingsManifest: Codable, Equatable, Sendable {
         }
     }
 
-    public var modelID: String {
-        transcriptionModelID
-    }
-
     public var isConfigured: Bool {
         enabled
-            && provider == .local
-            && executablePath.nilIfBlank != nil
-            && transcriptionModelID.nilIfBlank != nil
     }
 }
 

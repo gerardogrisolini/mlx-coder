@@ -21,11 +21,7 @@ jobs:
         run: |
           swift build -c release --disable-sandbox
 
-      - name: Build voice tool
-        run: |
-          swift build -c release --disable-sandbox --package-path Tools/MLXVoiceTranscriber
-
-      - name: Prepare Metal kernels
+            - name: Prepare Metal kernels
         run: |
           .build/release/mlx-server --prepare-metal
 
@@ -33,8 +29,8 @@ jobs:
         run: |
           mkdir -p dist
           cp .build/release/mlx-server dist/
-          cp .build/release/mlx-coder dist/
-          cp Tools/MLXVoiceTranscriber/.build/release/mlx-voice-transcriber dist/
+                    cp .build/release/mlx-coder dist/
+
 
           SERVER_BIN=$(python3 - <<'PY'
           import os
@@ -58,7 +54,7 @@ jobs:
           # Create archive
           cd dist
           tar czf mlx-server-${{ github.ref_name }}-macos-arm64.tar.gz \
-            mlx-server mlx-coder mlx-voice-transcriber \
+                        mlx-server mlx-coder \
             mlx.metallib mlx.metallib.manifest.json \
             features/
           cd ..
