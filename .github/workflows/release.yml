@@ -21,7 +21,7 @@ jobs:
         run: |
           swift build -c release --disable-sandbox
 
-            - name: Prepare Metal kernels
+      - name: Prepare Metal kernels
         run: |
           .build/release/mlx-server --prepare-metal
 
@@ -29,8 +29,7 @@ jobs:
         run: |
           mkdir -p dist
           cp .build/release/mlx-server dist/
-                    cp .build/release/mlx-coder dist/
-
+          cp .build/release/mlx-coder dist/
 
           SERVER_BIN=$(python3 - <<'PY'
           import os
