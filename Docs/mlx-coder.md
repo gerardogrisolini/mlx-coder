@@ -36,10 +36,10 @@ Create standalone support files and configure providers/models:
 swift run -c release mlx-coder --setup
 ```
 
-Create or update agent profiles:
+Create or update agent profiles (last section of `--setup`):
 
 ```bash
-swift run -c release mlx-coder --setup-agents
+swift run -c release mlx-coder --setup
 ```
 
 The first setup creates files under `~/.mlx-coder/`. During setup you can also
@@ -57,13 +57,12 @@ store those settings in `settings.json`.
 ## Command Line Options
 
 ```text
-mlx-coder [--setup] [--setup-agents] [--reset] [--acp] [--agent NAME] [--model MODEL_ID] [--cwd PATH] [--skills LIST]
+mlx-coder [--setup] [--reset] [--acp] [--agent NAME] [--model MODEL_ID] [--cwd PATH] [--skills LIST]
 ```
 
 Important options:
 
-- `--setup`: create standalone support files and configure providers/models, then exit.
-- `--setup-agents`: create or update `~/.mlx-coder/agents.json`, then exit.
+- `--setup`: create standalone support files and configure providers, models, and agents, then exit. The agent profiles are configured in the last section of the setup menu.
 - `--reset`: delete managed files in `~/.mlx-coder/`, then exit.
 - `--acp`: run ACP JSON-RPC over stdio instead of terminal chat.
 - `--agent NAME`: select an agent profile from `agents.json`; defaults to `Default` when omitted.
@@ -88,10 +87,11 @@ Legacy `SWIFTMLX_AGENT_*` environment names are still accepted.
 
 ## Agent Profiles
 
-Agent profiles live in `~/.mlx-coder/agents.json` and are managed with:
+Agent profiles live in `~/.mlx-coder/agents.json` and are managed in the Agents
+section of the setup menu:
 
 ```bash
-swift run -c release mlx-coder --setup-agents
+swift run -c release mlx-coder --setup
 ```
 
 The setup can create the recommended profiles:
@@ -375,9 +375,8 @@ swift run -c release mlx-server --coder \
 
 1. Run setup once:
 
-   ```bash
+      ```bash
    swift run -c release mlx-coder --setup
-   swift run -c release mlx-coder --setup-agents
    ```
 
 2. Start in the target project:

@@ -303,7 +303,7 @@ extension TerminalChat {
             let title = AgentOutput.standardErrorIsTerminal
                 ? "\u{1B}[90m🤔 Thinking:\u{1B}[0m"
                 : "🤔 Thinking:"
-            writeChatError("\n\(title)\n")
+            writeChatError("\(title)\n")
             thoughtOutputEndsWithNewline = true
         }
         let renderedThought = thoughtMarkdownFormatter.consume(delta)
@@ -352,7 +352,7 @@ extension TerminalChat {
                 return "\(prefix)\(line)"
             }
             .joined(separator: "\n")
-        writeChatError("\n\(renderedLines)\n")
+        writeChatError("\(renderedLines)\n\n")
         assistantContentNeedsLineBreakBeforeTool = false
     }
 
@@ -719,27 +719,23 @@ extension TerminalChat {
         let icon = MLXCoderACPBridge.toolIcon(for: toolCall.name)
         guard let target = MLXCoderACPBridge.displayToolTarget(for: toolCall),
               title.hasSuffix(target) else {
-            return [compactToolHeaderLine("\(icon)  \(title) \(statusIcon)")]
+            return ["\(icon)  \(title) \(statusIcon)"]
         }
 
         let action = title
             .dropLast(target.count)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !action.isEmpty else {
-            return [compactToolHeaderLine("\(icon)  \(title) \(statusIcon)")]
+            return ["\(icon)  \(title) \(statusIcon)"]
         }
         return [
-            compactToolHeaderLine("\(icon)  \(action):"),
+            "\(icon)  \(action):",
             compactToolStatusLine(
                 target: target,
                 statusIcon: statusIcon,
                 contentInsetWidth: contentInsetWidth
             )
         ]
-    }
-
-    private static func compactToolHeaderLine(_ text: String) -> String {
-        text
     }
 
     static func compactToolStatusLine(
@@ -751,7 +747,7 @@ extension TerminalChat {
         let suffixWidth = displayWidth(statusIcon)
         let textWidthLimit = max(1, columns - suffixWidth - 1)
         let fittedTarget = fitDisplayWidth(target, width: textWidthLimit)
-        return "\(fittedTarget) \(statusIcon)"
+        return "\(fittedTarget) \(statusIcon)\n"
     }
 
     private static func renderedTerminalRowCount(

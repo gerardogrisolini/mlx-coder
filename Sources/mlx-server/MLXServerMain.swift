@@ -876,7 +876,7 @@ private enum MLXServerHelp {
 
     Run mlx-server --setup once to create ~/.mlx-server/settings.json.
     Run mlx-server --setup-models directly to create or update ~/.mlx-server/models.json and download MLX models.
-    Run mlx-coder --setup-agents to create or update mlx-coder profiles in ~/.mlx-coder/agents.json.
+        Run mlx-coder --setup to create or update mlx-coder profiles in ~/.mlx-coder/agents.json (Agents section).
     Run mlx-server --setup-agents to configure Codex, Xcode, and Claude Code integrations.
     Run mlx-server --reset to delete managed files in ~/.mlx-server.
     Run mlx-server --reset-disk-cache to empty the configured disk KV cache directory. Default: ~/.mlx-server/KVCaches.

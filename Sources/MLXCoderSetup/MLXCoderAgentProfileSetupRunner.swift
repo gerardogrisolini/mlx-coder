@@ -7,7 +7,6 @@ import Foundation
 import MLXCoderCore
 
 public enum MLXCoderAgentProfileSetupRunner {
-    public static let option = "--setup-agents"
     private static let interactiveLineReader = TerminalInteractiveLineReader()
     static let retiredRecommendedAgentNames = Set(["Feature", "Research"].map(agentSetupNameKey))
     static let retiredRecommendedAgentIDs = Set([
@@ -26,16 +25,7 @@ public enum MLXCoderAgentProfileSetupRunner {
         case configuredModel(String)
     }
 
-    public static func shouldRunSetup(arguments: [String]) -> Bool {
-        arguments.dropFirst().contains(option)
-    }
-
-    public static func argumentsAfterRemovingSetup(arguments: [String]) -> [String] {
-        arguments.filter { $0 != option }
-    }
-
-    public static func run(arguments: [String]) throws {
-        _ = arguments
+        public static func configureInteractively() throws {
         guard TerminalRawInput.supportsInteractiveInput() else {
             throw MLXCoderAgentProfileSetupError.nonInteractiveTerminal
         }
@@ -622,8 +612,8 @@ enum MLXCoderAgentProfileSetupError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .nonInteractiveTerminal:
-            return "mlx-coder --setup-agents requires an interactive terminal."
+                case .nonInteractiveTerminal:
+            return "mlx-coder agents setup requires an interactive terminal."
         case .inputClosed:
             return "Input closed during mlx-coder agents setup."
         case let .unableToCreateGlobalAgents(url):

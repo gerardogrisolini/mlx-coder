@@ -172,12 +172,27 @@ public enum MLXCoderSetupRunner {
                 section: .telegram,
                 detail: manifest?.telegram?.isEnabled == true ? "enabled" : "disabled"
             ),
-            SetupSectionOption(
+                        SetupSectionOption(
                 section: .voice,
                 detail: manifest?.voice?.isConfigured == true ? "enabled" : "disabled"
             ),
+            SetupSectionOption(
+                section: .agents,
+                detail: agentsSetupDetail()
+            ),
             SetupSectionOption(section: .finish, detail: nil)
         ]
+    }
+
+        private static func agentsSetupDetail() -> String {
+        let url = AgentProfileStore.agentsManifestURL()
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return "not configured"
+        }
+        guard let agents = try? AgentProfileStore.loadRequired() else {
+            return "configured"
+        }
+        return "\(agents.count) agents"
     }
 
     private static func providersAndModelsSetupDetail(
@@ -234,8 +249,11 @@ public enum MLXCoderSetupRunner {
             return try configureDefaultThinking(in: requireExistingManifest(manifest))
         case .telegram:
             return try await configureTelegram(in: requireExistingManifest(manifest))
-        case .voice:
+                case .voice:
             return try configureVoice(in: requireExistingManifest(manifest))
+        case .agents:
+            try MLXCoderAgentProfileSetupRunner.configureInteractively()
+            return try requireExistingManifest(manifest)
         case .finish:
             return try requireExistingManifest(manifest)
         }
@@ -1811,8 +1829,9 @@ private enum SetupSection: Equatable {
     case providersAndModels
     case defaultModel
     case defaultThinking
-    case telegram
+        case telegram
     case voice
+    case agents
     case finish
 
     var title: String {
@@ -1827,6 +1846,8 @@ private enum SetupSection: Equatable {
             return "Telegram remote control"
         case .voice:
             return "Local voice tools"
+        case .agents:
+            return "Agents"
         case .finish:
             return "Finish setup"
         }
@@ -1834,7 +1855,7 @@ private enum SetupSection: Equatable {
 
     var requiresConfiguredModels: Bool {
         switch self {
-        case .providersAndModels, .finish:
+        case .providersAndModels, .agents, .finish:
             return false
         case .defaultModel, .defaultThinking, .telegram, .voice:
             return true
@@ -1855,8 +1876,10 @@ private enum SetupSection: Equatable {
             return ["thinking", "default thinking", "reasoning", "thinking default"]
         case .telegram:
             return ["telegram", "remote control", "bot"]
-        case .voice:
+                case .voice:
             return ["voice", "local voice", "voice tools", "speech"]
+        case .agents:
+            return ["agents", "agent", "profiles", "agent profiles"]
         case .finish:
             return ["finish", "done", "exit", "quit", "end", "stop"]
         }

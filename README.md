@@ -23,7 +23,6 @@ Then set up configuration and models:
 
 ```bash
 mlx-coder --setup
-mlx-coder --setup-agents
 ```
 
 Upgrade with:
@@ -55,7 +54,6 @@ If your goal is the **standalone local coding agent**, start with **`mlx-coder`*
 
 ```bash
 swift run -c release mlx-coder --setup
-swift run -c release mlx-coder --setup-agents
 swift run -c release mlx-coder --cwd /path/to/project
 ```
 
@@ -125,7 +123,6 @@ Common commands:
 
 ```bash
 swift run -c release mlx-coder --setup
-swift run -c release mlx-coder --setup-agents
 swift run -c release mlx-coder --agent Feature --cwd /path/to/project
 swift run -c release mlx-coder --acp --cwd /path/to/project
 ```
@@ -300,7 +297,6 @@ swift build -c release --product mlx-server
 
 swift run -c release mlx-coder --help
 swift run -c release mlx-coder --setup
-swift run -c release mlx-coder --setup-agents
 swift run -c release mlx-coder --cwd /path/to/project
 swift run -c release mlx-coder --acp --cwd /path/to/project
 swift run -c release mlx-coder --reset

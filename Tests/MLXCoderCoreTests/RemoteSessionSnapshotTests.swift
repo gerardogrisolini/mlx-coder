@@ -253,6 +253,88 @@ struct RemoteSessionSnapshotTests {
     }
 
     @Test
+    func streamResponsesEmitsOutputItemMessageTextAfterReasoning() async throws {
+        let response = """
+        data: {"type":"response.reasoning_text.delta","delta":"thinking"}
+
+        data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","content":[{"type":"output_text","text":"Visible answer"}]}}
+
+        data: {"type":"response.completed","response":{"output":[]}}
+
+        """
+        let urlSession = RemoteRequestCapturingURLProtocol.urlSession(
+            responseBody: Data(response.utf8)
+        )
+        let client = RemoteGenerationClient(
+            configuration: remoteStreamingConfiguration(),
+            provider: AgentRemoteProvider(
+                name: "Unit Test",
+                baseURL: "https://unit.test/v1",
+                modelID: "unit-model",
+                chatEndpoint: .responses
+            ),
+            apiKey: nil,
+            urlSession: urlSession
+        )
+        let capturedEvents = CapturedDirectAgentEvents()
+
+        let result = try await client.streamResponses(
+            messages: [["role": "user", "content": "hi"]],
+            sessionID: "session-output-item-message",
+            allowedToolNames: [],
+            thinkingSelection: nil,
+            onEvent: { event in
+                capturedEvents.append(event)
+            }
+        )
+
+        #expect(result.text == "Visible answer")
+        #expect(capturedEvents.thoughtText() == "thinking")
+        #expect(capturedEvents.contentText() == "Visible answer")
+    }
+
+    @Test
+    func streamChatCompletionsPromotesReasoningContentAfterThinkCloseToContent() async throws {
+        let response = """
+        data: {"choices":[{"delta":{"reasoning_content":"Analisi.</think>"}}]}
+
+        data: {"choices":[{"delta":{"reasoning_content":"Risposta visibile."},"finish_reason":"stop"}]}
+
+        data: [DONE]
+
+        """
+        let urlSession = RemoteRequestCapturingURLProtocol.urlSession(
+            responseBody: Data(response.utf8)
+        )
+        let client = RemoteGenerationClient(
+            configuration: remoteStreamingConfiguration(),
+            provider: AgentRemoteProvider(
+                name: "Unit Test",
+                baseURL: "https://unit.test/v1",
+                modelID: "unit-model",
+                chatEndpoint: .chatCompletions
+            ),
+            apiKey: nil,
+            urlSession: urlSession
+        )
+        let capturedEvents = CapturedDirectAgentEvents()
+
+        let result = try await client.streamChatCompletions(
+            messages: [["role": "user", "content": "hi"]],
+            sessionID: "session-reasoning-content-boundary",
+            allowedToolNames: [],
+            thinkingSelection: nil,
+            onEvent: { event in
+                capturedEvents.append(event)
+            }
+        )
+
+        #expect(result.text == "Risposta visibile.")
+        #expect(capturedEvents.thoughtText() == "Analisi.")
+        #expect(capturedEvents.contentText() == "Risposta visibile.")
+    }
+
+    @Test
     func chatTemplateThinkingPayloadIncludesReasoningEffort() async throws {
         let response = """
         data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}
@@ -363,6 +445,184 @@ struct RemoteSessionSnapshotTests {
     @Test
     func chatGPTSubscriptionWebSocketHasNoDefaultResponseIdleTimeout() {
         #expect(ChatGPTSubscriptionResponsesClient.webSocketIdleTimeoutNanoseconds == nil)
+    }
+
+    @Test
+    func chatCompletionDeltaContentPartsAreParsedAsContent() {
+        let events = RemoteGenerationClient.parseChatCompletionStreamEvent([
+            "choices": [
+                [
+                    "delta": [
+                        "content": [
+                            ["type": "text", "text": "Hello "],
+                            ["type": "text", "text": "world"]
+                        ],
+                        "reasoning_content": "thinking..."
+                    ]
+                ]
+            ]
+        ])
+        var contentText = ""
+        var reasoningText = ""
+        for event in events {
+            switch event {
+            case let .content(delta):
+                contentText += delta
+            case let .reasoning(delta):
+                reasoningText += delta
+            default:
+                continue
+            }
+        }
+        #expect(contentText == "Hello world")
+        #expect(reasoningText == "thinking...")
+    }
+
+    @Test
+    func chatCompletionFinalMessageContentIsParsedAsFinalContent() {
+        let events = RemoteGenerationClient.parseChatCompletionStreamEvent([
+            "choices": [
+                [
+                    "finish_reason": "stop",
+                    "message": [
+                        "role": "assistant",
+                        "content": "Final answer"
+                    ]
+                ]
+            ]
+        ])
+        var finalContent: String?
+        for event in events {
+            if case let .finalContent(text) = event {
+                finalContent = text
+            }
+        }
+        #expect(finalContent == "Final answer")
+    }
+
+    @Test
+    func responsesOutputTextDoneIsParsedAsFinalContent() {
+        let events = RemoteGenerationClient.parseResponsesStreamEvent([
+            "type": "response.output_text.done",
+            "text": "Final answer"
+        ])
+        var finalContent: String?
+        for event in events {
+            if case let .finalContent(text) = event {
+                finalContent = text
+            }
+        }
+        #expect(finalContent == "Final answer")
+    }
+
+    @Test
+    func responsesCompletedMessageItemIsParsedAsFinalContent() {
+        let events = RemoteGenerationClient.parseResponsesStreamEvent([
+            "type": "response.completed",
+            "response": [
+                "output": [
+                    [
+                        "type": "message",
+                        "content": [
+                            ["type": "output_text", "text": "Final answer"]
+                        ]
+                    ]
+                ]
+            ]
+        ])
+        var finalContent: String?
+        var sawStop = false
+        for event in events {
+            switch event {
+            case let .finalContent(text):
+                finalContent = text
+            case .stop:
+                sawStop = true
+            default:
+                continue
+            }
+        }
+        #expect(finalContent == "Final answer")
+        #expect(sawStop)
+    }
+
+    @Test
+    func contentTextExtractsNestedContentPartObjects() {
+        let text = RemoteGenerationClient.contentText(from: [
+            ["type": "text_delta", "content": "Visible "],
+            ["type": "output_text", "text": "answer"]
+        ] as [[String: Any]])
+
+        #expect(text == "Visible answer")
+    }
+
+    @Test
+    func responsesContentPartDeltaIsParsedAsContent() {
+        let events = RemoteGenerationClient.parseResponsesStreamEvent([
+            "type": "response.content_part.delta",
+            "delta": [
+                "type": "output_text_delta",
+                "content": "Visible answer"
+            ]
+        ])
+        var contentText = ""
+        for event in events {
+            if case let .content(delta) = event {
+                contentText += delta
+            }
+        }
+
+        #expect(contentText == "Visible answer")
+    }
+
+    @Test
+    func responsesOutputItemDoneMessageIsParsedAsFinalContent() {
+        let events = RemoteGenerationClient.parseResponsesStreamEvent([
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": [
+                "type": "agent_message",
+                "content": [
+                    ["type": "output_text", "text": "Visible answer"]
+                ]
+            ]
+        ])
+        var finalContent: String?
+        for event in events {
+            if case let .finalContent(text) = event {
+                finalContent = text
+            }
+        }
+
+        #expect(finalContent == "Visible answer")
+    }
+
+    @Test
+    func unstreamedRemainderDeduplicatesFinalContent() {
+        #expect(
+            RemoteGenerationClient.unstreamedRemainder(
+                of: "Hello world",
+                alreadyStreamed: ""
+            ) == "Hello world"
+        )
+        #expect(
+            RemoteGenerationClient.unstreamedRemainder(
+                of: "Hello world",
+                alreadyStreamed: "Hello world"
+            ) == ""
+        )
+        #expect(
+            RemoteGenerationClient.unstreamedRemainder(
+                of: "Hello world",
+                alreadyStreamed: "Hello"
+            ) == " world"
+        )
+        #expect(
+            RemoteGenerationClient.unstreamedRemainder(
+                of: "Hello world\n",
+                alreadyStreamed: "Hello world"
+            ) == ""
+        )
     }
 
     @Test
@@ -965,6 +1225,39 @@ struct RemoteSessionSnapshotTests {
         return messages
     }
 #endif
+}
+
+private final class CapturedDirectAgentEvents: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [DirectAgentEvent] = []
+
+    func append(_ event: DirectAgentEvent) {
+        lock.lock()
+        events.append(event)
+        lock.unlock()
+    }
+
+    func contentText() -> String {
+        lockedEvents().reduce(into: "") { text, event in
+            if case let .content(delta) = event {
+                text += delta
+            }
+        }
+    }
+
+    func thoughtText() -> String {
+        lockedEvents().reduce(into: "") { text, event in
+            if case let .thought(delta) = event {
+                text += delta
+            }
+        }
+    }
+
+    private func lockedEvents() -> [DirectAgentEvent] {
+        lock.lock()
+        defer { lock.unlock() }
+        return events
+    }
 }
 
 private final class CapturedSubscriptionEvents: @unchecked Sendable {

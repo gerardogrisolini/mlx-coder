@@ -144,7 +144,7 @@ extension MLXCoderACPBridge {
 //        default:
 //            return "\(toolCall.name) \(displayToolTarget(for: toolCall) ?? toolCall.name)"
 //        }
-        "\(toolKind(for: toolCall.name)) \(displayToolTarget(for: toolCall) ?? toolCall.name)"
+        "\(toolKind(for: toolCall.name)) \(displayToolTarget(for: toolCall) ?? "")"
     }
 
     public static func toolKind(for toolName: String) -> String {
