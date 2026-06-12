@@ -156,19 +156,6 @@ Useful TUI commands:
 - `sessions/`: saved per-project session snapshots.
 - `features/`: generated Swift feature packages.
 
-Local voice support is provided by the separate Swift package under
-`Tools/MLXVoiceTranscriber`, which builds the `mlx-voice-transcriber`
-executable for speech-to-text and text-to-speech. Homebrew installs that
-executable alongside `mlx-coder`; in a source checkout, `mlx-coder --setup` can
-build it automatically as a development fallback. During setup, the speech model
-and language are selected from numbered lists; on macOS, the system voice is
-selected too. The default speech model is `tiny` for a faster first run; choose
-`large-v3-v20240930_626MB` when you prefer higher transcription accuracy and can
-accept the slower initial download and load time. Speech synthesis uses a
-shorter spoken version for long answers, while the full text remains visible in
-the TUI. Audio generation is macOS-only; Linux builds compile without enabling
-`/speak` or Telegram voice replies.
-
 For a fully local model backend, prefer the `mlx-server --coder` workflow described above.
 
 ## mlx-server Overview
