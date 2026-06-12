@@ -118,7 +118,7 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
         )
     }
 
-    public func closeSession(id: String) {
+    public func closeSession(id: String) async {
         sessions.removeValue(forKey: id)
     }
 

@@ -407,6 +407,40 @@ func diskKVCacheSkipsPersistenceForUnchangedSessionTranscript() throws {
 }
 
 @Test
+func diskKVCacheCommitPersistsContextTokenCount() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("mlx-server-context-tokens-\(UUID().uuidString)", isDirectory: true)
+    defer {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let store = MLXServerDiskKVCacheStore(
+        configuration: MLXServerDiskKVCacheConfiguration(
+            directory: directory,
+            limitBytes: 1_000_000
+        )
+    )
+    let key = testChatSessionCacheKey(sessionKey: "session-a")
+    let target = try #require(try store.preparePersistenceTarget(for: key))
+    try Data(repeating: 1, count: 16).write(to: target.temporaryURL)
+
+    try store.commitPersistedSession(
+        key: key,
+        toolsSignature: "none",
+        contextSignature: "none",
+        fingerprints: [testFingerprint("first")],
+        contextTokenCount: 42,
+        target: target
+    )
+
+    let metadata = try JSONDecoder().decode(
+        MLXServerPersistedChatSessionMetadata.self,
+        from: Data(contentsOf: target.metadataURL)
+    )
+    #expect(metadata.contextTokenCount == 42)
+}
+
+@Test
 func diskKVCacheCommitOverwritesSameSessionEntry() throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("mlx-server-overwrite-\(UUID().uuidString)", isDirectory: true)

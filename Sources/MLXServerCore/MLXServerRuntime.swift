@@ -528,16 +528,21 @@ public actor MLXServerRuntime {
         )
         let sessionTransfer = resolved.sessionTransfer
         let suffixMessages = resolved.suffixMessages.map(\.mlxChatMessage)
+        let cachedPromptTokenCount = resolved.cachedPromptTokenCount
         let throwingStream = sessionTransfer.session.streamDetails(
             to: suffixMessages
         )
 
         return AsyncStream { continuation in
             let task = Task {
+                var completionInfo: GenerateCompletionInfo?
                 do {
                     for try await item in throwingStream {
                         if Task.isCancelled {
                             break
+                        }
+                        if case .info(let info) = item {
+                            completionInfo = info
                         }
                         continuation.yield(item)
                     }
@@ -555,7 +560,9 @@ public actor MLXServerRuntime {
                     sessionTransfer: sessionTransfer,
                     requestFingerprints: requestFingerprints,
                     toolsSignature: toolsSignature,
-                    contextSignature: contextSignature
+                    contextSignature: contextSignature,
+                    cachedPromptTokenCount: cachedPromptTokenCount,
+                    completionInfo: completionInfo
                 )
                 await generationLease.release()
                 continuation.finish()
@@ -610,6 +617,7 @@ public actor MLXServerRuntime {
         var fingerprints: [MLXServerChatTranscriptFingerprint]
         var toolsSignature: String
         var contextSignature: String
+        var contextTokenCount: Int?
         var lastAccessGeneration: UInt64
     }
 
@@ -617,6 +625,7 @@ public actor MLXServerRuntime {
         var cacheKey: MLXServerChatSessionCacheKey
         var sessionTransfer: ChatSessionTransfer
         var suffixMessages: [MLXServerChatMessage]
+        var cachedPromptTokenCount: Int?
     }
 
     /// Finds or builds the `ChatSession` able to serve the request:
@@ -653,7 +662,11 @@ public actor MLXServerRuntime {
                 chatSessions[cacheKey] = nil
                 let session = state.sessionTransfer.session
                 session.generateParameters = request.parameters
-                session.tools = request.tools
+                // The cached prefix already contains the tool schemas for this
+                // exact tools signature. Do not pass them again for the suffix,
+                // otherwise the chat template re-prefills the huge tools block
+                // on every cache hit.
+                session.tools = nil
                 session.additionalContext = request.additionalContext
                 lastChatCacheEvent = MLXServerChatCacheEvent(
                     status: .memoryHit,
@@ -661,17 +674,22 @@ public actor MLXServerRuntime {
                     modelSessionCount: modelSessionCount,
                     priorTranscriptCount: requestFingerprints.count,
                     bestCommonPrefixCount: suffixStartIndex,
-                    bestCachedTranscriptCount: state.fingerprints.count
+                    bestCachedTranscriptCount: state.fingerprints.count,
+                    cachedPromptTokenCount: state.contextTokenCount
                 )
                 return ResolvedChatSession(
                     cacheKey: cacheKey,
                     sessionTransfer: state.sessionTransfer,
-                    suffixMessages: Array(request.messages.dropFirst(suffixStartIndex))
+                    suffixMessages: Array(request.messages.dropFirst(suffixStartIndex)),
+                    cachedPromptTokenCount: state.contextTokenCount
                 )
             }
             // Same session key but incompatible signatures or a diverged
             // transcript: the cached session cannot serve this request.
+            // Persist the evicted session in the background if disk KV cache is
+            // enabled, but keep it out of the live prompt path.
             chatSessions[cacheKey] = nil
+            enqueueDiskChatSessionPersistence(cacheKey: cacheKey, state: state)
         }
 
         // 2. Disk restore: rebuild the ChatSession around the persisted
@@ -693,7 +711,7 @@ public actor MLXServerRuntime {
                 generateParameters: request.parameters,
                 processing: .init(resize: request.mediaResize),
                 additionalContext: request.additionalContext,
-                tools: request.tools
+                tools: nil
             )
             lastChatCacheEvent = MLXServerChatCacheEvent(
                 status: .diskHit,
@@ -701,12 +719,15 @@ public actor MLXServerRuntime {
                 modelSessionCount: modelSessionCount,
                 priorTranscriptCount: requestFingerprints.count,
                 bestCommonPrefixCount: suffixStartIndex,
-                bestCachedTranscriptCount: diskMatch.fingerprints.count
+                bestCachedTranscriptCount: diskMatch.fingerprints.count,
+                restoredPromptPrefixTokenCount: diskMatch.contextTokenCount,
+                cachedPromptTokenCount: diskMatch.contextTokenCount
             )
             return ResolvedChatSession(
                 cacheKey: cacheKey,
                 sessionTransfer: ChatSessionTransfer(session: session),
-                suffixMessages: Array(request.messages.dropFirst(suffixStartIndex))
+                suffixMessages: Array(request.messages.dropFirst(suffixStartIndex)),
+                cachedPromptTokenCount: diskMatch.contextTokenCount
             )
         }
 
@@ -729,7 +750,8 @@ public actor MLXServerRuntime {
         return ResolvedChatSession(
             cacheKey: cacheKey,
             sessionTransfer: ChatSessionTransfer(session: session),
-            suffixMessages: request.messages
+            suffixMessages: request.messages,
+            cachedPromptTokenCount: nil
         )
     }
 
@@ -762,21 +784,39 @@ public actor MLXServerRuntime {
         sessionTransfer: ChatSessionTransfer,
         requestFingerprints: [MLXServerChatTranscriptFingerprint],
         toolsSignature: String,
-        contextSignature: String
+        contextSignature: String,
+        cachedPromptTokenCount: Int?,
+        completionInfo: GenerateCompletionInfo?
     ) {
         let fingerprints = requestFingerprints
             + [MLXServerChatTranscriptFingerprint.generatedAssistantPlaceholder]
+        let contextTokenCount = Self.contextTokenCount(
+            cachedPromptTokenCount: cachedPromptTokenCount,
+            completionInfo: completionInfo
+        )
         chatSessionAccessGeneration += 1
                 let state = ChatSessionState(
             sessionTransfer: sessionTransfer,
             fingerprints: fingerprints,
             toolsSignature: toolsSignature,
             contextSignature: contextSignature,
+            contextTokenCount: contextTokenCount,
             lastAccessGeneration: chatSessionAccessGeneration
         )
         chatSessions[cacheKey] = state
-        enqueueDiskChatSessionPersistence(cacheKey: cacheKey, state: state)
         evictChatSessionsBeyondLimit()
+    }
+
+    private static func contextTokenCount(
+        cachedPromptTokenCount: Int?,
+        completionInfo: GenerateCompletionInfo?
+    ) -> Int? {
+        guard let completionInfo else {
+            return cachedPromptTokenCount
+        }
+        return (cachedPromptTokenCount ?? 0)
+            + completionInfo.promptTokenCount
+            + completionInfo.generationTokenCount
     }
 
     private func discardChatSession(for cacheKey: MLXServerChatSessionCacheKey) {
@@ -788,23 +828,25 @@ public actor MLXServerRuntime {
     /// sessions remain restorable from their disk entry.
     private func evictChatSessionsBeyondLimit() {
         while chatSessions.count > maxChatSessionCount {
-            guard let victimKey = chatSessions.min(by: {
+            guard let victim = chatSessions.min(by: {
                 $0.value.lastAccessGeneration < $1.value.lastAccessGeneration
-            })?.key else {
+            }) else {
                 return
             }
-            chatSessions[victimKey] = nil
+            chatSessions[victim.key] = nil
+            enqueueDiskChatSessionPersistence(
+                cacheKey: victim.key,
+                state: victim.value
+            )
         }
     }
 
     // MARK: - Disk persistence
 
-    /// Maximum time a disk persistence job waits for the model to go idle
-    /// before writing anyway (durability beats contention avoidance under
-    /// sustained load).
-    private static let diskPersistenceIdleWaitPollInterval: Duration = .seconds(1)
-    private static let diskPersistenceIdleWaitMaxPolls = 30
-
+    /// Disk persistence is intentionally limited to sessions that are no
+    /// longer live in memory (LRU eviction or model unload). Persisting the
+    /// active ChatSession would take its internal cache lock and make the next
+    /// interactive prompt wait behind disk I/O.
         private func enqueueDiskChatSessionPersistence(
         cacheKey: MLXServerChatSessionCacheKey,
         state: ChatSessionState
@@ -817,61 +859,47 @@ public actor MLXServerRuntime {
         // closure captures the session so an LRU eviction before the writer
         // drains does not lose disk durability.
         diskKVCachePersistenceWriter.enqueue(coalescingKey: cacheKey.entryKey) { [weak self] in
-            await self?.persistChatSessionToDiskWhenIdle(
+            await self?.persistChatSessionToDisk(
                 cacheKey: cacheKey,
                 sessionTransfer: state.sessionTransfer,
                 fingerprints: state.fingerprints,
                 toolsSignature: state.toolsSignature,
-                contextSignature: state.contextSignature
+                contextSignature: state.contextSignature,
+                contextTokenCount: state.contextTokenCount,
+                skipIfLive: true
             )
         }
     }
 
-        /// Runs on the persistence writer's queue. Waits for the model's
-    /// generation gate to go idle, then serializes the captured session KV
-    /// cache to disk. If the same session advanced while this older job was
-    /// waiting, it is skipped; a newer coalesced job persists the latest
-    /// state.
-    private func persistChatSessionToDiskWhenIdle(
+        /// Runs on the persistence writer's queue. Only sessions that have
+    /// already left the live in-memory registry are serialized, so disk I/O
+    /// never owns the active prompt path.
+    private func persistChatSessionToDisk(
         cacheKey: MLXServerChatSessionCacheKey,
         sessionTransfer: ChatSessionTransfer,
         fingerprints: [MLXServerChatTranscriptFingerprint],
         toolsSignature: String,
-        contextSignature: String
+        contextSignature: String,
+        contextTokenCount: Int?,
+        skipIfLive: Bool
     ) async {
         guard let diskKVCacheStore else {
             return
         }
 
-        var polls = 0
-        while polls < Self.diskPersistenceIdleWaitMaxPolls,
-              !(await generationGates.isIdle(modelID: cacheKey.modelID)) {
-            polls += 1
-            try? await Task.sleep(for: Self.diskPersistenceIdleWaitPollInterval)
-        }
-
-        guard let persistenceLease = try? await generationGates.acquire(modelID: cacheKey.modelID) else {
-            return
-        }
-
-        // If a live in-memory session for this key already moved beyond the
-        // captured metadata, skip this stale job. If the session was evicted,
-        // the captured ChatSession is no longer mutable and can still be
-        // safely persisted for restart durability.
-        if let currentState = chatSessions[cacheKey],
-           currentState.fingerprints != fingerprints {
-            await persistenceLease.release()
+        // Never persist a live in-memory session from the background writer.
+        // Saving the ChatSession cache takes its serial cache lock; if a prompt
+        // arrives at the same time it would block before generation starts.
+        if skipIfLive, chatSessions[cacheKey] != nil {
             return
         }
         guard diskKVCacheStore.needsPersistence(
             for: cacheKey,
             fingerprints: fingerprints
         ) else {
-            await persistenceLease.release()
             return
         }
         guard let target = try? diskKVCacheStore.preparePersistenceTarget(for: cacheKey) else {
-            await persistenceLease.release()
             return
         }
 
@@ -883,13 +911,31 @@ public actor MLXServerRuntime {
                     toolsSignature: toolsSignature,
                     contextSignature: contextSignature,
                     fingerprints: fingerprints,
+                    contextTokenCount: contextTokenCount,
                     target: target
                 )
             } catch {
                 diskKVCacheStore.discardPersistenceTarget(target)
             }
         }.value
-        await persistenceLease.release()
+    }
+
+    public func persistChatSessionsToDisk() async {
+        guard diskKVCacheStore != nil else {
+            return
+        }
+        let states = chatSessions
+        for (cacheKey, state) in states {
+            await persistChatSessionToDisk(
+                cacheKey: cacheKey,
+                sessionTransfer: state.sessionTransfer,
+                fingerprints: state.fingerprints,
+                toolsSignature: state.toolsSignature,
+                contextSignature: state.contextSignature,
+                contextTokenCount: state.contextTokenCount,
+                skipIfLive: false
+            )
+        }
     }
 
     // MARK: - Model containers
@@ -953,7 +999,11 @@ public actor MLXServerRuntime {
     private func unloadOtherModelsBeforeLoading(_ key: LoadedModelKey) {
         let unloadedModelIDs = Set(containers.keys.filter { $0 != key }.map(\.modelID)).sorted()
         containers = containers.filter { $0.key == key }
+        let evictedSessions = chatSessions.filter { $0.key.modelID != key.modelID }
         chatSessions = chatSessions.filter { $0.key.modelID == key.modelID }
+        for (cacheKey, state) in evictedSessions {
+            enqueueDiskChatSessionPersistence(cacheKey: cacheKey, state: state)
+        }
         for (loadingKey, loadingTask) in loadingTasks where loadingKey != key {
             loadingTask.task.cancel()
         }

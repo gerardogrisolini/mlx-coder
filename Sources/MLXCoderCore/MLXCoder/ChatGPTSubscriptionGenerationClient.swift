@@ -532,7 +532,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         sessions[id] = session
     }
 
-    public func closeSession(id: String) {
+    public func closeSession(id: String) async {
         let session = sessions.removeValue(forKey: id)
         if let chatGPTSessionID = session?.chatGPTSessionID {
             webSocketPool.closeSession(sessionID: chatGPTSessionID)

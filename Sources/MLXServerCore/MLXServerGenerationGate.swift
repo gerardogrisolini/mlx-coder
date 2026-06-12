@@ -32,6 +32,7 @@ actor MLXServerGenerationGate {
         })
     }
 
+
     fileprivate func release(id: UUID) {
         guard activeLeaseID == id else {
             return
@@ -92,6 +93,7 @@ actor MLXServerPerModelGenerationGate {
         }
         return await gate.isIdle
     }
+
 
     /// Acquires every per-model gate that exists at the time of the call.
     /// Uses a snapshot to avoid deadlocks between concurrent `acquireAll()` calls.

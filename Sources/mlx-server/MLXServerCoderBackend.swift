@@ -141,11 +141,13 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         await toolExecutor.updateToolProviders(providers)
     }
 
-    func closeSession(id: String) {
+    func closeSession(id: String) async {
         sessions.removeValue(forKey: id)
+        await runtime.persistChatSessionsToDisk()
     }
 
     func shutdown() async {
+        await runtime.persistChatSessionsToDisk()
         sessions.removeAll(keepingCapacity: false)
         await toolExecutor.shutdown()
     }
@@ -517,14 +519,18 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         onEvent: @escaping @Sendable (DirectAgentEvent) async -> Void
     ) async {
         let cacheEvent = await runtime.consumeLastChatCacheEvent()
-        let renderedPromptTokenCount = cacheEvent?.priorTranscriptCount
-            ?? info.promptTokenCount
-        let contextTokenCount = renderedPromptTokenCount + info.generationTokenCount
+        if configuration.verboseLogging, let cacheEvent {
+            await onEvent(.diagnostic(Self.cacheDiagnostic(from: cacheEvent)))
+        }
+        let cachedPromptTokenCount = cacheEvent?.cachedPromptTokenCount
+        let contextTokenCount = (cachedPromptTokenCount ?? 0)
+            + info.promptTokenCount
+            + info.generationTokenCount
         await onEvent(
             .metrics(
                 DirectAgentGenerationMetrics(
                     promptTokenCount: info.promptTokenCount,
-                    cachedPromptTokenCount: cacheEvent?.cachedPromptTokenCount,
+                    cachedPromptTokenCount: cachedPromptTokenCount,
                     promptTokensPerSecond: info.promptTokensPerSecond,
                     completionTokenCount: info.generationTokenCount,
                     completionTokensPerSecond: info.tokensPerSecond,
@@ -585,6 +591,14 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         from result: AgentConversationCompactionResult
     ) -> String {
         "Compacted conversation history from \(result.originalEstimatedTokenCount) to \(result.estimatedTokenCount) estimated tokens."
+    }
+
+    private static func cacheDiagnostic(
+        from event: MLXServerChatCacheEvent
+    ) -> String {
+        let cachedPromptTokens = event.cachedPromptTokenCount.map(String.init) ?? "--"
+        let restoredPromptTokens = event.restoredPromptPrefixTokenCount.map(String.init) ?? "--"
+        return "KV cache: status=\(event.status.rawValue) cachedPromptTokens=\(cachedPromptTokens) restoredPromptTokens=\(restoredPromptTokens) requestMessages=\(event.priorTranscriptCount) bestCommonPrefixMessages=\(event.bestCommonPrefixCount) cachedTranscriptMessages=\(event.bestCachedTranscriptCount)"
     }
 
     private static func initialMessages(

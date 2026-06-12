@@ -337,7 +337,7 @@ public protocol AgentRuntimeBackend: Actor {
 
     func updateToolProviders(_ providers: [AgentToolProvider]) async
 
-    func closeSession(id: String)
+    func closeSession(id: String) async
     func shutdown() async
 
     func preloadModel(

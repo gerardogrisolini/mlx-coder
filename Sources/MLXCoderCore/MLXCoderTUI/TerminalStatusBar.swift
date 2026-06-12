@@ -585,6 +585,15 @@ public final class TerminalStatusBar: @unchecked Sendable {
         let tokensUsed = latestContextWindow?.usedTokens
             ?? latestMetrics?.totalTokenCount
         var fragments: [String] = []
+        if isProcessing {
+            var loader = Self.spinnerFrames[spinnerIndex % Self.spinnerFrames.count]
+            fragments.append(loader)
+            if let latestModelRuntime {
+                fragments.append(latestModelRuntime)
+            }
+        } else if let latestModelRuntime {
+            fragments.append(latestModelRuntime)
+        }
         if let latestModelID {
             fragments.append(
                 Self.modelStatusFragment(
@@ -592,15 +601,6 @@ public final class TerminalStatusBar: @unchecked Sendable {
                     thinkingSelection: latestThinkingSelection
                 )
             )
-        }
-        if isProcessing {
-            var loader = Self.spinnerFrames[spinnerIndex % Self.spinnerFrames.count]
-            if let latestModelRuntime {
-                loader += " \(latestModelRuntime)"
-            }
-            fragments.append(loader)
-        } else if let latestModelRuntime {
-            fragments.append(latestModelRuntime)
         }
         if tokensUsed != nil || latestContextWindow?.maxTokens != nil {
             let contextText = Self.tokenWindowText(
@@ -637,14 +637,14 @@ public final class TerminalStatusBar: @unchecked Sendable {
     }
 
     static func gitStatusFragment(summary: TerminalGitStatusSummary) -> String {
-        "git \(summary.changedFileCount) files +\(summary.additions) -\(summary.deletions)"
+        "\(summary.changedFileCount) files +\(summary.additions) -\(summary.deletions)"
     }
 
     private static func modelDisplayName(_ modelID: String) -> String {
         modelID
-            .split(separator: "/")
-            .last
-            .map(String.init) ?? modelID
+//            .split(separator: "/")
+//            .last
+//            .map(String.init) ?? modelID
     }
 
     private static func runtimeDisplayName(_ runtime: String?) -> String? {
@@ -693,7 +693,7 @@ public final class TerminalStatusBar: @unchecked Sendable {
         maxTokens: Int?
     ) -> String {
         let resolvedUsedTokens = usedTokens ?? metricUsedTokens
-        let usedText = resolvedUsedTokens.map(contextTokenCountText) ?? "--"
+        let usedText = resolvedUsedTokens.map(contextTokenCountText) ?? "0.0k"
         guard let maxTokens, maxTokens > 0 else {
             return "\(usedText) / --"
         }

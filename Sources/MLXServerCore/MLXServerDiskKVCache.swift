@@ -52,6 +52,7 @@ public struct MLXServerDiskKVCacheConfiguration: Sendable, Equatable {
 struct MLXServerDiskChatSessionMatch: @unchecked Sendable {
     var cache: [KVCache]
     var fingerprints: [MLXServerChatTranscriptFingerprint]
+    var contextTokenCount: Int?
 }
 
 struct MLXServerPersistedChatSessionMetadata: Codable, Sendable {
@@ -64,6 +65,7 @@ struct MLXServerPersistedChatSessionMetadata: Codable, Sendable {
     var contextSignature: String
     var entryKey: String
     var fingerprints: [MLXServerChatTranscriptFingerprint]
+    var contextTokenCount: Int?
     var byteCount: Int64
     var createdAt: Date
     var updatedAt: Date
@@ -164,7 +166,8 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
             }
             return MLXServerDiskChatSessionMatch(
                 cache: cache,
-                fingerprints: metadata.fingerprints
+                fingerprints: metadata.fingerprints,
+                contextTokenCount: metadata.contextTokenCount ?? cache.contextTokenCount
             )
         } catch {
             removeEntryIfUnchanged(
@@ -224,6 +227,7 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
         toolsSignature: String,
         contextSignature: String,
         fingerprints: [MLXServerChatTranscriptFingerprint],
+        contextTokenCount: Int? = nil,
         target: MLXServerDiskKVCachePersistenceTarget
     ) throws {
         try withStoreLock {
@@ -242,6 +246,7 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
                 contextSignature: contextSignature,
                 entryKey: key.entryKey,
                 fingerprints: fingerprints,
+                contextTokenCount: contextTokenCount,
                 byteCount: byteCount(of: target.cacheURL),
                 createdAt: existingMetadata?.createdAt ?? now,
                 updatedAt: now,
@@ -600,5 +605,10 @@ extension Array where Element == KVCache {
     var hasPromptState: Bool {
         let state = flatMap(\.state)
         return !state.isEmpty && state.allSatisfy { $0.size > 0 }
+    }
+
+    var contextTokenCount: Int? {
+        let offsets = map(\.offset).filter { $0 > 0 }
+        return offsets.max()
     }
 }
