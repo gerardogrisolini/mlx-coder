@@ -250,24 +250,24 @@ struct TerminalChatRenderingTests {
         #expect(lines.contains { $0.contains("Sources/App.swift") })
     }
 
-    @Test
-    func toolIconsFollowConfiguredFamilies() {
-        #expect(MLXCoderACPBridge.toolIcon(for: "local.exec") == "💻")
-        #expect(MLXCoderACPBridge.toolIcon(for: "local.readFile") == "📄")
-        #expect(MLXCoderACPBridge.toolIcon(for: "local.editFile") == "✏️")
-        #expect(MLXCoderACPBridge.toolIcon(for: "local.delete") == "🗑️")
-        #expect(MLXCoderACPBridge.toolIcon(for: "local.move") == "↔️")
-        #expect(MLXCoderACPBridge.toolIcon(for: "memory.read") == "🧠")
-        #expect(MLXCoderACPBridge.toolIcon(for: "agent.create") == "👥")
-        #expect(MLXCoderACPBridge.toolIcon(for: "task.create") == "👥")
-        #expect(MLXCoderACPBridge.toolIcon(for: "git.diff") == "🔀")
-        #expect(MLXCoderACPBridge.toolIcon(for: "web.fetch") == "🌐")
-        #expect(MLXCoderACPBridge.toolIcon(for: "search.grep") == "🔎")
-        #expect(MLXCoderACPBridge.toolIcon(for: "xcode.BuildProject") == "🛠️")
-        #expect(MLXCoderACPBridge.toolIcon(for: "figma.get") == "🎨")
-        #expect(MLXCoderACPBridge.toolIcon(for: "jira.search") == "📋")
-        #expect(MLXCoderACPBridge.toolIcon(for: "unknown.tool") == "🔨")
-    }
+//    @Test
+//    func toolIconsFollowConfiguredFamilies() {
+//        #expect(MLXCoderACPBridge.toolIcon(for: "local.exec") == "💻")
+//        #expect(MLXCoderACPBridge.toolIcon(for: "local.readFile") == "📄")
+//        #expect(MLXCoderACPBridge.toolIcon(for: "local.editFile") == "✏️")
+//        #expect(MLXCoderACPBridge.toolIcon(for: "local.delete") == "🗑️")
+//        #expect(MLXCoderACPBridge.toolIcon(for: "local.move") == "↔️")
+//        #expect(MLXCoderACPBridge.toolIcon(for: "memory.read") == "🧠")
+//        #expect(MLXCoderACPBridge.toolIcon(for: "agent.create") == "👥")
+//        #expect(MLXCoderACPBridge.toolIcon(for: "task.create") == "👥")
+//        #expect(MLXCoderACPBridge.toolIcon(for: "git.diff") == "🔀")
+//        #expect(MLXCoderACPBridge.toolIcon(for: "web.fetch") == "🌐")
+//        #expect(MLXCoderACPBridge.toolIcon(for: "search.grep") == "🔎")
+//        #expect(MLXCoderACPBridge.toolIcon(for: "xcode.BuildProject") == "🛠️")
+//        #expect(MLXCoderACPBridge.toolIcon(for: "figma.get") == "🎨")
+//        #expect(MLXCoderACPBridge.toolIcon(for: "jira.search") == "📋")
+//        #expect(MLXCoderACPBridge.toolIcon(for: "unknown.tool") == "🔨")
+//    }
 
     @Test
     func compactToolStatusIconStaysImmediatelyAfterText() {

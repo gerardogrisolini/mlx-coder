@@ -147,35 +147,36 @@ extension MLXCoderACPBridge {
     }
 
     public static func toolKind(for toolName: String) -> String {
-        switch toolName {
-        case "local.readFile", "local.ls", "local.pwd",
-             "text.head", "text.tail", "text.sort", "text.wc",
-             "git.status", "git.diff", "git.show", "git.log",
-             "git.branch", "git.remote", "git.lsFiles", "git.grep", "git.blame":
-            return "read"
-        case "search.grep", "search.glob":
-            return "search"
-                case "local.writeFile", "local.replace", "local.append", "local.mkdir", "local.editFile", "local.multiEdit":
-            return "edit"
-        case "local.delete":
-            return "delete"
-        case "local.move":
-            return "move"
-        case "local.exec", "git.add", "git.restore", "git.commit", "git.push", "git.stash", "git.switch":
-            return "execute"
-        case "agent.list", "agent.get", "agent.wait":
-            return "read"
-        case "agent.create", "agent.message", "agent.close":
-            return "execute"
-        default:
-            if toolName.hasPrefix("xcode.") {
-                return xcodeToolKind(for: String(toolName.dropFirst("xcode.".count)))
-            }
-            if toolName.hasPrefix("figma.") {
-                return "read"
-            }
-            return "other"
-        }
+//        switch toolName {
+//        case "local.readFile", "local.ls", "local.pwd",
+//             "text.head", "text.tail", "text.sort", "text.wc",
+//             "git.status", "git.diff", "git.show", "git.log",
+//             "git.branch", "git.remote", "git.lsFiles", "git.grep", "git.blame":
+//            return "read"
+//        case "search.grep", "search.glob":
+//            return "search"
+//        case "local.writeFile", "local.replace", "local.append", "local.mkdir", "local.editFile", "local.multiEdit":
+//            return "edit"
+//        case "local.delete":
+//            return "delete"
+//        case "local.move":
+//            return "move"
+//        case "local.exec", "git.add", "git.restore", "git.commit", "git.push", "git.stash", "git.switch":
+//            return "execute"
+//        case "agent.list", "agent.get", "agent.wait":
+//            return "read"
+//        case "agent.create", "agent.message", "agent.close":
+//            return "execute"
+//        default:
+//            if toolName.hasPrefix("xcode.") {
+//                return xcodeToolKind(for: String(toolName.dropFirst("xcode.".count)))
+//            }
+//            if toolName.hasPrefix("figma.") {
+//                return "read"
+//            }
+//            return "other"
+//        }
+        toolName
     }
 
     public static func toolIcon(for toolName: String) -> String {
@@ -221,23 +222,6 @@ extension MLXCoderACPBridge {
         }
         */
         "🛠️"
-    }
-
-    public static func xcodeToolKind(for rawName: String) -> String {
-        switch rawName {
-        case "XcodeUpdate", "XcodeWrite", "XcodeMakeDir":
-            return "edit"
-        case "XcodeRM":
-            return "delete"
-        case "XcodeMV":
-            return "move"
-        case "BuildProject", "RunAllTests", "RunSomeTests", "ExecuteSnippet", "RenderPreview":
-            return "execute"
-        case "XcodeGrep", "XcodeGlob", "DocumentationSearch":
-            return "search"
-        default:
-            return "read"
-        }
     }
 
     public static func toolLocations(for toolCall: DirectAgentToolCall) -> [[String: Any]] {

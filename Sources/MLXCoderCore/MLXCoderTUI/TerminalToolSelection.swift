@@ -495,27 +495,21 @@ public enum TerminalToolSelectionCatalog {
         if let displayName = status.displayName?.nilIfBlank {
             return displayName
         }
-        switch status.id {
-        case "mlx-search-tools":
-            return "Search"
-        case "mlx-web-tools":
-            return "Web"
-        case "mlx-git-tools":
-            return "Git"
-        case "mlx-xcode-tools":
-            return "Xcode"
-        case "mlx-figma-tools":
-            return "Figma"
-        default:
-            return status.id
-                .replacingOccurrences(of: "-", with: " ")
-                .replacingOccurrences(of: "_", with: " ")
-                .split(separator: " ")
-                .map { word in
-                    word.prefix(1).uppercased() + word.dropFirst()
-                }
-                .joined(separator: " ")
+        var name = status.id
+        if name.hasPrefix("mlx-") {
+            name.removeFirst("mlx-".count)
         }
+        if name.hasSuffix("-tools") {
+            name.removeLast("-tools".count)
+        }
+        return name
+            .replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+            .split(separator: " ")
+            .map { word in
+                word.prefix(1).uppercased() + word.dropFirst()
+            }
+            .joined(separator: " ")
     }
 
     private static func featureDetail(_ status: SwiftFeatureStatus) -> String {
