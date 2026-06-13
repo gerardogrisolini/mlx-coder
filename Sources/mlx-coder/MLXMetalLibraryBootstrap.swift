@@ -1,6 +1,6 @@
 //
 //  MLXMetalLibraryBootstrap.swift
-//  mlx-server
+//  mlx-coder
 //
 
 import Foundation
@@ -35,10 +35,10 @@ enum MLXMetalLibraryBootstrap {
             }
         }
 
-        writeStatus("mlx-server preparing Metal kernels...\n")
+        writeStatus("mlx-coder preparing Metal kernels...\n")
         try compileMetalKernels(from: source, to: outputURL)
         try manifest.save(to: manifestURL)
-        writeStatus("mlx-server prepared Metal kernels.\n")
+        writeStatus("mlx-coder prepared Metal kernels.\n")
         #endif
     }
 
@@ -186,7 +186,7 @@ enum MLXMetalLibraryBootstrap {
     private static func compileMetalKernels(from source: MLXMetalKernelSource, to outputURL: URL) throws {
         let fileManager = FileManager.default
         let temporaryDirectory = fileManager.temporaryDirectory
-            .appendingPathComponent("mlx-server-metal-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("mlx-coder-metal-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
         defer {
             try? fileManager.removeItem(at: temporaryDirectory)
@@ -232,7 +232,7 @@ enum MLXMetalLibraryBootstrap {
         process.arguments = arguments
 
         let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("mlx-server-xcrun-\(UUID().uuidString).log")
+            .appendingPathComponent("mlx-coder-xcrun-\(UUID().uuidString).log")
         FileManager.default.createFile(atPath: outputURL.path, contents: nil)
         let outputHandle = try FileHandle(forWritingTo: outputURL)
         defer {
@@ -268,7 +268,7 @@ enum MLXMetalLibraryBootstrapError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingExecutableURL:
-            "Unable to resolve mlx-server executable path."
+            "Unable to resolve mlx-coder executable path."
         case .missingMetalKernelDirectory:
             "Unable to find mlx-swift Metal kernels under .build/checkouts."
         case .noMetalSources(let path):

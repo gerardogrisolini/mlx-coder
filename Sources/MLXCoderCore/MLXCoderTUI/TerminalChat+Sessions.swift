@@ -169,6 +169,7 @@ extension TerminalChat {
 
         do {
             _ = try MLXTerminalSessionStore.save(savedSession)
+            await sessionRunner.saveSessionRuntimeCache(id: savedSession.sessionID)
             recordSavedSessionIndex(savedSession)
             activeSavedSessionName = savedSession.name
             writeSystemMessage(
@@ -230,9 +231,11 @@ extension TerminalChat {
         printedModelID = nil
         statusBar.reset()
 
-        try await createCurrentSession()
-        refreshInitialStatusBarContextWindow()
+                refreshInitialStatusBarContextWindow()
         _ = try await preloadCurrentModel(emitStatus: configuration.hostedModels != nil)
+        try await sessionRunner.restoreSession(
+            configuration: await currentSessionConfiguration(discoverExternalTools: true)
+        )
         if let contextWindow = savedSession.contextWindow?.runtimeStatus {
             _ = statusBar.update(contextWindow: contextWindow)
         }

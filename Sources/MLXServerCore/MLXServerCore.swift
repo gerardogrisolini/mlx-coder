@@ -1,13 +1,13 @@
 //
 //  MLXServerCore.swift
-//  mlx-server
+//  mlx-coder
 //
 
 import Foundation
 import MLXPackageMetadata
 
 public enum MLXServerCore {
-    public static let serviceName = MLXPackageMetadata.serverExecutableName
+    public static let serviceName = MLXPackageMetadata.localMLXModeName
     public static let version = MLXPackageMetadata.version
     public static let versionDescription = MLXPackageMetadata.versionDescription(
         for: serviceName

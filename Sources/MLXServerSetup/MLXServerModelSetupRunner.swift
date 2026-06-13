@@ -1,6 +1,6 @@
 //
 //  MLXServerModelSetupRunner.swift
-//  mlx-server
+//  mlx-coder
 //
 
 import Foundation
@@ -30,7 +30,7 @@ public enum MLXServerModelSetupRunner {
         let modelsURL = MLXServerModelsManifestStore.modelsURL()
         FileHandle.standardError.writeString(
             """
-            mlx-server models setup
+            mlx-coder MLX models setup
             Configuring models.json at:
             \(modelsURL.path)
 
@@ -87,7 +87,6 @@ public enum MLXServerModelSetupRunner {
         try selectDefaultModelIfRequested(in: &manifest)
         try MLXServerModelsManifestStore.save(manifest, to: modelsURL)
         FileHandle.standardError.writeString("Updated: models.json\n")
-        try syncActiveAgentIntegrationsWithDefaultModel(from: manifest)
         FileHandle.standardError.writeString("\nModels setup completed.\n\n")
     }
 
@@ -99,7 +98,7 @@ public enum MLXServerModelSetupRunner {
             : MLXServerSettings()
 
         settings.loadOneModelAtATime = try promptYesNo(
-            "Should the server load only one model at a time?",
+            "Should mlx-coder --mlx load only one model at a time?",
             defaultValue: settings.loadOneModelAtATime
         )
 
@@ -961,56 +960,6 @@ public enum MLXServerModelSetupRunner {
         }
     }
 
-    private static func syncActiveAgentIntegrationsWithDefaultModel(
-        from manifest: MLXServerModelsManifest
-    ) throws {
-        let validated = try manifest.validated()
-        let enabledModels = validated.models.filter(\.enabled)
-        guard let defaultModel = enabledModels.first(where: { $0.id == validated.defaultModelID }) else {
-            return
-        }
-
-        let status = MLXServerAgentIntegrationService.status()
-        guard status.codexCLIEnabled
-            || status.codexAppEnabled
-            || status.codexXcodeAppEnabled
-            || status.xcodeClaudeCodeEnabled else {
-            return
-        }
-
-        let configuration = MLXServerAgentIntegrationConfiguration(
-            baseURL: MLXServerAgentIntegrationService.defaultServerBaseURL(),
-            modelID: defaultModel.id,
-            contextWindow: defaultModel.generationDefaults.contextWindow,
-            apiKey: MLXServerSettingsStore.loadOrDefault().apiKey
-        )
-
-        if status.codexCLIEnabled {
-            try MLXServerAgentIntegrationService.configureCodexCLIProfile(
-                configuration: configuration
-            )
-        }
-        if status.codexAppEnabled {
-            try MLXServerAgentIntegrationService.configureCodexAppProfile(
-                target: .desktop,
-                configuration: configuration
-            )
-        }
-        if status.codexXcodeAppEnabled {
-            try MLXServerAgentIntegrationService.configureCodexAppProfile(
-                target: .xcode,
-                configuration: configuration
-            )
-        }
-        if status.xcodeClaudeCodeEnabled {
-            try MLXServerAgentIntegrationService.configureXcodeClaudeCode(
-                configuration: configuration
-            )
-        }
-
-        FileHandle.standardError.writeString("Updated active agent integrations.\n")
-    }
-
     private static func printExistingModels(_ manifest: MLXServerModelsManifest) {
         guard !manifest.models.isEmpty else {
             return
@@ -1138,9 +1087,9 @@ enum MLXServerModelSetupError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .nonInteractiveTerminal:
-            return "mlx-server --setup-models requires an interactive terminal."
+            return "mlx-coder --mlx --setup-models requires an interactive terminal."
         case .inputClosed:
-            return "Input closed during mlx-server model setup."
+            return "Input closed during mlx-coder MLX model setup."
         }
     }
 }

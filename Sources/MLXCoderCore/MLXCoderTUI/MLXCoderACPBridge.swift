@@ -58,9 +58,13 @@ public actor MLXCoderACPBridge {
         )
     }
 
-    public func shutdown() async {
+        public func shutdown() async {
         for sessionID in sessions.keys {
             sessions[sessionID]?.activePromptTask?.cancel()
+            await refreshSessionStateIfAvailable(
+                sessionID: sessionID,
+                saveRuntimeCache: true
+            )
         }
         sessions.removeAll()
         await sessionRunner.shutdown()

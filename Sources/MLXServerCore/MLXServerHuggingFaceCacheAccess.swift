@@ -1,6 +1,6 @@
 //
 //  MLXServerHuggingFaceCacheAccess.swift
-//  mlx-server
+//  mlx-coder
 //
 
 import Foundation

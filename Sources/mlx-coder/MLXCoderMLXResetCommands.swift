@@ -1,12 +1,12 @@
 //
-//  MLXServerResetCommands.swift
-//  mlx-server
+//  MLXCoderMLXResetCommands.swift
+//  mlx-coder
 //
 
 import Foundation
 import MLXServerCore
 
-enum MLXServerResetConfigurationCommand {
+enum MLXCoderMLXResetConfigurationCommand {
     static let option = "--reset"
 
     static func shouldRun(arguments: [String]) -> Bool {
@@ -20,7 +20,9 @@ enum MLXServerResetConfigurationCommand {
     static func run(fileManager: FileManager = .default) throws {
         let fileURLs = uniqueURLs([
             MLXServerSettingsStore.settingsURL(fileManager: fileManager),
-            MLXServerModelsManifestStore.modelsURL(fileManager: fileManager)
+            MLXServerModelsManifestStore.modelsURL(fileManager: fileManager),
+            MLXServerSettingsStore.legacySettingsURL(fileManager: fileManager),
+            MLXServerModelsManifestStore.legacyModelsURL(fileManager: fileManager)
         ])
 
         var removed: [URL] = []
@@ -34,7 +36,7 @@ enum MLXServerResetConfigurationCommand {
             }
         }
 
-        FileHandle.standardError.writeString("Configuration reset completed.\n")
+        FileHandle.standardError.writeString("mlx-coder MLX reset completed.\n")
         printURLs("Removed", removed)
         if removed.isEmpty {
             printURLs("Missing", missing)
@@ -64,7 +66,7 @@ enum MLXServerResetConfigurationCommand {
     }
 }
 
-enum MLXServerResetDiskCacheCommand {
+enum MLXCoderMLXResetDiskCacheCommand {
     static let option = "--reset-disk-cache"
 
     static func shouldRun(arguments: [String]) -> Bool {

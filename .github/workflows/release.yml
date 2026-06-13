@@ -23,23 +23,22 @@ jobs:
 
       - name: Prepare Metal kernels
         run: |
-          .build/release/mlx-server --prepare-metal
+          .build/release/mlx-coder --mlx --prepare-metal
 
-      - name: Package binaries
+      - name: Package binary
         run: |
           mkdir -p dist
-          cp .build/release/mlx-server dist/
           cp .build/release/mlx-coder dist/
 
-          SERVER_BIN=$(python3 - <<'PY'
+          CODER_BIN=$(python3 - <<'PY'
           import os
-          print(os.path.realpath(".build/release/mlx-server"))
+          print(os.path.realpath(".build/release/mlx-coder"))
           PY
           )
-          SERVER_DIR=$(dirname "$SERVER_BIN")
-          cp "$SERVER_DIR/mlx.metallib" dist/
-          if [ -f "$SERVER_DIR/mlx.metallib.manifest.json" ]; then
-            cp "$SERVER_DIR/mlx.metallib.manifest.json" dist/
+          CODER_DIR=$(dirname "$CODER_BIN")
+          cp "$CODER_DIR/mlx.metallib" dist/
+          if [ -f "$CODER_DIR/mlx.metallib.manifest.json" ]; then
+            cp "$CODER_DIR/mlx.metallib.manifest.json" dist/
           fi
 
           # Install features into dist/features/
@@ -52,8 +51,8 @@ jobs:
 
           # Create archive
           cd dist
-          tar czf mlx-server-${{ github.ref_name }}-macos-arm64.tar.gz \
-                        mlx-server mlx-coder \
+          tar czf mlx-coder-${{ github.ref_name }}-macos-arm64.tar.gz \
+            mlx-coder \
             mlx.metallib mlx.metallib.manifest.json \
             features/
           cd ..
@@ -61,8 +60,8 @@ jobs:
       - name: Generate checksum
         run: |
           cd dist
-          shasum -a 256 mlx-server-${{ github.ref_name }}-macos-arm64.tar.gz \
-            > mlx-server-${{ github.ref_name }}-macos-arm64.tar.gz.sha256
+          shasum -a 256 mlx-coder-${{ github.ref_name }}-macos-arm64.tar.gz \
+            > mlx-coder-${{ github.ref_name }}-macos-arm64.tar.gz.sha256
 
       - name: Create release and upload assets
         uses: softprops/action-gh-release@v3
@@ -70,8 +69,8 @@ jobs:
           draft: false
           generate_release_notes: true
           files: |
-            dist/mlx-server-${{ github.ref_name }}-macos-arm64.tar.gz
-            dist/mlx-server-${{ github.ref_name }}-macos-arm64.tar.gz.sha256
+            dist/mlx-coder-${{ github.ref_name }}-macos-arm64.tar.gz
+            dist/mlx-coder-${{ github.ref_name }}-macos-arm64.tar.gz.sha256
 
       - name: Notify Homebrew tap
         env:

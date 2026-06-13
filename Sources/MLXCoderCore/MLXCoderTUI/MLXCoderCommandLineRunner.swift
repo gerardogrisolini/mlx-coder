@@ -132,6 +132,7 @@ public enum MLXCoderCommandLineRunner {
         argument == "-h"
             || argument == "--help"
             || argument == "--version"
+            || argument == "--mlx"
             || argument == "--model"
             || argument == "--agent"
             || argument == "--bearer-token"

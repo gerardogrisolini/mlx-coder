@@ -25,7 +25,7 @@ mlx-coder --agent Builder --cwd /path/to/project
 Or use the fully local MLX runtime:
 
 ```bash
-mlx-server --coder --agent Builder --cwd /path/to/project
+mlx-coder --mlx --agent Builder --cwd /path/to/project
 ```
 
 Inside an existing TUI session, switch to Builder with:
@@ -261,7 +261,7 @@ The executable should use `MLXFeatureKit` and support:
 `MLXFeatureRunner.run(...)` implements that process protocol for bundled
 features. Generated scaffolds may use the same helper or implement the small
 protocol directly. The `mcp-bridge` scaffold adds a local package dependency on
-`mlx-server` so it can reuse the Swift MCP client.
+`mlx-coder` so it can reuse the Swift MCP client.
 
 ### Manifest
 

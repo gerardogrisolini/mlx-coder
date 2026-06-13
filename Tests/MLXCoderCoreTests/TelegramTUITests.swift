@@ -311,14 +311,10 @@ struct TelegramTUITests {
         #expect(TerminalTelegramPairingService.pairingCode(in: "/start") == nil)
     }
 
-    @Test
+        @Test
     func telegramPermissionCommandsParseRemoteApprovalReplies() {
         #expect(
             TerminalTelegramPermissionBroker.permissionCommand(from: "/allow ABC123")
-                == TerminalTelegramPermissionCommand(decision: .allowOnce, requestID: "ABC123")
-        )
-        #expect(
-            TerminalTelegramPermissionBroker.permissionCommand(from: "sì abc-123")
                 == TerminalTelegramPermissionCommand(decision: .allowOnce, requestID: "ABC123")
         )
         #expect(
@@ -326,9 +322,11 @@ struct TelegramTUITests {
                 == TerminalTelegramPermissionCommand(decision: .allowAlways, requestID: "F00")
         )
         #expect(
-            TerminalTelegramPermissionBroker.permissionCommand(from: "annulla")
-                == TerminalTelegramPermissionCommand(decision: .deny, requestID: nil)
+            TerminalTelegramPermissionBroker.permissionCommand(from: "/deny ABC123")
+                == TerminalTelegramPermissionCommand(decision: .deny, requestID: "ABC123")
         )
+        #expect(TerminalTelegramPermissionBroker.permissionCommand(from: "sì abc-123") == nil)
+        #expect(TerminalTelegramPermissionBroker.permissionCommand(from: "annulla") == nil)
         #expect(TerminalTelegramPermissionBroker.permissionCommand(from: "run the tests") == nil)
     }
 

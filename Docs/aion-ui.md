@@ -1,7 +1,7 @@
 # Aion UI
 
-`mlx-server` non configura Aion UI automaticamente. Aion UI può eseguire
-gli agent locali tramite ACP stdio usando dei Custom Agent manuali.
+Aion UI può eseguire gli agent locali tramite ACP stdio usando dei Custom Agent
+manuali.
 
 ## Custom Agent: `mlx-coder`
 
@@ -12,11 +12,11 @@ In Aion UI, apri *Edit Custom Agent* e imposta:
 - **Arguments**: `--acp`
 - **Environment Variables**: nessuna
 
-## Custom Agent: `mlx-server` (modalità coder)
+## Custom Agent: `mlx-coder` con MLX locale
 
 In Aion UI, apri *Edit Custom Agent* e imposta:
 
-- **Display Name**: `mlx-server`
-- **Command**: `mlx-server`
-- **Arguments**: `--coder --acp`
+- **Display Name**: `mlx-coder MLX`
+- **Command**: `mlx-coder`
+- **Arguments**: `--mlx --acp`
 - **Environment Variables**: nessuna

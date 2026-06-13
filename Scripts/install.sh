@@ -3,9 +3,9 @@ set -euo pipefail
 
 REPO="gerardogrisolini/mlx-coder"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
-FEATURES_DIR="${FEATURES_DIR:-${INSTALL_DIR}/mlx-server-features}"
+FEATURES_DIR="${FEATURES_DIR:-${INSTALL_DIR}/mlx-coder-features}"
 
-echo "mlx-server installer"
+echo "mlx-coder installer"
 echo ""
 
 # Determine latest release
@@ -29,7 +29,7 @@ fi
 
 echo "Latest release: ${LATEST_TAG}"
 
-ARCHIVE="mlx-server-${LATEST_TAG}-macos-arm64.tar.gz"
+ARCHIVE="mlx-coder-${LATEST_TAG}-macos-arm64.tar.gz"
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}/${ARCHIVE}"
 
 TMPDIR=$(mktemp -d)
@@ -57,10 +57,9 @@ tar xzf "${TMPDIR}/${ARCHIVE}" -C "${TMPDIR}"
 sudo mkdir -p "$INSTALL_DIR"
 sudo mkdir -p "$FEATURES_DIR"
 
-# Install main binaries
-sudo cp "${TMPDIR}/mlx-server" "${INSTALL_DIR}/mlx-server"
+# Install main binary
 sudo cp "${TMPDIR}/mlx-coder" "${INSTALL_DIR}/mlx-coder"
-sudo chmod +x "${INSTALL_DIR}/mlx-server" "${INSTALL_DIR}/mlx-coder"
+sudo chmod +x "${INSTALL_DIR}/mlx-coder"
 
 
 if [ -f "${TMPDIR}/mlx.metallib" ]; then
@@ -81,9 +80,8 @@ if [ -d "${TMPDIR}/features" ]; then
 fi
 
 echo ""
-echo "✓ mlx-server ${LATEST_TAG} installed successfully!"
+echo "✓ mlx-coder ${LATEST_TAG} installed successfully!"
 echo ""
-echo "  mlx-server   → ${INSTALL_DIR}/mlx-server"
 echo "  mlx-coder    → ${INSTALL_DIR}/mlx-coder"
 echo "  features     → ${FEATURES_DIR}/"
 echo ""

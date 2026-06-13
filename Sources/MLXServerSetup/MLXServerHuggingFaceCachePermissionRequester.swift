@@ -1,6 +1,6 @@
 //
 //  MLXServerHuggingFaceCachePermissionRequester.swift
-//  mlx-server
+//  mlx-coder
 //
 
 import Foundation
@@ -26,7 +26,7 @@ enum MLXServerHuggingFaceCachePermissionRequester {
         let cacheDirectory = MLXServerHuggingFaceCacheAccessStore.cacheDirectory
         FileHandle.standardError.writeString(
             """
-            mlx-server needs permission to read and write the Hugging Face model cache.
+            mlx-coder --mlx needs permission to read and write the Hugging Face model cache.
 
             Directory:
             \(cacheDirectory.path)
@@ -54,7 +54,7 @@ enum MLXServerHuggingFaceCachePermissionRequester {
     private static func requestAccess(for cacheDirectory: URL) -> URL? {
         let panel = NSOpenPanel()
         panel.title = "Authorize Hugging Face Cache"
-        panel.message = "Authorize the Hugging Face model cache used by mlx-server."
+        panel.message = "Authorize the Hugging Face model cache used by mlx-coder --mlx."
         panel.prompt = "Authorize"
         panel.canChooseFiles = false
         panel.canChooseDirectories = true

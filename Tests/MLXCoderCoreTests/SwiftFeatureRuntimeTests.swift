@@ -358,7 +358,7 @@ struct SwiftFeatureRuntimeTests {
         )
 
         #expect(packageContents.components(separatedBy: .newlines).first == "// swift-tools-version: 6.3")
-        #expect(packageContents.contains(#".product(name: "MLXCoderCore", package: "mlx-server")"#))
+        #expect(packageContents.contains(#".product(name: "MLXCoderCore", package: "mlx-coder")"#))
         #expect(sourceContents.contains("RemoteMCPToolExecutor"))
         #expect(sourceContents.contains("http://127.0.0.1:65535/mcp"))
         #expect(manifest.discoversToolsAtRuntime)
@@ -1078,7 +1078,7 @@ struct SwiftFeatureRuntimeTests {
             executableDirectoryURLs: [binaryDirectoryURL]
         )
         let expectedURL = binaryDirectoryURL
-            .appendingPathComponent("mlx-server-features", isDirectory: true)
+            .appendingPathComponent("mlx-coder-features", isDirectory: true)
             .appendingPathComponent("mlx-git-tools-feature")
             .standardizedFileURL
 

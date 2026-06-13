@@ -187,24 +187,4 @@ public struct AgentKVCachePersistencePolicy {
     public static func terminalDiskCacheKey(workingDirectoryPath: String) -> String {
         "terminal:\(workingDirectoryPath)"
     }
-
-    public static func shouldRestoreDiskCache(
-        hasInMemoryCache: Bool,
-        cacheKey: String?,
-        historyContainsUserTurn: Bool
-    ) -> Bool {
-        !hasInMemoryCache
-            && cacheKey?.nilIfBlank != nil
-            && historyContainsUserTurn
-    }
-
-    public static func shouldPersistDiskCache(
-        isFinalGenerationRound: Bool,
-        cacheKey: String?,
-        hasInMemoryCache: Bool
-    ) -> Bool {
-        isFinalGenerationRound
-            && cacheKey?.nilIfBlank != nil
-            && hasInMemoryCache
-    }
 }

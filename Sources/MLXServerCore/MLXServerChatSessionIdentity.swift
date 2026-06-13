@@ -1,6 +1,6 @@
 //
 //  MLXServerChatSessionIdentity.swift
-//  mlx-server
+//  mlx-coder
 //
 //  Identity and transcript-matching support for chat session KV caches.
 //  The in-memory KV cache lives inside MLXLMCommon's `ChatSession`; this
@@ -84,10 +84,36 @@ public enum MLXServerChatSessionTranscript {
         stored: [MLXServerChatTranscriptFingerprint],
         request: [MLXServerChatTranscriptFingerprint]
     ) -> Int? {
-        guard !stored.isEmpty, stored.count < request.count else {
+        matchingPrefixEndIndex(
+            stored: stored,
+            request: request,
+            acceptsCompleteMatch: false
+        )
+    }
+
+    /// Returns the request index immediately after the cached transcript
+    /// prefix, accepting an exact match. This is used when a saved session is
+    /// loaded and its KV cache is restored before the next user turn exists.
+    public static func storedPrefixEndIndex(
+        stored: [MLXServerChatTranscriptFingerprint],
+        request: [MLXServerChatTranscriptFingerprint]
+    ) -> Int? {
+        matchingPrefixEndIndex(
+            stored: stored,
+            request: request,
+            acceptsCompleteMatch: true
+        )
+    }
+
+    private static func matchingPrefixEndIndex(
+        stored: [MLXServerChatTranscriptFingerprint],
+        request: [MLXServerChatTranscriptFingerprint],
+        acceptsCompleteMatch: Bool
+    ) -> Int? {
+        guard !stored.isEmpty else {
             return nil
         }
-                let assistantRole = MLXServerChatMessage.Role.assistant.rawValue
+        let assistantRole = MLXServerChatMessage.Role.assistant.rawValue
         var storedIndex = 0
         var requestIndex = 0
 
@@ -127,7 +153,7 @@ public enum MLXServerChatSessionTranscript {
             requestIndex += 1
         }
 
-        return requestIndex < request.count ? requestIndex : nil
+        return acceptsCompleteMatch || requestIndex < request.count ? requestIndex : nil
     }
 
     /// Fallback session key for clients that do not send a session

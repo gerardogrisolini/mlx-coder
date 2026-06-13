@@ -612,55 +612,44 @@ struct ACPCompatibilityTests {
     }
 
     @Test
-    func acpSessionStoreRoundTripsRuntimeSnapshot() throws {
-        let supportURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("mlx-acp-session-store-\(UUID().uuidString)", isDirectory: true)
-        let workspaceURL = supportURL.appendingPathComponent("workspace", isDirectory: true)
-        defer {
-            try? FileManager.default.removeItem(at: supportURL)
-        }
-        try FileManager.default.createDirectory(
-            at: workspaceURL,
-            withIntermediateDirectories: true
-        )
-
-        let snapshot = AgentRuntimeSessionSnapshot(
-            sessionID: "swiftmlx-session-1",
-            workingDirectoryPath: workspaceURL.path,
-            systemPrompt: "System",
-            cacheKey: "cache",
-            history: [
-                AgentRuntimeMessage(role: .user, content: "Hello"),
-                AgentRuntimeMessage(
-                    role: .assistant,
-                    content: "Hi",
-                    reasoningContent: "Thinking"
+    func resumeSessionRebuildsStateFromClientHistory() async throws {
+        let bridge = try makeBridge(
+            models: [
+                AgentSettingsModelManifest(
+                    id: "test-model",
+                    kind: .remoteAPI,
+                    modelID: "local/test-model"
                 )
-            ],
-            allowedToolNames: ["local.readFile", "local.exec"],
-            thinkingSelection: .medium,
-            preserveThinking: true
+            ]
         )
 
-        let fileURL = try MLXCoderACPSessionStore.save(
-            snapshot,
-            supportDirectoryURL: supportURL
-        )
-        #expect(fileURL.pathExtension == MLXCoderACPSessionStore.fileExtension)
+        try await bridge.resumeSession(id: nil, params: [
+            "sessionId": "client-session-1",
+            "cwd": "/tmp/acp-resume-workspace",
+            "modelId": "test-model",
+            "cacheKey": "client-cache-1",
+            "history": [
+                [
+                    "role": "user",
+                    "content": "Hello"
+                ],
+                [
+                    "role": "assistant",
+                    "content": "Hi"
+                ]
+            ] as [[String: Any]]
+        ])
 
-        let loadedSnapshot = try MLXCoderACPSessionStore.load(
-            sessionID: snapshot.sessionID,
-            workingDirectory: workspaceURL,
-            supportDirectoryURL: supportURL
-        )
-        #expect(loadedSnapshot?.sessionID == snapshot.sessionID)
-        #expect(loadedSnapshot?.workingDirectoryPath == snapshot.workingDirectoryPath)
-        #expect(loadedSnapshot?.systemPrompt == snapshot.systemPrompt)
-        #expect(loadedSnapshot?.cacheKey == snapshot.cacheKey)
-        #expect(loadedSnapshot?.history == snapshot.history)
-        #expect(loadedSnapshot?.allowedToolNames == snapshot.allowedToolNames)
-        #expect(loadedSnapshot?.thinkingSelection == snapshot.thinkingSelection)
-        #expect(loadedSnapshot?.preserveThinking == snapshot.preserveThinking)
+        let configuration = try #require(await bridge.testOnlySessionConfigurations().first)
+
+        #expect(configuration.sessionID == "client-session-1")
+        #expect(configuration.workingDirectory.path == "/tmp/acp-resume-workspace")
+        #expect(configuration.modelID == "test-model")
+        #expect(configuration.cacheKey == "client-cache-1")
+        #expect(configuration.history == [
+            AgentRuntimeMessage(role: .user, content: "Hello"),
+            AgentRuntimeMessage(role: .assistant, content: "Hi")
+        ])
     }
 
     @Test
@@ -678,7 +667,7 @@ struct ACPCompatibilityTests {
         let create = MLXCoderACPBridge.toolCallCreateUpdate(for: toolCall)
         #expect(create["sessionUpdate"] as? String == "tool_call")
         #expect(create["toolCallId"] as? String == "call_001")
-        #expect(create["kind"] as? String == "execute")
+                #expect(create["kind"] as? String == "local.exec")
         #expect(create["status"] as? String == "pending")
         #expect(create["tool_call_id"] == nil)
 
@@ -924,6 +913,196 @@ private extension ACPCompatibilityTests {
         #expect(currentValue == "high")
     }
 
+        @Test
+    func runtimeCacheIsSavedOnCloseNotPerPrompt() async throws {
+        let backend = RuntimeCacheRecordingACPBackend()
+        let bridge = try makeBridge(
+            models: [
+                AgentSettingsModelManifest(
+                    id: "test-model",
+                    kind: .remoteAPI,
+                    modelID: "local/test-model"
+                )
+            ],
+            backendFactory: { _, _ in backend }
+        )
+
+        try await bridge.newSession(id: nil, params: [
+            "cwd": "/tmp/acp-kv-cache-workspace"
+        ])
+        let sessionID = try #require(await bridge.testOnlySessionConfigurations().first?.sessionID)
+
+        try await bridge.prompt(id: nil, params: [
+            "sessionId": sessionID,
+            "prompt": "first prompt"
+        ])
+        try await bridge.prompt(id: nil, params: [
+            "sessionId": sessionID,
+            "prompt": "second prompt"
+        ])
+
+        // Completing prompts must not persist the KV cache to disk.
+        #expect(await backend.saveCount() == 0)
+
+        try await bridge.close(id: nil, params: [
+            "sessionId": sessionID
+        ])
+
+        // Closing the session must persist the KV cache exactly once.
+        #expect(await backend.saveCount() == 1)
+        #expect(await backend.savedSessionIDs() == [sessionID])
+    }
+
+    @Test
+    func runtimeCacheIsSavedOnShutdownForOpenSessions() async throws {
+        let backend = RuntimeCacheRecordingACPBackend()
+        let bridge = try makeBridge(
+            models: [
+                AgentSettingsModelManifest(
+                    id: "test-model",
+                    kind: .remoteAPI,
+                    modelID: "local/test-model"
+                )
+            ],
+            backendFactory: { _, _ in backend }
+        )
+
+        try await bridge.newSession(id: nil, params: [
+            "cwd": "/tmp/acp-kv-cache-workspace"
+        ])
+        let sessionID = try #require(await bridge.testOnlySessionConfigurations().first?.sessionID)
+
+        try await bridge.prompt(id: nil, params: [
+            "sessionId": sessionID,
+            "prompt": "first prompt"
+        ])
+        #expect(await backend.saveCount() == 0)
+
+        // A client disconnecting (EOF) without session/close still persists.
+        await bridge.shutdown()
+
+        #expect(await backend.saveCount() == 1)
+        #expect(await backend.savedSessionIDs() == [sessionID])
+    }
+
+    @Test
+    func runtimeCacheIsRestoredOnResume() async throws {
+        let backend = RuntimeCacheRecordingACPBackend()
+        let bridge = try makeBridge(
+            models: [
+                AgentSettingsModelManifest(
+                    id: "test-model",
+                    kind: .remoteAPI,
+                    modelID: "local/test-model"
+                )
+            ],
+            backendFactory: { _, _ in backend }
+        )
+
+        try await bridge.newSession(id: nil, params: [
+            "cwd": "/tmp/acp-kv-cache-workspace"
+        ])
+        let sessionID = try #require(await bridge.testOnlySessionConfigurations().first?.sessionID)
+
+        try await bridge.prompt(id: nil, params: [
+            "sessionId": sessionID,
+            "prompt": "first prompt"
+        ])
+        try await bridge.close(id: nil, params: [
+            "sessionId": sessionID
+        ])
+        #expect(await backend.restoreCount() == 0)
+
+        // Reconnecting and resuming the old session restores the disk cache,
+        // so the next prompt can continue without re-running the prefill.
+        try await bridge.resumeSession(id: nil, params: [
+            "sessionId": sessionID,
+            "cwd": "/tmp/acp-kv-cache-workspace"
+        ])
+
+                #expect(await backend.restoreCount() == 1)
+        #expect(await backend.restoredSessionIDs() == [sessionID])
+    }
+
+    @Test
+    func resumeWithoutSessionIDStillRestoresRuntimeCache() async throws {
+        let backend = RuntimeCacheRecordingACPBackend()
+        let bridge = try makeBridge(
+            models: [
+                AgentSettingsModelManifest(
+                    id: "test-model",
+                    kind: .remoteAPI,
+                    modelID: "local/test-model"
+                )
+            ],
+            backendFactory: { _, _ in backend }
+        )
+
+        // No session_id: a stateless client resumes by resending its history.
+        try await bridge.resumeSession(id: nil, params: [
+            "cwd": "/tmp/acp-kv-cache-workspace",
+            "history": [
+                ["role": "user", "content": "Hello"],
+                ["role": "assistant", "content": "Hi"]
+            ] as [[String: Any]]
+        ])
+
+        let configuration = try #require(await bridge.testOnlySessionConfigurations().first)
+        #expect(!configuration.sessionID.isEmpty)
+        #expect(await backend.restoreCount() == 1)
+        #expect(await backend.restoredSessionIDs() == [configuration.sessionID])
+    }
+
+    @Test
+    func newSessionRestoresRuntimeCacheWhenHistoryIsProvided() async throws {
+        let backend = RuntimeCacheRecordingACPBackend()
+        let bridge = try makeBridge(
+            models: [
+                AgentSettingsModelManifest(
+                    id: "test-model",
+                    kind: .remoteAPI,
+                    modelID: "local/test-model"
+                )
+            ],
+            backendFactory: { _, _ in backend }
+        )
+
+        // A stateless client that reconnects with session/new and resends the
+        // transcript must still recover the KV cache from disk.
+        try await bridge.newSession(id: nil, params: [
+            "cwd": "/tmp/acp-kv-cache-workspace",
+            "history": [
+                ["role": "user", "content": "Hello"],
+                ["role": "assistant", "content": "Hi"]
+            ] as [[String: Any]]
+        ])
+
+        let configuration = try #require(await bridge.testOnlySessionConfigurations().first)
+        #expect(await backend.restoreCount() == 1)
+        #expect(await backend.restoredSessionIDs() == [configuration.sessionID])
+    }
+
+    @Test
+    func newSessionDoesNotRestoreRuntimeCacheWithoutHistory() async throws {
+        let backend = RuntimeCacheRecordingACPBackend()
+        let bridge = try makeBridge(
+            models: [
+                AgentSettingsModelManifest(
+                    id: "test-model",
+                    kind: .remoteAPI,
+                    modelID: "local/test-model"
+                )
+            ],
+            backendFactory: { _, _ in backend }
+        )
+
+        try await bridge.newSession(id: nil, params: [
+            "cwd": "/tmp/acp-kv-cache-workspace"
+        ])
+
+        #expect(await backend.restoreCount() == 0)
+    }
+
     func makeBridge(
         models: [AgentSettingsModelManifest],
         availableAgents: [AgentProfile] = AgentProfileStore.defaultProfiles(),
@@ -1146,11 +1325,126 @@ private actor CapturingACPBackend: AgentRuntimeBackend {
         DirectAgentResponse(text: "", stopReason: "end_turn", modelID: "test-model")
     }
 
-    func createdAllowedToolNames() -> Set<String>? {
+        func createdAllowedToolNames() -> Set<String>? {
         allowedToolNames
     }
 
     func createdSystemPrompt() -> String? {
         systemPrompt
+    }
+}
+
+private actor RuntimeCacheRecordingACPBackend: AgentRuntimeBackend {
+    private var savedIDs: [String] = []
+    private var restoredIDs: [String] = []
+    private var snapshots: [String: AgentRuntimeSessionSnapshot] = [:]
+
+    func createSession(
+        id: String,
+        cwd: String,
+        systemPrompt: String?,
+        history: [AgentRuntimeMessage],
+        cacheKey: String?,
+        allowedToolNames: Set<String>?,
+        thinkingSelection: AgentThinkingSelection?,
+        preserveThinking: Bool
+    ) {
+        snapshots[id] = AgentRuntimeSessionSnapshot(
+            sessionID: id,
+            modelID: "test-model",
+            workingDirectoryPath: cwd,
+            systemPrompt: systemPrompt,
+            cacheKey: cacheKey,
+            history: history,
+            allowedToolNames: allowedToolNames,
+            thinkingSelection: thinkingSelection,
+            preserveThinking: preserveThinking
+        )
+    }
+
+    func createSessionIfNeeded(
+        id: String,
+        cwd: String,
+        systemPrompt: String?,
+        history: [AgentRuntimeMessage],
+        cacheKey: String?,
+        allowedToolNames: Set<String>?,
+        thinkingSelection: AgentThinkingSelection?,
+        preserveThinking: Bool
+    ) {
+        guard snapshots[id] == nil else {
+            return
+        }
+        createSession(
+            id: id,
+            cwd: cwd,
+            systemPrompt: systemPrompt,
+            history: history,
+            cacheKey: cacheKey,
+            allowedToolNames: allowedToolNames,
+            thinkingSelection: thinkingSelection,
+            preserveThinking: preserveThinking
+        )
+    }
+
+    func updateSessionOptions(
+        id _: String,
+        systemPrompt _: String?,
+        allowedToolNames _: Set<String>?,
+        thinkingSelection _: AgentThinkingSelection?,
+        preserveThinking _: Bool
+    ) {}
+
+    func closeSession(id: String) {
+        snapshots.removeValue(forKey: id)
+    }
+
+    func shutdown() async {}
+
+    func saveSessionRuntimeCache(id: String) async {
+        savedIDs.append(id)
+    }
+
+    func restoreSessionRuntimeCache(id: String) async {
+        restoredIDs.append(id)
+    }
+
+    func preloadModel(
+        onEvent _: @escaping @Sendable (DirectAgentEvent) async -> Void
+    ) async throws -> String {
+        "test-model"
+    }
+
+    func activeToolDescriptors() async -> [DirectToolDescriptor] {
+        []
+    }
+
+    func sendPrompt(
+        sessionID _: String,
+        prompt _: String,
+        attachments _: [AgentRuntimeAttachment],
+        onEvent _: @escaping @Sendable (DirectAgentEvent) async -> Void
+    ) async throws -> DirectAgentResponse {
+        DirectAgentResponse(text: "", stopReason: "end_turn", modelID: "test-model")
+    }
+
+    func snapshotSession(id: String) -> AgentRuntimeSessionSnapshot? {
+        snapshots[id]
+    }
+
+    func saveCount() -> Int {
+        savedIDs.count
+    }
+
+    func restoreCount() -> Int {
+        restoredIDs.count
+    }
+
+    func savedSessionIDs() -> [String] {
+        savedIDs
+    }
+
+    func restoredSessionIDs() -> [String] {
+        restoredIDs
     }
 }

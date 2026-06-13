@@ -8,10 +8,6 @@ let products: [Product] = [
         targets: ["MLXServerCore"]
     ),
     .library(
-        name: "MLXServerHTTP",
-        targets: ["MLXServerHTTP"]
-    ),
-    .library(
         name: "MLXServerSetup",
         targets: ["MLXServerSetup"]
     ),
@@ -30,10 +26,6 @@ let products: [Product] = [
     .library(
         name: "MLXLocalToolsSupport",
         targets: ["MLXLocalToolsSupport"]
-    ),
-    .executable(
-        name: "mlx-server",
-        targets: ["mlx-server"]
     ),
     .executable(
         name: "mlx-coder",
@@ -83,16 +75,6 @@ let targets: [Target] = [
             .product(name: "Tokenizers", package: "swift-transformers")
         ]
     ),
-    .executableTarget(
-        name: "mlx-server",
-        dependencies: [
-            "MLXServerCore",
-            "MLXServerHTTP",
-            "MLXServerSetup",
-            "MLXCoderCore",
-            .product(name: "HuggingFace", package: "swift-huggingface")
-        ]
-    ),
     .target(
         name: "MLXCoderCore",
         dependencies: [
@@ -125,7 +107,10 @@ let targets: [Target] = [
         name: "mlx-coder",
         dependencies: [
             "MLXCoderCore",
-            "MLXCoderSetup"
+            "MLXCoderSetup",
+            "MLXServerCore",
+            "MLXServerSetup",
+            .product(name: "MLXLMCommon", package: "mlx-swift-lm")
         ],
         swiftSettings: [
             .define("SWIFTPM_NON_SANDBOX_TUI")
@@ -138,17 +123,6 @@ let targets: [Target] = [
             .product(name: "HuggingFace", package: "swift-huggingface")
         ]
     ),
-    .target(
-        name: "MLXServerHTTP",
-        dependencies: [
-            "MLXServerCore",
-            .product(name: "NIOCore", package: "swift-nio"),
-            .product(name: "NIOHTTP1", package: "swift-nio"),
-            .product(name: "NIOHTTP2", package: "swift-nio-http2"),
-            .product(name: "NIOPosix", package: "swift-nio"),
-            .product(name: "NIOSSL", package: "swift-nio-ssl")
-        ]
-    ),
     .testTarget(
         name: "MLXServerCoreTests",
         dependencies: ["MLXServerCore"]
@@ -156,13 +130,6 @@ let targets: [Target] = [
     .testTarget(
         name: "MLXServerSetupTests",
         dependencies: ["MLXServerSetup"]
-    ),
-    .testTarget(
-        name: "MLXServerHTTPTests",
-        dependencies: [
-            "MLXServerCore",
-            "MLXServerHTTP"
-        ]
     ),
     .testTarget(
         name: "MLXCoderCoreTests",
@@ -227,9 +194,6 @@ let package = Package(
     products: products,
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
-        .package(url: "https://github.com/apple/swift-nio.git", from: "2.100.0"),
-        .package(url: "https://github.com/apple/swift-nio-http2.git", from: "1.39.0"),
-        .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.0.0"),
         .package(url: "https://github.com/huggingface/swift-huggingface.git", from: "0.9.0"),
         .package(url: "https://github.com/huggingface/swift-transformers.git", from: "1.3.3"),
         .package(url: "https://github.com/ml-explore/mlx-swift", .upToNextMinor(from: "0.31.3")),

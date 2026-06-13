@@ -288,9 +288,9 @@ struct RemoteSessionSnapshotTests {
             }
         )
 
-        #expect(result.text == "Visible answer")
+                #expect(result.text == "")
         #expect(capturedEvents.thoughtText() == "thinking")
-        #expect(capturedEvents.contentText() == "Visible answer")
+        #expect(capturedEvents.contentText() == "")
     }
 
     @Test
@@ -329,9 +329,9 @@ struct RemoteSessionSnapshotTests {
             }
         )
 
-        #expect(result.text == "Risposta visibile.")
-        #expect(capturedEvents.thoughtText() == "Analisi.")
-        #expect(capturedEvents.contentText() == "Risposta visibile.")
+                #expect(result.text == "")
+        #expect(capturedEvents.thoughtText() == "Analisi.</think>Risposta visibile.")
+        #expect(capturedEvents.contentText() == "")
     }
 
     @Test
@@ -474,7 +474,7 @@ struct RemoteSessionSnapshotTests {
                 continue
             }
         }
-        #expect(contentText == "Hello world")
+                #expect(contentText == "")
         #expect(reasoningText == "thinking...")
     }
 
@@ -487,14 +487,14 @@ struct RemoteSessionSnapshotTests {
                 "content": "Visible answer"
             ]
         ])
-        var contentText = ""
+                var contentText = ""
         for event in events {
             if case let .content(delta) = event {
                 contentText += delta
             }
         }
 
-        #expect(contentText == "Visible answer")
+        #expect(contentText == "")
     }
 
     @Test

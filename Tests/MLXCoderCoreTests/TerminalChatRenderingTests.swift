@@ -87,7 +87,7 @@ struct TerminalChatRenderingTests {
             deletions: 4
         )
 
-        #expect(TerminalStatusBar.gitStatusFragment(summary: summary) == "git 3 files +12 -4")
+                #expect(TerminalStatusBar.gitStatusFragment(summary: summary) == "3 files +12 -4")
     }
 
     @Test
@@ -238,9 +238,9 @@ struct TerminalChatRenderingTests {
             argumentsJSON: #"{"file_path":"Sources/App.swift","oldString":"old","newString":"new"}"#
         )
 
-        let lines = TerminalChat.compactToolLines(for: toolCall, statusIcon: "⏳")
+                let lines = TerminalChat.compactToolLines(for: toolCall, statusIcon: "⏳")
 
-        #expect(lines.contains("✏️  Edit:"))
+        #expect(lines.contains("🛠️  local.editFile:"))
         #expect(lines.contains { $0.contains("Sources/App.swift") })
     }
 
@@ -310,11 +310,11 @@ struct TerminalChatRenderingTests {
             argumentsJSON: #"{"path":"/tmp/project/Sources/App.swift"}"#
         )
 
-        let lines = TerminalChat.detailedToolCallStartedLines(for: toolCall)
+                let lines = TerminalChat.detailedToolCallStartedLines(for: toolCall)
 
-        #expect(lines.contains("📄  Read /tmp/project/Sources/App.swift ⏳"))
+        #expect(lines.contains("🛠️  local.readFile /tmp/project/Sources/App.swift ⏳"))
         #expect(lines.contains("status: in_progress"))
-        #expect(lines.contains("kind: read"))
+        #expect(lines.contains("kind: local.readFile"))
         #expect(lines.contains("location: /tmp/project/Sources/App.swift"))
         #expect(!lines.contains("rawInput:"))
         #expect(!lines.contains { $0.contains("call_1") })
@@ -340,8 +340,8 @@ struct TerminalChatRenderingTests {
             result: result
         )
 
-        #expect(lines.contains("status: completed"))
-        #expect(lines.contains("kind: read"))
+                #expect(lines.contains("status: completed"))
+        #expect(lines.contains("kind: local.readFile"))
         #expect(lines.contains("summary: read 2 lines"))
         #expect(!lines.contains("rawOutput.output:"))
         #expect(!lines.contains("let value = 1"))

@@ -1,6 +1,6 @@
 //
 //  MLXServerCoderBackend.swift
-//  mlx-server
+//  mlx-coder
 //
 
 import Foundation
@@ -143,11 +143,9 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
 
     func closeSession(id: String) async {
         sessions.removeValue(forKey: id)
-        await runtime.persistChatSessionsToDisk()
     }
 
     func shutdown() async {
-        await runtime.persistChatSessionsToDisk()
         sessions.removeAll(keepingCapacity: false)
         await toolExecutor.shutdown()
     }
@@ -254,6 +252,29 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         )
     }
 
+    func saveSessionRuntimeCache(id: String) async {
+        guard let session = sessions[id] else {
+            return
+        }
+        let request = await generationRequest(for: session, sessionID: id)
+        _ = await runtime.saveChatSessionCacheToDisk(request: request)
+    }
+
+    func restoreSessionRuntimeCache(id: String) async {
+        guard let session = sessions[id] else {
+            return
+        }
+        let request = await generationRequest(for: session, sessionID: id)
+        do {
+            _ = try await runtime.restoreChatSessionCacheFromDisk(request: request)
+        } catch {
+            SwiftMLXLogger.warning(
+                .viewModelRuntime,
+                "failed to restore MLX session cache id=\(id): \(error.localizedDescription)"
+            )
+        }
+    }
+
     func sendPrompt(
         sessionID: String,
         prompt: String,
@@ -290,7 +311,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
             if let result = compactSessionIfNeeded(&session) {
                 await onEvent(.diagnostic(Self.compactionDiagnostic(from: result)))
             }
-                        let request = await generationRequest(for: session, sessionID: sessionID)
+            let request = await generationRequest(for: session, sessionID: sessionID)
             await onEvent(.modelRuntime(request.runtimeKind.rawValue))
             let turn = try await runGenerationTurn(
                 request: request,
@@ -332,7 +353,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         throw MLXServerCoderBackendError.tooManyToolRounds(configuration.maxToolRounds)
     }
 
-        private func generationRequest(
+    private func generationRequest(
         for session: SessionState,
         sessionID: String
     ) async -> MLXServerGenerationRequest {
@@ -350,9 +371,15 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
                 allowedToolNames: session.allowedToolNames,
                 preferredWorkspaceRootURL: session.cwd
             ),
-                        additionalContext: additionalContext,
-            retainsReasoningInHistory: session.preserveThinking && thinkingSelection.isEnabled,
-            sessionID: session.cacheKey ?? sessionID
+            additionalContext: additionalContext,
+                                    retainsReasoningInHistory: session.preserveThinking && thinkingSelection.isEnabled,
+            // Prefer an explicit client-provided cache key. When absent, leave
+            // the session key nil so the runtime derives a stable key from the
+            // conversation opening (system prompt + first user message). This
+            // lets stateless ACP clients that resend their transcript reuse the
+            // KV cache across reconnections, even without a session_id. The TUI
+            // always supplies a cache key, so it is unaffected.
+            sessionID: session.cacheKey?.nilIfBlank
         )
     }
 

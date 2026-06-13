@@ -282,6 +282,26 @@ public actor AgentCoreSessionRunner {
         )
     }
 
+    public func saveSessionRuntimeCache(id sessionID: String) async {
+        await backend?.saveSessionRuntimeCache(id: sessionID)
+    }
+
+        public func restoreSessionRuntimeCache(id sessionID: String) async {
+        await backend?.restoreSessionRuntimeCache(id: sessionID)
+    }
+
+    /// Shared session-restore entry point: creates the runtime session and
+    /// rehydrates its KV cache from disk for the same session identity. Both
+    /// the TUI saved-session loader and the ACP session/load and
+    /// session/resume flows use this so cache loading stays unified.
+    public func restoreSession(
+        configuration: AgentCoreSessionConfiguration
+    ) async throws {
+        try await createSession(configuration: configuration)
+        await restoreSessionRuntimeCache(id: configuration.sessionID)
+    }
+
+
     public func streamPrompt(
         _ prompt: String,
         configuration: AgentCoreSessionConfiguration,

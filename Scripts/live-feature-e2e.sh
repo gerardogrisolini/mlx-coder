@@ -79,8 +79,8 @@ PROMPT
 
 run_args=(
     run
-    mlx-server
-    --coder
+    mlx-coder
+    --mlx
     --cwd "$workspace"
     --model "$model_id"
     --agent LiveFeatureE2E
@@ -102,7 +102,7 @@ exit_code=$?
 set -e
 
 if [[ "$exit_code" -ne 0 ]]; then
-    printf 'mlx-server --coder failed with exit code %s\n' "$exit_code" >&2
+    printf 'mlx-coder --mlx failed with exit code %s\n' "$exit_code" >&2
     cat "$log_file" >&2
     exit "$exit_code"
 fi

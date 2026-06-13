@@ -519,13 +519,13 @@ extension SwiftFeatureRuntime {
         return [
             binaryDirectoryURL,
             binaryDirectoryURL.appendingPathComponent("features", isDirectory: true),
-            binaryDirectoryURL.appendingPathComponent("mlx-server-features", isDirectory: true),
+            binaryDirectoryURL.appendingPathComponent("mlx-coder-features", isDirectory: true),
             packageDirectoryURL.appendingPathComponent("features", isDirectory: true),
-            packageDirectoryURL.appendingPathComponent("mlx-server-features", isDirectory: true),
+            packageDirectoryURL.appendingPathComponent("mlx-coder-features", isDirectory: true),
             packageDirectoryURL.appendingPathComponent("libexec", isDirectory: true)
                 .appendingPathComponent("features", isDirectory: true),
             packageDirectoryURL.appendingPathComponent("share", isDirectory: true)
-                .appendingPathComponent("mlx-server", isDirectory: true)
+                .appendingPathComponent("mlx-coder", isDirectory: true)
                 .appendingPathComponent("features", isDirectory: true)
         ]
     }

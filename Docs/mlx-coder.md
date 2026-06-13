@@ -1,6 +1,6 @@
 # mlx-coder Guide
 
-`mlx-coder` is the autonomous coding agent runtime included in this repository. It can run as a standalone terminal agent, as an ACP stdio agent for compatible clients, or through `mlx-server --coder` to use the local MLX runtime directly without HTTP.
+`mlx-coder` is the autonomous coding agent runtime included in this repository. It can run as a standalone terminal agent, as an ACP stdio agent for compatible clients, or through `mlx-coder --mlx` to use the local MLX runtime directly without HTTP.
 
 Use this guide to set up providers, agent profiles, tools, skills, saved sessions, memory, and day-to-day terminal commands.
 
@@ -20,13 +20,13 @@ Use this guide to set up providers, agent profiles, tools, skills, saved session
    swift run -c release mlx-coder --acp
    ```
 
-3. Direct local MLX runtime through the server executable:
+3. Direct local MLX runtime:
 
    ```bash
-   swift run -c release mlx-server --coder --cwd /path/to/project
+   swift run -c release mlx-coder --mlx --cwd /path/to/project
    ```
 
-Standalone `mlx-coder` uses providers/models from `~/.mlx-coder/settings.json`. Direct `mlx-server --coder` uses the local `~/.mlx-server/models.json` catalog and `MLXServerRuntime` directly.
+Standalone `mlx-coder` uses providers/models from `~/.mlx-coder/settings.json`. Direct `mlx-coder --mlx` uses the local `~/.mlx-coder/mlx/models.json` catalog and the local MLX runtime directly.
 
 ## First Setup
 
@@ -36,15 +36,16 @@ Create standalone support files and configure providers/models:
 swift run -c release mlx-coder --setup
 ```
 
-Create or update agent profiles (last section of `--setup`):
-
-```bash
-swift run -c release mlx-coder --setup
-```
-
 The first setup creates files under `~/.mlx-coder/`. During setup you can also
 enable Telegram remote control, pair the bot once, enable local voice tools, and
 store those settings in `settings.json`.
+
+Create or update the local MLX runtime settings and model catalog:
+
+```bash
+swift run -c release mlx-coder --mlx --setup
+swift run -c release mlx-coder --mlx --setup-models
+```
 
 - `settings.json`: provider/model configuration, selected model, optional Telegram remote control token plus linked chat, and optional local voice tool settings.
 - `permissions.json`: persistent runtime approvals such as allowed `local.exec` commands.
@@ -250,7 +251,7 @@ Delete a session:
 /sessions delete
 ```
 
-Local MLX sessions save the runtime snapshot. Remote sessions save the local transcript, including tool calls and outputs, so a remote `mlx-server` can reuse disk KV cache when the restored prompt prefix matches.
+Local MLX sessions save the runtime snapshot. Remote sessions save the local transcript, including tool calls and outputs, so compatible providers can reuse context when the restored prompt prefix matches.
 
 When `/sessions <name>` saves a session, `mlx-coder` updates one active global resume pointer for that project while leaving pointers for other projects intact. `/sessions save` rewrites that active saved session; if no saved session is active yet, it asks for an explicit session name instead of creating a session named `save`.
 
@@ -310,26 +311,29 @@ In ACP mode:
 - clients provide prompts, sessions, and tool exposure;
 - `--agent`, `--model`, `--cwd`, `--skills`, and token environment variables still apply.
 
-## Direct Local Runtime with mlx-server
+## Direct Local Runtime with mlx-coder --mlx
 
 For fully local MLX inference without HTTP, run:
 
 ```bash
-swift run -c release mlx-server --coder --cwd /path/to/project
+swift run -c release mlx-coder --mlx --cwd /path/to/project
 ```
 
 This mode:
 
-- reads models from `~/.mlx-server/models.json`;
+- reads models from `~/.mlx-coder/mlx/models.json`;
 - uses `MLXServerRuntime` directly;
-- respects server model generation defaults and disk KV cache settings;
+- respects local model generation defaults and disk KV cache settings;
+- persists the per-session KV cache on session close/shutdown and restores it on
+  reconnect, including for stateless ACP clients without a `session_id` (see the
+  [Local MLX runtime guide](mlx-runtime.md) for details);
 - can run chat TUI or ACP with `--acp`;
 - creates a default project `AGENTS.md` if one is missing.
 
 Example with explicit model and profile:
 
 ```bash
-swift run -c release mlx-server --coder \
+swift run -c release mlx-coder --mlx \
   --cwd /path/to/project \
   --model qwen3-mlx \
   --agent Feature \
@@ -367,7 +371,7 @@ swift run -c release mlx-server --coder \
 ## Troubleshooting
 
 - Setup starts automatically: required `~/.mlx-coder` files are missing; complete `--setup`.
-- Model not found: run `/models` or check `~/.mlx-coder/settings.json`; in `mlx-server --coder` mode check `~/.mlx-server/models.json`.
+- Model not found: run `/models` or check `~/.mlx-coder/settings.json`; in `mlx-coder --mlx` mode check `~/.mlx-coder/mlx/models.json`.
 - No tools available: use `/tools`, switch to a profile that permits tools, or check ACP client tool exposure.
 - `/feature` unavailable: switch to the Builder agent with `/agents Builder`.
 - Xcode tools missing: make sure Xcode is running and MCP bridge tooling can expose tools.

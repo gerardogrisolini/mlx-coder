@@ -1,6 +1,6 @@
 //
 //  MLXServerSetupRunner.swift
-//  mlx-server
+//  mlx-coder
 //
 
 import Foundation
@@ -28,7 +28,7 @@ public enum MLXServerSetupRunner {
         let hadSettingsFile = FileManager.default.fileExists(atPath: settingsURL.path)
         FileHandle.standardError.writeString(
             """
-            mlx-server setup
+            mlx-coder MLX setup
             Configuring settings.json at:
             \(settingsURL.path)
 
@@ -89,16 +89,6 @@ public enum MLXServerSetupRunner {
             FileHandle.standardError.writeString(
                 hadSettingsFile ? "Updated: settings.json\n" : "Created: settings.json\n"
             )
-            do {
-                try syncActiveHTTPAgentIntegrations(settings: finalSettings)
-            } catch {
-                FileHandle.standardError.writeString(
-                    """
-                    Could not update active HTTP agent integrations: \(error.localizedDescription)
-                    Run `mlx-server --setup-agents` to refresh them after setup.
-                    """
-                )
-            }
         } else {
             FileHandle.standardError.writeString("Preserved: settings.json\n")
         }
@@ -114,7 +104,7 @@ public enum MLXServerSetupRunner {
         settingsExists: Bool
     ) throws -> SetupSection {
         let options = setupSectionOptions(currentSettings: settings)
-        let defaultSection: SetupSection = settingsExists ? .finish : .serverBinding
+        let defaultSection: SetupSection = settingsExists ? .finish : .modelLoading
         let defaultIndex = options.firstIndex { $0.section == defaultSection } ?? 0
 
         FileHandle.standardError.writeString("Setup sections:\n")
@@ -147,32 +137,12 @@ public enum MLXServerSetupRunner {
     ) -> [SetupSectionOption] {
         [
             SetupSectionOption(
-                section: .serverBinding,
-                detail: "\(settings.host):\(settings.port), threads \(settings.webServerThreadCount)"
-            ),
-            SetupSectionOption(
                 section: .modelLoading,
                 detail: settings.loadOneModelAtATime ? "one model at a time" : "keep loaded models"
             ),
             SetupSectionOption(
                 section: .kvCache,
                 detail: kvCacheSetupDetail(settings.kvCache)
-            ),
-            SetupSectionOption(
-                section: .http2,
-                detail: settings.http2PriorKnowledge ? "enabled" : "disabled"
-            ),
-            SetupSectionOption(
-                section: .apiKey,
-                detail: settings.apiKey?.nilIfEmpty == nil ? "disabled" : "enabled"
-            ),
-            SetupSectionOption(
-                section: .tls,
-                detail: tlsSetupDetail(settings)
-            ),
-            SetupSectionOption(
-                section: .metrics,
-                detail: settings.metricsLogPath?.nilIfEmpty == nil ? "disabled" : settings.metricsLogPath
             ),
             SetupSectionOption(
                 section: .diskKVCache,
@@ -195,14 +165,6 @@ public enum MLXServerSetupRunner {
         }
     }
 
-    private static func tlsSetupDetail(_ settings: MLXServerSettings) -> String {
-        if settings.tlsCertificatePath?.nilIfEmpty != nil,
-           settings.tlsPrivateKeyPath?.nilIfEmpty != nil {
-            return "enabled"
-        }
-        return "disabled"
-    }
-
     private static func diskKVCacheSetupDetail(_ settings: MLXServerDiskKVCacheSettings) -> String {
         guard settings.enabled else {
             return "disabled"
@@ -219,54 +181,15 @@ public enum MLXServerSetupRunner {
         currentSettings settings: MLXServerSettings
     ) throws -> MLXServerSettings {
         switch section {
-        case .serverBinding:
-            return try configureServerBinding(settings)
         case .modelLoading:
             return try configureModelLoading(settings)
         case .kvCache:
             return try configureKVCache(settings)
-        case .http2:
-            return try configureHTTP2(settings)
-        case .apiKey:
-            return try configureAPIKey(settings)
-        case .tls:
-            return try configureTLS(settings)
-        case .metrics:
-            return try configureMetrics(settings)
         case .diskKVCache:
             return try configureDiskKVCache(settings)
         case .finish:
             return settings
         }
-    }
-
-    private static func configureServerBinding(
-        _ settings: MLXServerSettings
-    ) throws -> MLXServerSettings {
-        let host = try promptString(
-            "Bind host",
-            defaultValue: settings.host,
-            allowEmpty: false
-        )
-        let port = try promptInt(
-            "Port",
-            defaultValue: settings.port,
-            allowedRange: 1...Int(UInt16.max)
-        )
-        FileHandle.standardError.writeString(
-            "Web server thread suggestion: 2 for local work, at least 4 when used as a server.\n"
-        )
-        let webServerThreadCount = try promptInt(
-            "Thread web server",
-            defaultValue: settings.webServerThreadCount,
-            allowedRange: 1...MLXServerSettings.maximumWebServerThreadCount
-        )
-        return try settingsByUpdating(
-            settings,
-            host: host,
-            port: port,
-            webServerThreadCount: webServerThreadCount
-        )
     }
 
     private static func configureModelLoading(
@@ -284,79 +207,6 @@ public enum MLXServerSetupRunner {
     ) throws -> MLXServerSettings {
         let kvCache = try promptKVCacheSettings(defaultSettings: settings.kvCache)
         return try settingsByUpdating(settings, kvCache: kvCache)
-    }
-
-    private static func configureHTTP2(
-        _ settings: MLXServerSettings
-    ) throws -> MLXServerSettings {
-        let http2PriorKnowledge = try promptYesNo(
-            "Enable HTTP/2 prior knowledge?",
-            defaultValue: settings.http2PriorKnowledge
-        )
-        return try settingsByUpdating(settings, http2PriorKnowledge: http2PriorKnowledge)
-    }
-
-    private static func configureAPIKey(
-        _ settings: MLXServerSettings
-    ) throws -> MLXServerSettings {
-        let apiKey = try promptAPIKey(defaultValue: settings.apiKey)
-        return try settingsByUpdating(settings, apiKey: apiKey)
-    }
-
-    private static func configureTLS(
-        _ settings: MLXServerSettings
-    ) throws -> MLXServerSettings {
-        let hasTLSSettings = settings.tlsCertificatePath != nil
-            && settings.tlsPrivateKeyPath != nil
-        let configureTLS = try promptYesNo(
-            "Configure TLS/SSL?",
-            defaultValue: hasTLSSettings
-        )
-        let tlsCertificatePath: String?
-        let tlsPrivateKeyPath: String?
-        if configureTLS {
-            tlsCertificatePath = try promptString(
-                "TLS certificate path",
-                defaultValue: settings.tlsCertificatePath,
-                allowEmpty: false,
-                maximumLength: MLXServerSetupInputParser.maximumPathLength
-            )
-            tlsPrivateKeyPath = try promptString(
-                "TLS private key path",
-                defaultValue: settings.tlsPrivateKeyPath,
-                allowEmpty: false,
-                maximumLength: MLXServerSetupInputParser.maximumPathLength
-            )
-        } else {
-            tlsCertificatePath = nil
-            tlsPrivateKeyPath = nil
-        }
-        return try settingsByUpdating(
-            settings,
-            tlsCertificatePath: tlsCertificatePath,
-            tlsPrivateKeyPath: tlsPrivateKeyPath
-        )
-    }
-
-    private static func configureMetrics(
-        _ settings: MLXServerSettings
-    ) throws -> MLXServerSettings {
-        let useMetricsLogFile = try promptYesNo(
-            "Write metrics to a file?",
-            defaultValue: settings.metricsLogPath != nil
-        )
-        let metricsLogPath: String?
-        if useMetricsLogFile {
-            metricsLogPath = try promptString(
-                "Metrics log file path",
-                defaultValue: settings.metricsLogPath,
-                allowEmpty: false,
-                maximumLength: MLXServerSetupInputParser.maximumPathLength
-            )
-        } else {
-            metricsLogPath = nil
-        }
-        return try settingsByUpdating(settings, metricsLogPath: metricsLogPath)
     }
 
     private static func configureDiskKVCache(
@@ -402,28 +252,20 @@ public enum MLXServerSetupRunner {
 
     private static func settingsByUpdating(
         _ settings: MLXServerSettings,
-        host: String? = nil,
-        port: Int? = nil,
-        webServerThreadCount: Int? = nil,
         loadOneModelAtATime: Bool? = nil,
-        http2PriorKnowledge: Bool? = nil,
-        apiKey: String?? = nil,
-        tlsCertificatePath: String?? = nil,
-        tlsPrivateKeyPath: String?? = nil,
-        metricsLogPath: String?? = nil,
         kvCache: MLXServerKVCacheSettings? = nil,
         diskKVCache: MLXServerDiskKVCacheSettings? = nil
     ) throws -> MLXServerSettings {
         try MLXServerSettings(
-            host: host ?? settings.host,
-            port: port ?? settings.port,
-            webServerThreadCount: webServerThreadCount ?? settings.webServerThreadCount,
+            host: settings.host,
+            port: settings.port,
+            webServerThreadCount: settings.webServerThreadCount,
             loadOneModelAtATime: loadOneModelAtATime ?? settings.loadOneModelAtATime,
-            http2PriorKnowledge: http2PriorKnowledge ?? settings.http2PriorKnowledge,
-            apiKey: apiKey ?? settings.apiKey,
-            tlsCertificatePath: tlsCertificatePath ?? settings.tlsCertificatePath,
-            tlsPrivateKeyPath: tlsPrivateKeyPath ?? settings.tlsPrivateKeyPath,
-            metricsLogPath: metricsLogPath ?? settings.metricsLogPath,
+            http2PriorKnowledge: settings.http2PriorKnowledge,
+            apiKey: settings.apiKey,
+            tlsCertificatePath: settings.tlsCertificatePath,
+            tlsPrivateKeyPath: settings.tlsPrivateKeyPath,
+            metricsLogPath: settings.metricsLogPath,
             kvCache: kvCache ?? settings.kvCache,
             diskKVCache: diskKVCache ?? settings.diskKVCache,
             huggingFaceCache: settings.huggingFaceCache
@@ -496,84 +338,6 @@ public enum MLXServerSetupRunner {
                 quantizedStart: quantizedStart
             ).validated()
         }
-    }
-
-    private static func promptAPIKey(defaultValue: String?) throws -> String? {
-        let existingAPIKey = defaultValue?.trimmingCharacters(in: .whitespacesAndNewlines)
-            .nilIfEmpty
-        if existingAPIKey != nil {
-            let keepExisting = try promptYesNo(
-                "Keep existing API key?",
-                defaultValue: true
-            )
-            if keepExisting {
-                return existingAPIKey
-            }
-        }
-
-        let requireAPIKey = try promptYesNo(
-            "Require an API key for HTTP clients?",
-            defaultValue: existingAPIKey != nil
-        )
-        guard requireAPIKey else {
-            return nil
-        }
-        return try promptString(
-            "API key",
-            defaultValue: nil,
-            allowEmpty: false,
-            isSecure: true
-        )
-    }
-
-    private static func syncActiveHTTPAgentIntegrations(settings: MLXServerSettings) throws {
-        guard let manifest = try? MLXServerModelsManifestStore.loadRequired().validated() else {
-            return
-        }
-        let enabledModels = manifest.models.filter(\.enabled)
-        guard let defaultModel = enabledModels.first(where: { $0.id == manifest.defaultModelID }) else {
-            return
-        }
-
-        let status = MLXServerAgentIntegrationService.status()
-        guard status.codexCLIEnabled
-            || status.codexAppEnabled
-            || status.codexXcodeAppEnabled
-            || status.xcodeClaudeCodeEnabled else {
-            return
-        }
-
-        let configuration = MLXServerAgentIntegrationConfiguration(
-            baseURL: MLXServerAgentIntegrationService.defaultServerBaseURL(),
-            modelID: defaultModel.id,
-            contextWindow: defaultModel.generationDefaults.contextWindow,
-            apiKey: settings.apiKey
-        )
-
-        if status.codexCLIEnabled {
-            try MLXServerAgentIntegrationService.configureCodexCLIProfile(
-                configuration: configuration
-            )
-        }
-        if status.codexAppEnabled {
-            try MLXServerAgentIntegrationService.configureCodexAppProfile(
-                target: .desktop,
-                configuration: configuration
-            )
-        }
-        if status.codexXcodeAppEnabled {
-            try MLXServerAgentIntegrationService.configureCodexAppProfile(
-                target: .xcode,
-                configuration: configuration
-            )
-        }
-        if status.xcodeClaudeCodeEnabled {
-            try MLXServerAgentIntegrationService.configureXcodeClaudeCode(
-                configuration: configuration
-            )
-        }
-
-        FileHandle.standardError.writeString("Updated active HTTP agent integrations.\n")
     }
 
     private static func promptString(
@@ -683,32 +447,17 @@ private struct SetupSectionOption {
 }
 
 private enum SetupSection: Equatable {
-    case serverBinding
     case modelLoading
     case kvCache
-    case http2
-    case apiKey
-    case tls
-    case metrics
     case diskKVCache
     case finish
 
     var title: String {
         switch self {
-        case .serverBinding:
-            return "Host, port, and web server threads"
         case .modelLoading:
             return "Model loading policy"
         case .kvCache:
             return "In-memory KV cache"
-        case .http2:
-            return "HTTP/2 prior knowledge"
-        case .apiKey:
-            return "HTTP API key"
-        case .tls:
-            return "TLS/SSL"
-        case .metrics:
-            return "Metrics log file"
         case .diskKVCache:
             return "Disk KV cache"
         case .finish:
@@ -722,20 +471,10 @@ private enum SetupSection: Equatable {
 
     private var aliases: Set<String> {
         switch self {
-        case .serverBinding:
-            return ["host", "port", "threads", "thread", "server", "binding", "bind"]
         case .modelLoading:
             return ["models", "model loading", "loading", "load", "retention"]
         case .kvCache:
             return ["kv", "kv cache", "memory kv", "in-memory kv cache", "cache"]
-        case .http2:
-            return ["http2", "http/2", "h2", "prior knowledge"]
-        case .apiKey:
-            return ["api", "api key", "key", "authentication", "auth"]
-        case .tls:
-            return ["tls", "ssl", "https", "certificate"]
-        case .metrics:
-            return ["metrics", "metrics log", "log"]
         case .diskKVCache:
             return ["disk", "disk kv", "disk kv cache", "persistent kv"]
         case .finish:
@@ -759,9 +498,9 @@ enum MLXServerSetupError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .nonInteractiveTerminal:
-            return "mlx-server --setup requires an interactive terminal."
+            return "mlx-coder --mlx --setup requires an interactive terminal."
         case .inputClosed:
-            return "Input closed during mlx-server setup."
+            return "Input closed during mlx-coder MLX setup."
         case let .invalidChoice(value):
             return "Invalid setup choice: \(value)"
         }

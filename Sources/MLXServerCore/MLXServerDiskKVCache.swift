@@ -1,14 +1,14 @@
 //
 //  MLXServerDiskKVCache.swift
-//  mlx-server
+//  mlx-coder
 //
 //  Session-keyed disk persistence for chat KV caches.
 //
 //  The in-memory KV cache is owned by MLXLMCommon's `ChatSession`; this
-//  store only persists each session's cache to disk (one safetensors file
-//  per session entry, overwritten in place as the session grows) so a
-//  restarted server can rehydrate the session and continue without
-//  re-prefilling the transcript.
+//  store only persists a saved session's cache to disk (one safetensors
+//  file per session entry, overwritten when the user saves that session)
+//  so a later session load can rehydrate the cache without re-prefilling
+//  the transcript.
 //
 
 import CryptoKit
@@ -52,6 +52,7 @@ public struct MLXServerDiskKVCacheConfiguration: Sendable, Equatable {
 struct MLXServerDiskChatSessionMatch: @unchecked Sendable {
     var cache: [KVCache]
     var fingerprints: [MLXServerChatTranscriptFingerprint]
+    var matchedPrefixEndIndex: Int
     var contextTokenCount: Int?
 }
 
@@ -122,12 +123,14 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
         for key: MLXServerChatSessionCacheKey,
         toolsSignature: String,
         contextSignature: String,
-        requestFingerprints: [MLXServerChatTranscriptFingerprint]
+        requestFingerprints: [MLXServerChatTranscriptFingerprint],
+        acceptsCompleteMatch: Bool = false
     ) -> MLXServerDiskChatSessionMatch? {
         guard configuration.isEnabled else {
             return nil
         }
 
+        let matchedPrefixEndIndex: Int?
         let urls = entryURLs(for: key.entryKey, modelID: key.modelID)
         guard let metadata = loadMetadata(from: urls.metadataURL),
               metadata.matches(
@@ -135,12 +138,22 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
                   toolsSignature: toolsSignature,
                   contextSignature: contextSignature
               ),
-              MLXServerChatSessionTranscript.continuationSuffixStartIndex(
-                  stored: metadata.fingerprints,
-                  request: requestFingerprints
-              ) != nil,
               fileManager.fileExists(atPath: urls.cacheURL.path)
         else {
+            return nil
+        }
+        if acceptsCompleteMatch {
+            matchedPrefixEndIndex = MLXServerChatSessionTranscript.storedPrefixEndIndex(
+                stored: metadata.fingerprints,
+                request: requestFingerprints
+            )
+        } else {
+            matchedPrefixEndIndex = MLXServerChatSessionTranscript.continuationSuffixStartIndex(
+                stored: metadata.fingerprints,
+                request: requestFingerprints
+            )
+        }
+        guard let matchedPrefixEndIndex else {
             return nil
         }
 
@@ -150,31 +163,15 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
         do {
             let (cache, _) = try loadPromptCache(url: urls.cacheURL)
             guard cache.hasPromptState else {
-                removeEntryIfUnchanged(
-                    cacheURL: urls.cacheURL,
-                    metadataURL: urls.metadataURL,
-                    expectedUpdatedAt: metadata.updatedAt
-                )
                 return nil
-            }
-            withStoreLock {
-                touchEntry(
-                    metadata: metadata,
-                    cacheURL: urls.cacheURL,
-                    metadataURL: urls.metadataURL
-                )
             }
             return MLXServerDiskChatSessionMatch(
                 cache: cache,
                 fingerprints: metadata.fingerprints,
+                matchedPrefixEndIndex: matchedPrefixEndIndex,
                 contextTokenCount: metadata.contextTokenCount ?? cache.contextTokenCount
             )
         } catch {
-            removeEntryIfUnchanged(
-                cacheURL: urls.cacheURL,
-                metadataURL: urls.metadataURL,
-                expectedUpdatedAt: metadata.updatedAt
-            )
             return nil
         }
     }
@@ -207,9 +204,8 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
                 return nil
             }
             let urls = entryURLs(for: key.entryKey, modelID: key.modelID)
-            // Unique per attempt: concurrent persists of the same entry
-            // (background writer job racing a shutdown flush) must not
-            // share a temporary file. Orphaned files are swept by
+            // Unique per attempt: repeated saves of the same session must
+            // not share a temporary file. Orphaned files are swept by
             // `removeOrphanedCacheFiles` after `orphanedTemporaryFileMaxAge`.
             let temporaryURL = urls.cacheURL
                 .deletingLastPathComponent()
@@ -348,49 +344,6 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
         ensuredDirectoryLock.lock()
         ensuredDirectoryPaths.insert(path)
         ensuredDirectoryLock.unlock()
-    }
-
-    /// Minimum interval between on-disk `lastAccessedAt` rewrites. Eviction
-    /// tolerates access times that are stale by up to one interval.
-    static let accessTimePersistenceInterval: TimeInterval = 15 * 60
-
-    /// Records a cache hit. Must be called while holding the store lock.
-    private func touchEntry(
-        metadata: MLXServerPersistedChatSessionMetadata,
-        cacheURL: URL,
-        metadataURL: URL
-    ) {
-        guard fileManager.fileExists(atPath: cacheURL.path) else {
-            return
-        }
-        var touched = metadata
-        let now = Date()
-        touched.lastAccessedAt = now
-        touched.byteCount = byteCount(of: cacheURL)
-
-        let byteCountChanged = touched.byteCount != metadata.byteCount
-        let persistedAccessIsStale =
-            now.timeIntervalSince(metadata.lastAccessedAt) > Self.accessTimePersistenceInterval
-        if byteCountChanged || persistedAccessIsStale {
-            saveMetadata(touched, to: metadataURL)
-        }
-    }
-
-    /// Removes an entry detected as invalid during unlocked disk reads, but
-    /// only if it has not been rewritten by a concurrent commit since its
-    /// metadata was read.
-    private func removeEntryIfUnchanged(
-        cacheURL: URL,
-        metadataURL: URL,
-        expectedUpdatedAt: Date
-    ) {
-        withStoreLock {
-            if let currentMetadata = loadMetadata(from: metadataURL),
-               currentMetadata.updatedAt != expectedUpdatedAt {
-                return
-            }
-            removeEntry(cacheURL: cacheURL, metadataURL: metadataURL)
-        }
     }
 
     private func removeEntry(
@@ -540,69 +493,6 @@ final class MLXServerDiskKVCacheStore: @unchecked Sendable {
     private func byteCount(of url: URL) -> Int64 {
         let attributes = try? fileManager.attributesOfItem(atPath: url.path)
         return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
-    }
-}
-
-final class MLXServerDiskKVCachePersistenceWriter: @unchecked Sendable {
-    private struct Job: Sendable {
-        var operation: @Sendable () async -> Void
-    }
-
-    private let lock = OSAllocatedUnfairLock()
-    private var pendingJobs: [String: Job] = [:]
-    private var pendingKeys: [String] = []
-    private var isDraining = false
-
-    func enqueue(
-        coalescingKey: String,
-        operation: @escaping @Sendable () async -> Void
-    ) {
-        let job = Job(operation: operation)
-        let shouldStartDrain: Bool
-
-        lock.lock()
-        if pendingJobs[coalescingKey] == nil {
-            pendingKeys.append(coalescingKey)
-        }
-        pendingJobs[coalescingKey] = job
-        if isDraining {
-            shouldStartDrain = false
-        } else {
-            isDraining = true
-            shouldStartDrain = true
-        }
-        lock.unlock()
-
-        guard shouldStartDrain else {
-            return
-        }
-
-        Task.detached(priority: .utility) { [self] in
-            await drain()
-        }
-    }
-
-    private func drain() async {
-        while let job = nextJob() {
-            await job.operation()
-        }
-    }
-
-    private func nextJob() -> Job? {
-        lock.lock()
-        defer {
-            lock.unlock()
-        }
-
-        while !pendingKeys.isEmpty {
-            let key = pendingKeys.removeFirst()
-            if let job = pendingJobs.removeValue(forKey: key) {
-                return job
-            }
-        }
-
-        isDraining = false
-        return nil
     }
 }
 

@@ -6,6 +6,16 @@ import MLXCoderSetup
 struct MLXCoderMain {
     static func main() async {
         var arguments = MLXCoderCommandLineArgumentSanitizer.sanitized(CommandLine.arguments)
+        if arguments.dropFirst().contains("--mlx") {
+            do {
+                try await MLXCoderMLXCommand.run(arguments: arguments)
+            } catch {
+                AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
+                Foundation.exit(1)
+            }
+            return
+        }
+
         if arguments.dropFirst().contains(where: { $0 == "--help" || $0 == "-h" }) {
             AgentOutput.standardOutput.writeString(MLXCoderStandaloneHelp.text)
             return
@@ -26,7 +36,7 @@ struct MLXCoderMain {
             }
         }
 
-                let didRequestSetup = MLXCoderSetupRunner.shouldRunSetup(arguments: arguments)
+        let didRequestSetup = MLXCoderSetupRunner.shouldRunSetup(arguments: arguments)
         if !didRequestSetup,
            MLXCoderSetupInspector.status().requiresSetup {
             arguments.append(MLXCoderSetupRunner.option)
@@ -54,14 +64,15 @@ private enum MLXCoderStandaloneHelp {
         AgentConfiguration.helpText
             .replacingOccurrences(
                 of: "mlx-coder [--acp]",
-                                with: "mlx-coder [--setup] [--reset] [--acp]"
+                with: "mlx-coder [--setup] [--reset] [--mlx] [--acp]"
             )
             .replacingOccurrences(
                 of: "  --app                  App-hosted mode. Suppresses runtime chatter and requires explicit tool enablement.",
                 with: """
                   --app                  App-hosted mode. Suppresses runtime chatter and requires explicit tool enablement.
-                                    --setup                Create standalone support files and configure providers, models, and agents, then exit.
+                  --setup                Create standalone support files and configure providers, models, and agents, then exit.
                   --reset                Delete managed files in ~/.mlx-coder, then exit.
+                  --mlx                  Use the embedded local MLX runtime. Run mlx-coder --mlx --help for MLX setup and run options.
                 """
             )
     }

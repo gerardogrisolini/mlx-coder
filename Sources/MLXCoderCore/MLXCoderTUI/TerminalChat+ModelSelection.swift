@@ -303,12 +303,12 @@ extension TerminalChat {
         _ = statusBar.update(modelRuntime: details.runtime)
 
         guard configuration.verboseLogging else {
-            writeOperationalMessage("mlx-server loaded model: \(displayTitle)\n")
+            writeOperationalMessage("mlx-coder MLX loaded model: \(displayTitle)\n")
             return
         }
 
         var lines = [
-            "mlx-server loaded model:",
+            "mlx-coder MLX loaded model:",
             "  model: \(modelID)"
         ]
         if let runtime = details.runtime {

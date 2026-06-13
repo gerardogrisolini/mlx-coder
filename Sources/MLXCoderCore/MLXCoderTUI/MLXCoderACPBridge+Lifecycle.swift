@@ -121,9 +121,17 @@ extension MLXCoderACPBridge {
             thinkingSelection: thinkingSelection,
             preserveThinking: preserveThinking
         )
-        sessions[sessionID] = sessionState(configuration: configuration)
-        try await sessionRunner.createSession(configuration: configuration)
-        await persistSessionSnapshotIfAvailable(sessionID: sessionID)
+                sessions[sessionID] = sessionState(configuration: configuration)
+        // Stateless clients that reconnect with session/new (instead of
+        // session/load or session/resume) still get KV cache reuse: when the
+        // request already carries transcript history, restore the cache from
+        // disk via the content-derived key. Without history this is equivalent
+        // to a plain createSession.
+        if configuration.history.isEmpty {
+            try await sessionRunner.createSession(configuration: configuration)
+        } else {
+            try await sessionRunner.restoreSession(configuration: configuration)
+        }
 
         await writer.sendResultIfRequest(
             id: id,
@@ -276,7 +284,6 @@ extension MLXCoderACPBridge {
         }
         sessions[sessionID] = sessionState(configuration: updatedConfiguration)
         try await sessionRunner.createSession(configuration: updatedConfiguration)
-        await persistSessionSnapshotIfAvailable(sessionID: sessionID)
         await writer.sendResultIfRequest(
             id: id,
             result: JSONValue.acpValue(from: [
@@ -313,18 +320,19 @@ extension MLXCoderACPBridge {
             ))
         sessions[sessionID] = sessionState(configuration: updatedConfiguration)
         try await sessionRunner.createSession(configuration: updatedConfiguration)
-        await persistSessionSnapshotIfAvailable(sessionID: sessionID)
         await writer.sendResultIfRequest(id: id, result: .object([:]))
     }
 
-    public func restoreSession(
+        public func restoreSession(
         id: JSONValue?,
         params: [String: Any],
         replayHistory: Bool
     ) async throws {
-        guard let sessionID = Self.sessionID(from: params) else {
-            throw ACPError.invalidParams("ACP session restore requires params.sessionId.")
-        }
+        // A session_id is optional: stateless clients can resume by resending
+        // their transcript. When omitted we mint an internal session id; the
+        // KV cache is still recovered through the content-derived cache key.
+        let sessionID = Self.sessionID(from: params)
+            ?? "swiftmlx-\(UUID().uuidString.lowercased())"
         if let session = sessions[sessionID] {
             if replayHistory,
                let snapshot = await sessionRunner.snapshotSession(id: sessionID) {
@@ -347,30 +355,32 @@ extension MLXCoderACPBridge {
         await verboseACPLog(
             "session/restore id=\(sessionID) cwd=\(workingDirectory.path) replay=\(replayHistory) mcpServers=\(Self.mcpServerInputSummary(from: params))"
         )
-        guard let snapshot = try MLXCoderACPSessionStore.load(
-            sessionID: sessionID,
-            workingDirectory: workingDirectory
-        ) else {
-            throw ACPError(code: -32002, message: "Unknown session: \(sessionID)")
-        }
-
         let acpMCPDescriptors = await registerACPProvidedMCPServers(from: params)
-        let baseConfiguration = sessionConfiguration(from: snapshot)
-        let allowedToolNames = Self.allowedToolNames(
-            baseConfiguration.allowedToolNames,
-            adding: acpMCPDescriptors
-        )
-        let configuration = sessionConfiguration(
-            from: baseConfiguration,
-            allowedToolNames: allowedToolNames
+        let configuration = await restoredACPClientSessionConfiguration(
+            sessionID: sessionID,
+            params: params,
+            workingDirectory: workingDirectory,
+            acpMCPDescriptors: acpMCPDescriptors
         )
         await verboseACPLog(
-            "session/restore allowedTools=\(Self.verboseToolNameSummary(allowedToolNames))"
+            "session/restore allowedTools=\(Self.verboseToolNameSummary(configuration.allowedToolNames)) history=\(configuration.history.count)"
         )
-        sessions[sessionID] = sessionState(configuration: configuration)
-        try await sessionRunner.createSession(configuration: configuration)
+                sessions[sessionID] = sessionState(configuration: configuration)
+        try await sessionRunner.restoreSession(configuration: configuration)
         if replayHistory {
-            await replaySessionHistory(snapshot)
+            await replaySessionHistory(
+                AgentRuntimeSessionSnapshot(
+                    sessionID: configuration.sessionID,
+                    modelID: configuration.modelID,
+                    workingDirectoryPath: configuration.workingDirectoryPath,
+                    systemPrompt: configuration.systemPrompt,
+                    cacheKey: configuration.cacheKey,
+                    history: configuration.history,
+                    allowedToolNames: configuration.allowedToolNames,
+                    thinkingSelection: configuration.thinkingSelection,
+                    preserveThinking: configuration.preserveThinking
+                )
+            )
         }
 
         await writer.sendResultIfRequest(
@@ -379,7 +389,7 @@ extension MLXCoderACPBridge {
         )
         await sendSessionInfoUpdate(
             sessionID: sessionID,
-            title: URL(fileURLWithPath: snapshot.workingDirectoryPath).lastPathComponent
+            title: workingDirectory.lastPathComponent
         )
     }
 
@@ -451,6 +461,68 @@ extension MLXCoderACPBridge {
             appMode: configuration.appMode,
             thinkingSelection: nil,
             preserveThinking: false
+        )
+    }
+
+    public func restoredACPClientSessionConfiguration(
+        sessionID: String,
+        params: [String: Any],
+        workingDirectory: URL,
+        acpMCPDescriptors: [DirectToolDescriptor]
+    ) async -> AgentCoreSessionConfiguration {
+        let requestedModelID = Self.modelID(from: params)
+        let modelID = requestedModelID
+            ?? configuration.effectiveModelID
+        let requestedAllowedToolNames = Self.allowedToolNames(from: params)
+            ?? configuration.selectedAgent?.allowedToolNames()
+        let resolvedRequestedAllowedToolNames = await resolvedAllowedToolNames(
+            requestedAllowedToolNames,
+            workingDirectory: workingDirectory
+        )
+        let allowedToolNames = Self.allowedToolNames(
+            resolvedRequestedAllowedToolNames,
+            adding: acpMCPDescriptors
+        )
+        let systemPrompt = resolvedSystemPrompt(
+            providedSystemPrompt: nil,
+            cwd: workingDirectory.path,
+            allowedToolNames: allowedToolNames
+        )
+        let requestedThinkingSelection = Self.thinkingSelection(from: params["thinkingSelection"])
+        let hostedManifest = configuration.hostedModels.map { hostedModels in
+            AgentSettingsManifest(
+                models: hostedModels,
+                selectedModelID: modelID
+            )
+        }
+        let thinkingSelection = AgentSettingsStore.thinkingSelection(
+            requestedSelection: requestedThinkingSelection,
+            explicitModelID: requestedModelID ?? configuration.modelID,
+            agentModelID: configuration.selectedAgent?.modelID,
+            agentThinkingSelection: configuration.selectedAgent?.thinkingSelection,
+            manifest: hostedManifest ?? AgentSettingsManifestStore.load()
+        )
+        let cacheKey = (params["sessionKey"] as? String)
+            ?? (params["cacheKey"] as? String)
+        let preserveThinking = (params["preserveThinking"] as? Bool)
+            ?? (params["preserve_thinking"] as? Bool)
+            ?? false
+
+        return AgentCoreSessionConfiguration(
+            sessionID: sessionID,
+            modelID: modelID,
+            bearerToken: configuration.bearerToken,
+            workingDirectory: workingDirectory,
+            systemPrompt: systemPrompt,
+            cacheKey: cacheKey,
+            history: runtimeHistory(from: params["history"]),
+            allowedToolNames: allowedToolNames,
+            maxToolRounds: configuration.maxToolRounds,
+            maxOutputTokens: configuration.maxOutputTokens,
+            verboseLogging: configuration.verboseLogging,
+            appMode: configuration.appMode,
+            thinkingSelection: thinkingSelection,
+            preserveThinking: preserveThinking
         )
     }
 
@@ -618,27 +690,6 @@ extension MLXCoderACPBridge {
     }
 
     public func sessionConfiguration(
-        from snapshot: AgentRuntimeSessionSnapshot
-    ) -> AgentCoreSessionConfiguration {
-        AgentCoreSessionConfiguration(
-            sessionID: snapshot.sessionID,
-            modelID: snapshot.modelID ?? configuration.effectiveModelID,
-            bearerToken: configuration.bearerToken,
-            workingDirectory: snapshot.workingDirectoryPath,
-            systemPrompt: snapshot.systemPrompt,
-            cacheKey: snapshot.cacheKey,
-            history: snapshot.history,
-            allowedToolNames: snapshot.allowedToolNames,
-            maxToolRounds: configuration.maxToolRounds,
-            maxOutputTokens: configuration.maxOutputTokens,
-            verboseLogging: configuration.verboseLogging,
-            appMode: configuration.appMode,
-            thinkingSelection: snapshot.thinkingSelection,
-            preserveThinking: snapshot.preserveThinking
-        )
-    }
-
-    public func sessionConfiguration(
         from configuration: AgentCoreSessionConfiguration,
         allowedToolNames: Set<String>?
     ) -> AgentCoreSessionConfiguration {
@@ -663,23 +714,36 @@ extension MLXCoderACPBridge {
         )
     }
 
-    public func persistSessionSnapshotIfAvailable(sessionID: String) async {
+    public func refreshSessionStateIfAvailable(
+        sessionID: String,
+        saveRuntimeCache: Bool = false
+    ) async {
         guard let snapshot = await sessionRunner.snapshotSession(id: sessionID) else {
             return
         }
-        do {
-            try MLXCoderACPSessionStore.save(snapshot)
-        } catch {
-            SwiftMLXLogger.warning(
-                .viewModelRuntime,
-                "failed to persist ACP session id=\(sessionID): \(error.localizedDescription)"
-            )
+        if saveRuntimeCache {
+            await sessionRunner.saveSessionRuntimeCache(id: sessionID)
         }
         guard let session = sessions[sessionID] else {
             return
         }
         sessions[sessionID] = sessionState(
-            configuration: sessionConfiguration(from: snapshot),
+            configuration: AgentCoreSessionConfiguration(
+                sessionID: snapshot.sessionID,
+                modelID: snapshot.modelID ?? configuration.effectiveModelID,
+                bearerToken: configuration.bearerToken,
+                workingDirectory: snapshot.workingDirectoryPath,
+                systemPrompt: snapshot.systemPrompt,
+                cacheKey: snapshot.cacheKey,
+                history: snapshot.history,
+                allowedToolNames: snapshot.allowedToolNames,
+                maxToolRounds: configuration.maxToolRounds,
+                maxOutputTokens: configuration.maxOutputTokens,
+                verboseLogging: configuration.verboseLogging,
+                appMode: configuration.appMode,
+                thinkingSelection: snapshot.thinkingSelection,
+                preserveThinking: snapshot.preserveThinking
+            ),
             activePromptTask: session.activePromptTask
         )
     }

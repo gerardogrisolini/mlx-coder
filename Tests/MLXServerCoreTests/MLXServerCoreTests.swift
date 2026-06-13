@@ -5,7 +5,6 @@
 
 import Testing
 @testable import MLXServerCore
-import Dispatch
 import Foundation
 import MLXLMCommon
 
@@ -219,14 +218,21 @@ func assistantHistoryMessagesDropThinkingWhenDisabled() {
 }
 
 @Test
-func serverSupportFilesDefaultToHomeMlxServerDirectory() {
+func serverSupportFilesDefaultToHomeMlxCoderMLXDirectory() {
     let supportDirectory = MLXServerUserHomeDirectory.current()
-        .appendingPathComponent(".mlx-server", isDirectory: true)
+        .appendingPathComponent(".mlx-coder", isDirectory: true)
+        .appendingPathComponent("mlx", isDirectory: true)
         .standardizedFileURL
 
     #expect(MLXServerSettingsStore.defaultSupportDirectoryURL() == supportDirectory)
     #expect(MLXServerSettingsStore.settingsURL() == supportDirectory.appendingPathComponent("settings.json"))
     #expect(MLXServerModelsManifestStore.modelsURL() == supportDirectory.appendingPathComponent("models.json"))
+    #expect(
+        MLXServerSettingsStore.legacySupportDirectoryURL()
+            == MLXServerUserHomeDirectory.current()
+                .appendingPathComponent(".mlx-server", isDirectory: true)
+                .standardizedFileURL
+    )
 }
 
 @Test
@@ -308,6 +314,33 @@ func chatSessionTranscriptContinuationConsumesAssistantReplayRun() {
             stored: stored,
             request: request
         ) == 4
+    )
+}
+
+@Test
+func chatSessionTranscriptStoredPrefixAcceptsExactSavedSessionReplay() {
+    let stored = [
+        MLXServerChatMessage.system("You are concise.").transcriptFingerprint,
+        MLXServerChatMessage.user("Hello").transcriptFingerprint,
+        MLXServerChatTranscriptFingerprint.generatedAssistantPlaceholder
+    ]
+    let request = [
+        MLXServerChatMessage.system("You are concise.").transcriptFingerprint,
+        MLXServerChatMessage.user("Hello").transcriptFingerprint,
+        MLXServerChatMessage.assistant("Saved visible answer").transcriptFingerprint
+    ]
+
+    #expect(
+        MLXServerChatSessionTranscript.storedPrefixEndIndex(
+            stored: stored,
+            request: request
+        ) == 3
+    )
+    #expect(
+        MLXServerChatSessionTranscript.continuationSuffixStartIndex(
+            stored: stored,
+            request: request
+        ) == nil
     )
 }
 
@@ -519,15 +552,14 @@ func diskKVCacheIndexRebuildRemovesOrphanedCacheFiles() throws {
     let freshTemporaryURL = modelDirectory.appendingPathComponent("fresh.tmp.safetensors")
     try Data(repeating: 4, count: 16).write(to: freshTemporaryURL)
 
-    // A fresh store (e.g. after a server restart) enumerates disk entries
-    // and must clean orphan payloads up.
-    let restartedStore = MLXServerDiskKVCacheStore(
+    // Disk-limit enforcement enumerates entries and cleans orphan payloads up.
+    let freshStore = MLXServerDiskKVCacheStore(
         configuration: MLXServerDiskKVCacheConfiguration(
             directory: directory,
             limitBytes: 1_000_000
         )
     )
-    restartedStore.enforceDiskLimit()
+    freshStore.enforceDiskLimit()
 
     #expect(FileManager.default.fileExists(atPath: target.cacheURL.path))
     #expect(FileManager.default.fileExists(atPath: target.metadataURL.path))
@@ -551,90 +583,6 @@ func chatSessionAdditionalContextSignatureIsStableAcrossDictionaryOrder() {
         MLXServerChatSessionRequestSignature.additionalContext(first)
             == MLXServerChatSessionRequestSignature.additionalContext(second)
     )
-}
-
-@Test
-func diskKVCachePersistenceWriterDoesNotBlockEnqueueBehindRunningJob() {
-    let writer = MLXServerDiskKVCachePersistenceWriter()
-    let firstStarted = DispatchSemaphore(value: 0)
-    let releaseFirst = AsyncTestSemaphore()
-    let secondStarted = DispatchSemaphore(value: 0)
-    let enqueueReturned = DispatchSemaphore(value: 0)
-
-    writer.enqueue(coalescingKey: "first") {
-        firstStarted.signal()
-        await releaseFirst.wait()
-    }
-    #expect(firstStarted.wait(timeout: .now() + .seconds(2)) == .success)
-
-    DispatchQueue.global().async {
-        writer.enqueue(coalescingKey: "second") {
-            secondStarted.signal()
-        }
-        enqueueReturned.signal()
-    }
-
-    #expect(enqueueReturned.wait(timeout: .now() + .milliseconds(200)) == .success)
-    #expect(secondStarted.wait(timeout: .now() + .milliseconds(100)) == .timedOut)
-
-    releaseFirst.signal()
-    #expect(secondStarted.wait(timeout: .now() + .seconds(2)) == .success)
-}
-
-@Test
-func diskKVCachePersistenceWriterCoalescesPendingJobsByKey() {
-    let writer = MLXServerDiskKVCachePersistenceWriter()
-    let firstStarted = DispatchSemaphore(value: 0)
-    let releaseFirst = AsyncTestSemaphore()
-    let replacementFinished = DispatchSemaphore(value: 0)
-    let recorder = DiskKVCacheWriterExecutionRecorder()
-
-    writer.enqueue(coalescingKey: "blocking") {
-        firstStarted.signal()
-        await releaseFirst.wait()
-    }
-    #expect(firstStarted.wait(timeout: .now() + .seconds(2)) == .success)
-
-    writer.enqueue(coalescingKey: "same-key") {
-        recorder.record("old")
-    }
-    writer.enqueue(coalescingKey: "same-key") {
-        recorder.record("new")
-        replacementFinished.signal()
-    }
-
-    releaseFirst.signal()
-    #expect(replacementFinished.wait(timeout: .now() + .seconds(2)) == .success)
-    #expect(recorder.values == ["new"])
-}
-
-@Test
-func diskKVCachePersistenceWriterRunsPendingJobsWithDistinctKeys() {
-    let writer = MLXServerDiskKVCachePersistenceWriter()
-    let firstStarted = DispatchSemaphore(value: 0)
-    let releaseFirst = AsyncTestSemaphore()
-    let bothFinished = DispatchSemaphore(value: 0)
-    let recorder = DiskKVCacheWriterExecutionRecorder()
-
-    writer.enqueue(coalescingKey: "blocking") {
-        firstStarted.signal()
-        await releaseFirst.wait()
-    }
-    #expect(firstStarted.wait(timeout: .now() + .seconds(2)) == .success)
-
-    // Pending persists for different sessions on the same model must not
-    // replace each other.
-    writer.enqueue(coalescingKey: "session-a") {
-        recorder.record("session-a")
-    }
-    writer.enqueue(coalescingKey: "session-b") {
-        recorder.record("session-b")
-        bothFinished.signal()
-    }
-
-    releaseFirst.signal()
-    #expect(bothFinished.wait(timeout: .now() + .seconds(2)) == .success)
-    #expect(recorder.values == ["session-a", "session-b"])
 }
 
 @Test
@@ -861,58 +809,6 @@ private final class DiskKVCacheIndexRebuildProbe: @unchecked Sendable {
     func recordRebuild() {
         lock.lock()
         _rebuildCount += 1
-        lock.unlock()
-    }
-}
-
-/// Async-friendly semaphore for blocking persistence-writer jobs in tests.
-private final class AsyncTestSemaphore: @unchecked Sendable {
-    private let lock = NSLock()
-    private var signalCount = 0
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    func signal() {
-        lock.lock()
-        if waiters.isEmpty {
-            signalCount += 1
-            lock.unlock()
-            return
-        }
-        let waiter = waiters.removeFirst()
-        lock.unlock()
-        waiter.resume()
-    }
-
-    func wait() async {
-        await withCheckedContinuation { continuation in
-            lock.lock()
-            if signalCount > 0 {
-                signalCount -= 1
-                lock.unlock()
-                continuation.resume()
-            } else {
-                waiters.append(continuation)
-                lock.unlock()
-            }
-        }
-    }
-}
-
-private final class DiskKVCacheWriterExecutionRecorder: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _values: [String] = []
-
-    var values: [String] {
-        lock.lock()
-        defer {
-            lock.unlock()
-        }
-        return _values
-    }
-
-    func record(_ value: String) {
-        lock.lock()
-        _values.append(value)
         lock.unlock()
     }
 }

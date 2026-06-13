@@ -215,8 +215,8 @@ extension SwiftFeatureRuntime {
                 .executableTarget(
                     name: "\(targetName)",
                     dependencies: [
-                        .product(name: "MLXCoderCore", package: "mlx-server"),
-                        .product(name: "MLXFeatureKit", package: "mlx-server")
+                        .product(name: "MLXCoderCore", package: "mlx-coder"),
+                        .product(name: "MLXFeatureKit", package: "mlx-coder")
                     ]
                 )
             ]
