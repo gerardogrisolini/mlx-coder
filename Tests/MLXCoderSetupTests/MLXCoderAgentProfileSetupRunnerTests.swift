@@ -119,6 +119,27 @@ struct MLXCoderAgentProfileSetupRunnerTests {
         #expect(items.map(\.title) == ["Thinking off", "High thinking"])
     }
 
+    @Test
+    func modelChoiceItemsExposeNoDedicatedModelChoice() {
+        let model = AgentSettingsModelManifest(
+            id: "remote",
+            kind: .remoteAPI,
+            modelID: "remote-model",
+            providerID: UUID(),
+            provider: AgentRemoteProvider(modelID: "remote-model")
+        )
+
+        let items = MLXCoderAgentProfileSetupRunner.modelChoiceItems(
+            models: [model],
+            existingModelID: nil
+        )
+
+        #expect(items.first?.value == .noDedicatedModel)
+        #expect(items.first?.title == "No dedicated model")
+        #expect(items.first?.detail?.contains("leave model empty") == true)
+        #expect(items.contains { $0.value == .configuredModel(model.id) })
+    }
+
     private func setupThinkingModel() -> AgentSettingsModelManifest {
         AgentSettingsModelManifest(
             id: "thinking",

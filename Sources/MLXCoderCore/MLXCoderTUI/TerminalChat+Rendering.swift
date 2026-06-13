@@ -284,7 +284,7 @@ extension TerminalChat {
     }
 
     public func writeThought(_ delta: String) {
-        guard !delta.isEmpty else {
+        guard !delta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return
         }
 

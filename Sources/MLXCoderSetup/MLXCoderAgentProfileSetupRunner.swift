@@ -20,8 +20,8 @@ public enum MLXCoderAgentProfileSetupRunner {
         let thinkingSelection: AgentThinkingSelection?
     }
 
-    private enum AgentSetupModelChoice: Hashable {
-        case defaultModel
+    enum AgentSetupModelChoice: Hashable {
+        case noDedicatedModel
         case configuredModel(String)
     }
 
@@ -178,7 +178,7 @@ public enum MLXCoderAgentProfileSetupRunner {
             defaultSkills: defaultAgent?.skills ?? []
         )
         let modelSelection = promptModelSelection(
-            title: "Dedicated model for \(name)",
+            title: "Dedicated model for \(name) (optional)",
             defaultAgent: defaultAgent
         )
         let instructions = try promptInstructions(defaultValue: defaultAgent?.instructions)
@@ -325,7 +325,7 @@ public enum MLXCoderAgentProfileSetupRunner {
             models.first(where: { $0.matches(modelID) })
                 .map { AgentSetupModelChoice.configuredModel($0.id) }
                 ?? .configuredModel(modelID)
-        } ?? .defaultModel
+        } ?? .noDedicatedModel
         let choice = TerminalCheckboxMenu.selectOne(
             title: title,
             items: modelChoiceItems(
@@ -336,7 +336,7 @@ public enum MLXCoderAgentProfileSetupRunner {
         ) ?? initialChoice
 
         switch choice {
-        case .defaultModel:
+        case .noDedicatedModel:
             return nil
         case let .configuredModel(modelID):
             guard let model = models.first(where: { $0.matches(modelID) }) else {
@@ -357,16 +357,16 @@ public enum MLXCoderAgentProfileSetupRunner {
         }
     }
 
-    private static func modelChoiceItems(
+    static func modelChoiceItems(
         models: [AgentSettingsModelManifest],
         existingModelID: String?
     ) -> [TerminalCheckboxMenuItem<AgentSetupModelChoice>] {
         var items: [TerminalCheckboxMenuItem<AgentSetupModelChoice>] = [
             TerminalCheckboxMenuItem(
-                value: .defaultModel,
-                title: "Default model",
-                detail: defaultModelDetail(),
-                groupTitle: "Default"
+                value: .noDedicatedModel,
+                title: "No dedicated model",
+                detail: noDedicatedModelDetail(),
+                groupTitle: "None"
             )
         ]
 
@@ -396,11 +396,11 @@ public enum MLXCoderAgentProfileSetupRunner {
         return items
     }
 
-    private static func defaultModelDetail() -> String {
+    private static func noDedicatedModelDetail() -> String {
         if let selection = AgentSettingsStore.defaultSelection(explicitModelID: nil) {
-            return "current default: \(selection.modelID)"
+            return "leave model empty; current default: \(selection.modelID)"
         }
-        return "use mlx-coder default"
+        return "leave model empty; use mlx-coder default"
     }
 
     private static func modelChoiceDetail(_ model: AgentSettingsModelManifest) -> String {

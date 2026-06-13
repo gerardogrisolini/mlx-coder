@@ -6,11 +6,8 @@
 //
 
 import Foundation
-#if os(macOS)
-import Security
-#endif
 
-public struct CodexAgentCredentials: Codable, Sendable {
+public struct CodexAgentCredentials: Codable, Equatable, Sendable {
     public let accessToken: String
     public let refreshToken: String
     public let expiresAt: Date
@@ -40,7 +37,6 @@ private enum CodexAgentCredentialError: LocalizedError {
     case missingRefreshToken
     case missingAccountID
     case invalidJWT
-    case keychain(status: OSStatus)
 
     var errorDescription: String? {
         switch self {
@@ -56,8 +52,6 @@ private enum CodexAgentCredentialError: LocalizedError {
             return "ChatGPT Subscription credentials do not contain a ChatGPT account id."
         case .invalidJWT:
             return "ChatGPT Subscription access token could not be decoded."
-        case let .keychain(status):
-            return "ChatGPT Subscription credentials could not be stored in Keychain (\(status))."
         }
     }
 }
@@ -245,7 +239,15 @@ public nonisolated enum CodexAgentModel {
             )
         }
 
-        return try ChatGPTSubscriptionCredentialStore.load()
+        guard let credentials = AgentSettingsManifestStore.load()?.chatGPTSubscriptionCredentials else {
+            throw CodexAgentCredentialError.missingCredentials
+        }
+        guard !credentials.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !credentials.refreshToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !credentials.accountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw CodexAgentCredentialError.invalidCredentials
+        }
+        return credentials
     }
 
     public static func loadValidCredentials() async throws -> CodexAgentCredentials {
@@ -257,11 +259,11 @@ public nonisolated enum CodexAgentModel {
     }
 
     public static func saveCredentials(_ credentials: CodexAgentCredentials) throws {
-        try ChatGPTSubscriptionCredentialStore.save(credentials)
+        try AgentSettingsManifestStore.saveChatGPTSubscriptionCredentials(credentials)
     }
 
     public static func removeCredentials() {
-        ChatGPTSubscriptionCredentialStore.remove()
+        try? AgentSettingsManifestStore.saveChatGPTSubscriptionCredentials(nil)
     }
 
     public static func chatGPTAccountID(from token: String) throws -> String {
@@ -293,69 +295,6 @@ public nonisolated enum CodexAgentModel {
 
 #endif
 }
-
-#if os(macOS)
-private enum ChatGPTSubscriptionCredentialStore {
-    private static let service = "MLXCoder.ChatGPTSubscription"
-    private static let account = "default"
-
-    static func load() throws -> CodexAgentCredentials {
-        var query = baseQuery()
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status != errSecItemNotFound else {
-            throw CodexAgentCredentialError.missingCredentials
-        }
-        guard status == errSecSuccess,
-              let data = item as? Data,
-              let credentials = try? JSONDecoder().decode(CodexAgentCredentials.self, from: data),
-              !credentials.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !credentials.refreshToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !credentials.accountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw CodexAgentCredentialError.invalidCredentials
-        }
-        return credentials
-    }
-
-    static func save(_ credentials: CodexAgentCredentials) throws {
-        let data = try JSONEncoder().encode(credentials)
-        let attributes: [String: Any] = [
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        ]
-        let updateStatus = SecItemUpdate(baseQuery() as CFDictionary, attributes as CFDictionary)
-        if updateStatus == errSecSuccess {
-            return
-        }
-        guard updateStatus == errSecItemNotFound else {
-            throw CodexAgentCredentialError.keychain(status: updateStatus)
-        }
-
-        var addQuery = baseQuery()
-        addQuery[kSecValueData as String] = data
-        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
-        guard addStatus == errSecSuccess else {
-            throw CodexAgentCredentialError.keychain(status: addStatus)
-        }
-    }
-
-    static func remove() {
-        SecItemDelete(baseQuery() as CFDictionary)
-    }
-
-    private static func baseQuery() -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-    }
-}
-#endif
 
 private extension String {
     var nilIfEmpty: String? {

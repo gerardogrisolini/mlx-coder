@@ -15,10 +15,9 @@ import FoundationNetworking
 import AppKit
 import CryptoKit
 import Network
-import Security
 #endif
 
-public struct AnthropicSubscriptionCredentials: Codable, Sendable {
+public struct AnthropicSubscriptionCredentials: Codable, Equatable, Sendable {
     public let accessToken: String
     public let refreshToken: String
     public let expiresAt: Date
@@ -57,7 +56,6 @@ public enum AnthropicSubscriptionAuthError: LocalizedError {
     case invalidCredentials
     case missingAccessToken
     case missingRefreshToken
-    case keychain(status: Int32)
 
     public var errorDescription: String? {
         switch self {
@@ -95,8 +93,6 @@ public enum AnthropicSubscriptionAuthError: LocalizedError {
             return "Anthropic Subscription credentials do not contain an access token."
         case .missingRefreshToken:
             return "Anthropic Subscription credentials do not contain a refresh token."
-        case let .keychain(status):
-            return "Anthropic Subscription credentials could not be stored in Keychain (\(status))."
         }
     }
 }
@@ -216,7 +212,14 @@ public enum AnthropicSubscriptionAuthService {
             )
         }
 
-        return try AnthropicSubscriptionCredentialStore.load()
+        guard let credentials = AgentSettingsManifestStore.load()?.anthropicSubscriptionCredentials else {
+            throw AnthropicSubscriptionAuthError.missingCredentials
+        }
+        guard !credentials.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !credentials.refreshToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AnthropicSubscriptionAuthError.invalidCredentials
+        }
+        return credentials
     }
 
     public static func loadValidCredentials() async throws -> AnthropicSubscriptionCredentials {
@@ -228,11 +231,11 @@ public enum AnthropicSubscriptionAuthService {
     }
 
     public static func saveCredentials(_ credentials: AnthropicSubscriptionCredentials) throws {
-        try AnthropicSubscriptionCredentialStore.save(credentials)
+        try AgentSettingsManifestStore.saveAnthropicSubscriptionCredentials(credentials)
     }
 
     public static func removeCredentials() {
-        AnthropicSubscriptionCredentialStore.remove()
+        try? AgentSettingsManifestStore.saveAnthropicSubscriptionCredentials(nil)
     }
 
     private static func authorizationFlow() throws -> (
@@ -702,67 +705,7 @@ private final class AnthropicSubscriptionCallbackStartState: @unchecked Sendable
         self.continuation = nil
         lock.unlock()
         continuation?.resume(with: result)
-    }
-}
-
-private enum AnthropicSubscriptionCredentialStore {
-    private static let service = "MLXCoder.AnthropicSubscription"
-    private static let account = "default"
-
-    static func load() throws -> AnthropicSubscriptionCredentials {
-        var query = baseQuery()
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status != errSecItemNotFound else {
-            throw AnthropicSubscriptionAuthError.missingCredentials
         }
-        guard status == errSecSuccess,
-              let data = item as? Data,
-              let credentials = try? JSONDecoder().decode(AnthropicSubscriptionCredentials.self, from: data),
-              !credentials.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !credentials.refreshToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw AnthropicSubscriptionAuthError.invalidCredentials
-        }
-        return credentials
-    }
-
-    static func save(_ credentials: AnthropicSubscriptionCredentials) throws {
-        let data = try JSONEncoder().encode(credentials)
-        let attributes: [String: Any] = [
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        ]
-        let updateStatus = SecItemUpdate(baseQuery() as CFDictionary, attributes as CFDictionary)
-        if updateStatus == errSecSuccess {
-            return
-        }
-        guard updateStatus == errSecItemNotFound else {
-            throw AnthropicSubscriptionAuthError.keychain(status: updateStatus)
-        }
-
-        var addQuery = baseQuery()
-        addQuery[kSecValueData as String] = data
-        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
-        guard addStatus == errSecSuccess else {
-            throw AnthropicSubscriptionAuthError.keychain(status: addStatus)
-        }
-    }
-
-    static func remove() {
-        SecItemDelete(baseQuery() as CFDictionary)
-    }
-
-    private static func baseQuery() -> [String: Any] {
-        [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-    }
 }
 
 private extension Data {

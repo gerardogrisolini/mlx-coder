@@ -18,10 +18,11 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
         case voice
         case remoteAPIKeysByProviderID
         case localExecAllowedCommands
-
+        case chatGPTSubscriptionCredentials
+        case anthropicSubscriptionCredentials
     }
 
-    public static let currentVersion = 9
+    public static let currentVersion = 10
     public static let minimumSupportedVersion = 4
 
     public let version: Int
@@ -33,7 +34,8 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
     public let voice: AgentVoiceSettingsManifest?
     public let remoteAPIKeysByProviderID: [String: String]
     public let localExecAllowedCommands: [String]
-
+    public let chatGPTSubscriptionCredentials: CodexAgentCredentials?
+    public let anthropicSubscriptionCredentials: AnthropicSubscriptionCredentials?
 
     public init(
         version: Int = Self.currentVersion,
@@ -44,7 +46,9 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
         telegram: AgentTelegramSettingsManifest? = nil,
         voice: AgentVoiceSettingsManifest? = nil,
         remoteAPIKeysByProviderID: [String: String] = [:],
-        localExecAllowedCommands: [String] = []
+        localExecAllowedCommands: [String] = [],
+        chatGPTSubscriptionCredentials: CodexAgentCredentials? = nil,
+        anthropicSubscriptionCredentials: AnthropicSubscriptionCredentials? = nil
     ) {
         let normalizedProviders = Self.normalizedProviders(
             providers,
@@ -74,6 +78,8 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
         self.localExecAllowedCommands = Self.normalizedLocalExecAllowedCommands(
             localExecAllowedCommands
         )
+        self.chatGPTSubscriptionCredentials = chatGPTSubscriptionCredentials
+        self.anthropicSubscriptionCredentials = anthropicSubscriptionCredentials
     }
 
     public init(from decoder: Decoder) throws {
@@ -108,7 +114,15 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
             localExecAllowedCommands: try container.decodeIfPresent(
                 [String].self,
                 forKey: .localExecAllowedCommands
-            ) ?? []
+            ) ?? [],
+            chatGPTSubscriptionCredentials: try container.decodeIfPresent(
+                CodexAgentCredentials.self,
+                forKey: .chatGPTSubscriptionCredentials
+            ),
+            anthropicSubscriptionCredentials: try container.decodeIfPresent(
+                AnthropicSubscriptionCredentials.self,
+                forKey: .anthropicSubscriptionCredentials
+            )
         )
     }
 
@@ -135,6 +149,12 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
         if !remoteAPIKeysByProviderID.isEmpty {
             try container.encode(remoteAPIKeysByProviderID, forKey: .remoteAPIKeysByProviderID)
         }
+        if let chatGPTSubscriptionCredentials {
+            try container.encode(chatGPTSubscriptionCredentials, forKey: .chatGPTSubscriptionCredentials)
+        }
+        if let anthropicSubscriptionCredentials {
+            try container.encode(anthropicSubscriptionCredentials, forKey: .anthropicSubscriptionCredentials)
+        }
     }
 
     public var isEmpty: Bool {
@@ -145,6 +165,9 @@ public struct AgentSettingsManifest: Codable, Equatable, Sendable {
             && telegram == nil
             && voice == nil
             && remoteAPIKeysByProviderID.isEmpty
+            && localExecAllowedCommands.isEmpty
+            && chatGPTSubscriptionCredentials == nil
+            && anthropicSubscriptionCredentials == nil
     }
 
     private static func normalizedLocalExecAllowedCommands(_ commands: [String]) -> [String] {
@@ -823,6 +846,12 @@ public enum AgentSettingsManifestStore {
         _ = load()
     }
 
+    #if DEBUG
+    static func resetDefaultCacheForTesting() {
+        defaultSettingsCache.reset()
+    }
+    #endif
+
     public static func loadRequired() throws -> AgentSettingsManifest {
         try defaultSettingsCache.load {
             try loadRequired(from: settingsURL())
@@ -879,6 +908,56 @@ public enum AgentSettingsManifestStore {
         }
     }
 
+    public static func saveChatGPTSubscriptionCredentials(
+        _ credentials: CodexAgentCredentials?
+    ) throws {
+        let current = try manifestForCredentialUpdate()
+        try save(
+            AgentSettingsManifest(
+                version: current.version,
+                providers: current.providers,
+                models: current.models,
+                selectedModelID: current.selectedModelID,
+                selectedThinkingSelection: current.selectedThinkingSelection,
+                telegram: current.telegram,
+                voice: current.voice,
+                remoteAPIKeysByProviderID: current.remoteAPIKeysByProviderID,
+                localExecAllowedCommands: current.localExecAllowedCommands,
+                chatGPTSubscriptionCredentials: credentials,
+                anthropicSubscriptionCredentials: current.anthropicSubscriptionCredentials
+            )
+        )
+    }
+
+    public static func saveAnthropicSubscriptionCredentials(
+        _ credentials: AnthropicSubscriptionCredentials?
+    ) throws {
+        let current = try manifestForCredentialUpdate()
+        try save(
+            AgentSettingsManifest(
+                version: current.version,
+                providers: current.providers,
+                models: current.models,
+                selectedModelID: current.selectedModelID,
+                selectedThinkingSelection: current.selectedThinkingSelection,
+                telegram: current.telegram,
+                voice: current.voice,
+                remoteAPIKeysByProviderID: current.remoteAPIKeysByProviderID,
+                localExecAllowedCommands: current.localExecAllowedCommands,
+                chatGPTSubscriptionCredentials: current.chatGPTSubscriptionCredentials,
+                anthropicSubscriptionCredentials: credentials
+            )
+        )
+    }
+
+    private static func manifestForCredentialUpdate() throws -> AgentSettingsManifest {
+        do {
+            return try loadRequired(from: settingsURL())
+        } catch AgentSettingsManifestStoreError.missingFile(_) {
+            return AgentSettingsManifest(models: [])
+        }
+    }
+
     public static func settingsURL(fileManager: FileManager = .default) -> URL {
         MLXAppStorageDirectory.appSupportDirectoryURL(fileManager: fileManager)
             .appendingPathComponent(settingsFilename)
@@ -927,6 +1006,14 @@ public enum AgentSettingsManifestStore {
             state = .loaded(manifest)
             lock.unlock()
         }
+
+        #if DEBUG
+        func reset() {
+            lock.lock()
+            state = .notLoaded
+            lock.unlock()
+        }
+        #endif
     }
 }
 

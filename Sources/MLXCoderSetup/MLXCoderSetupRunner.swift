@@ -172,7 +172,7 @@ public enum MLXCoderSetupRunner {
                 section: .telegram,
                 detail: manifest?.telegram?.isEnabled == true ? "enabled" : "disabled"
             ),
-                        SetupSectionOption(
+            SetupSectionOption(
                 section: .voice,
                 detail: manifest?.voice?.isConfigured == true ? "enabled" : "disabled"
             ),
@@ -184,7 +184,7 @@ public enum MLXCoderSetupRunner {
         ]
     }
 
-        private static func agentsSetupDetail() -> String {
+    private static func agentsSetupDetail() -> String {
         let url = AgentProfileStore.agentsManifestURL()
         guard FileManager.default.fileExists(atPath: url.path) else {
             return "not configured"
@@ -249,7 +249,7 @@ public enum MLXCoderSetupRunner {
             return try configureDefaultThinking(in: requireExistingManifest(manifest))
         case .telegram:
             return try await configureTelegram(in: requireExistingManifest(manifest))
-                case .voice:
+        case .voice:
             return try configureVoice(in: requireExistingManifest(manifest))
         case .agents:
             try MLXCoderAgentProfileSetupRunner.configureInteractively()
@@ -302,6 +302,7 @@ public enum MLXCoderSetupRunner {
                 return (input.id.uuidString.lowercased(), apiKey)
             }
         )
+        let subscriptionCredentials = latestSubscriptionCredentials(fallback: existingManifest)
 
         return AgentSettingsManifest(
             version: existingManifest?.version ?? AgentSettingsManifest.currentVersion,
@@ -312,7 +313,22 @@ public enum MLXCoderSetupRunner {
             telegram: existingManifest?.telegram,
             voice: existingManifest?.voice,
             remoteAPIKeysByProviderID: apiKeysByProviderID,
-            localExecAllowedCommands: existingManifest?.localExecAllowedCommands ?? []
+            localExecAllowedCommands: existingManifest?.localExecAllowedCommands ?? [],
+            chatGPTSubscriptionCredentials: subscriptionCredentials.chatGPT,
+            anthropicSubscriptionCredentials: subscriptionCredentials.anthropic
+        )
+    }
+
+    private static func latestSubscriptionCredentials(
+        fallback manifest: AgentSettingsManifest?
+    ) -> (
+        chatGPT: CodexAgentCredentials?,
+        anthropic: AnthropicSubscriptionCredentials?
+    ) {
+        let latestManifest = AgentSettingsManifestStore.load()
+        return (
+            latestManifest?.chatGPTSubscriptionCredentials ?? manifest?.chatGPTSubscriptionCredentials,
+            latestManifest?.anthropicSubscriptionCredentials ?? manifest?.anthropicSubscriptionCredentials
         )
     }
 
@@ -406,7 +422,9 @@ public enum MLXCoderSetupRunner {
             telegram: telegram,
             voice: manifest.voice,
             remoteAPIKeysByProviderID: manifest.remoteAPIKeysByProviderID,
-            localExecAllowedCommands: manifest.localExecAllowedCommands
+            localExecAllowedCommands: manifest.localExecAllowedCommands,
+            chatGPTSubscriptionCredentials: manifest.chatGPTSubscriptionCredentials,
+            anthropicSubscriptionCredentials: manifest.anthropicSubscriptionCredentials
         )
     }
 
@@ -423,7 +441,9 @@ public enum MLXCoderSetupRunner {
             telegram: manifest.telegram,
             voice: voice,
             remoteAPIKeysByProviderID: manifest.remoteAPIKeysByProviderID,
-            localExecAllowedCommands: manifest.localExecAllowedCommands
+            localExecAllowedCommands: manifest.localExecAllowedCommands,
+            chatGPTSubscriptionCredentials: manifest.chatGPTSubscriptionCredentials,
+            anthropicSubscriptionCredentials: manifest.anthropicSubscriptionCredentials
         )
     }
 
@@ -441,7 +461,9 @@ public enum MLXCoderSetupRunner {
             telegram: manifest.telegram,
             voice: manifest.voice,
             remoteAPIKeysByProviderID: manifest.remoteAPIKeysByProviderID,
-            localExecAllowedCommands: manifest.localExecAllowedCommands
+            localExecAllowedCommands: manifest.localExecAllowedCommands,
+            chatGPTSubscriptionCredentials: manifest.chatGPTSubscriptionCredentials,
+            anthropicSubscriptionCredentials: manifest.anthropicSubscriptionCredentials
         )
     }
 
@@ -1829,7 +1851,7 @@ private enum SetupSection: Equatable {
     case providersAndModels
     case defaultModel
     case defaultThinking
-        case telegram
+    case telegram
     case voice
     case agents
     case finish
@@ -1876,7 +1898,7 @@ private enum SetupSection: Equatable {
             return ["thinking", "default thinking", "reasoning", "thinking default"]
         case .telegram:
             return ["telegram", "remote control", "bot"]
-                case .voice:
+        case .voice:
             return ["voice", "local voice", "voice tools", "speech"]
         case .agents:
             return ["agents", "agent", "profiles", "agent profiles"]
