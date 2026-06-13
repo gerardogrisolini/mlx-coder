@@ -197,13 +197,6 @@ extension TerminalChat {
            size.ws_col > 0 {
             return Int(size.ws_col)
         }
-
-        if let rawColumns = ProcessInfo.processInfo.environment["COLUMNS"],
-           let columns = Int(rawColumns),
-           columns > 0 {
-            return columns
-        }
-
         return 100
     }
 
@@ -298,49 +291,28 @@ extension TerminalChat {
         finishAssistantContentFormatting()
         if !isStreamingThoughtOutput {
             isStreamingThoughtOutput = true
-            shouldTrimLeadingAssistantContentLineBreaks = false
-            assistantContentNeedsLineBreakBeforeTool = false
             let title = AgentOutput.standardErrorIsTerminal
                 ? "\u{1B}[90m🤔 Thinking:\u{1B}[0m"
                 : "🤔 Thinking:"
             writeChatError("\(title)\n")
-            thoughtOutputEndsWithNewline = true
         }
         let renderedThought = thoughtMarkdownFormatter.consume(delta)
         writeChatError(
             Self.renderThoughtMarkdown(renderedThought)
         )
-        if !renderedThought.isEmpty {
-            thoughtOutputEndsWithNewline = renderedThought.hasSuffix("\n")
-        }
     }
 
     public func writeAssistantContent(_ delta: String) {
         guard !delta.isEmpty else {
             return
         }
-        var content = delta
-        if shouldTrimLeadingAssistantContentLineBreaks {
-            content = Self.removingLeadingLineBreaks(content)
-            guard !content.isEmpty else {
-                return
-            }
-            shouldTrimLeadingAssistantContentLineBreaks = false
-        }
-        let renderedContent = assistantMarkdownFormatter.consume(content)
+        let renderedContent = assistantMarkdownFormatter.consume(delta)
         writeChatOutput(renderedContent)
-        if !renderedContent.isEmpty {
-            assistantContentNeedsLineBreakBeforeTool = !renderedContent.hasSuffix("\n")
-        }
     }
 
     public func finishAssistantContentFormatting() {
         let renderedContent = assistantMarkdownFormatter.finish()
         writeChatOutput(renderedContent)
-        if !renderedContent.isEmpty {
-            assistantContentNeedsLineBreakBeforeTool = !renderedContent.hasSuffix("\n")
-        }
-        shouldTrimLeadingAssistantContentLineBreaks = false
     }
 
     public func writeSubmittedPrompt(_ prompt: String) {
@@ -353,7 +325,6 @@ extension TerminalChat {
             }
             .joined(separator: "\n")
         writeChatError("\(renderedLines)\n\n")
-        assistantContentNeedsLineBreakBeforeTool = false
     }
 
     public func finishThoughtOutputIfNeeded() {
@@ -361,23 +332,9 @@ extension TerminalChat {
             return
         }
         let renderedThought = thoughtMarkdownFormatter.finish()
-        writeChatError(
-            Self.renderThoughtMarkdown(renderedThought)
-        )
-        if !renderedThought.isEmpty {
-            thoughtOutputEndsWithNewline = renderedThought.hasSuffix("\n")
-        }
-        writeChatError(
-            Self.thoughtBoundarySeparator(endsWithNewline: thoughtOutputEndsWithNewline)
-        )
-        shouldTrimLeadingAssistantContentLineBreaks = true
-        assistantContentNeedsLineBreakBeforeTool = false
-        thoughtOutputEndsWithNewline = false
+        let markdown = Self.renderThoughtMarkdown(renderedThought)
+        writeChatError("\(markdown)\n\n")
         isStreamingThoughtOutput = false
-    }
-
-    static func thoughtBoundarySeparator(endsWithNewline: Bool) -> String {
-        endsWithNewline ? "\n" : "\n\n"
     }
 
     static func removingLeadingLineBreaks(_ text: String) -> String {
@@ -638,6 +595,7 @@ extension TerminalChat {
         }
 
         writeToolBlock(Self.detailedToolCallCompletedLines(for: toolCall, result: result))
+        writeChatError("\n")
     }
 
     public func toggleToolDetailsOutput() {
@@ -663,7 +621,7 @@ extension TerminalChat {
             for: lines,
             contentInsetWidth: chatLineInsetPrefix.count
         )
-        writeCompactToolLines(lines, leadingNewline: consumeToolLeadingLineBreakRequirement())
+        writeCompactToolLines(lines, newline: false)
     }
 
     private func writeCompactToolCallCompleted(
@@ -690,23 +648,22 @@ extension TerminalChat {
         }
         writeCompactToolLines(
             lines,
-            leadingNewline: !shouldRewriteActiveLine && consumeToolLeadingLineBreakRequirement()
+            newline: true
         )
     }
 
     private func writeCompactToolLines(
         _ lines: [String],
-        leadingNewline: Bool = false,
+        newline: Bool = false,
         terminator: String = "\n"
     ) {
         let reset = "\u{1B}[0m"
-        let prefix = leadingNewline ? "\n" : ""
+        let suffix = newline ? "\n" : ""
         let lineInset = chatLineInsetPrefix
         let text = lines
             .map { "\r\u{1B}[2K\(lineInset)\(Self.toolANSIColor)\($0)\(reset)" }
             .joined(separator: "\n")
-        AgentOutput.standardError.writeString("\(prefix)\(text)\(terminator)")
-        assistantContentNeedsLineBreakBeforeTool = false
+        AgentOutput.standardError.writeString("\(text)\(terminator)\(suffix)")
         isAtStartOfChatLine = terminator.hasSuffix("\n")
     }
 
@@ -747,7 +704,7 @@ extension TerminalChat {
         let suffixWidth = displayWidth(statusIcon)
         let textWidthLimit = max(1, columns - suffixWidth - 1)
         let fittedTarget = fitDisplayWidth(target, width: textWidthLimit)
-        return "\(fittedTarget) \(statusIcon)\n"
+        return "\(fittedTarget) \(statusIcon)"
     }
 
     private static func renderedTerminalRowCount(
@@ -794,13 +751,11 @@ extension TerminalChat {
 
     private func writeToolBlock(_ lines: [String]) {
         let reset = "\u{1B}[0m"
-        let prefix = consumeToolLeadingLineBreakRequirement() ? "\n" : ""
         let lineInset = chatLineInsetPrefix
         let text = lines
             .map { "\(lineInset)\(Self.renderDetailedToolLine($0))\(reset)" }
             .joined(separator: "\n")
-        AgentOutput.standardError.writeString("\(prefix)\(text)\n")
-        assistantContentNeedsLineBreakBeforeTool = false
+        AgentOutput.standardError.writeString("\(text)\n")
         isAtStartOfChatLine = true
     }
 
@@ -809,12 +764,6 @@ extension TerminalChat {
             return TerminalCodeBlockRenderer.renderLine(line, language: nil)
         }
         return "\(toolANSIColor)\(line)"
-    }
-
-    private func consumeToolLeadingLineBreakRequirement() -> Bool {
-        let shouldWriteLineBreak = assistantContentNeedsLineBreakBeforeTool
-        assistantContentNeedsLineBreakBeforeTool = false
-        return shouldWriteLineBreak
     }
 
     private static let toolANSIColor = "\u{1B}[38;5;208m"
