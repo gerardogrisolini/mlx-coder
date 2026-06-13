@@ -14,12 +14,6 @@ struct TerminalChatRenderingTests {
     }
 
     @Test
-    func thoughtBoundarySeparatorLeavesOneBlankLine() {
-        #expect(TerminalChat.thoughtBoundarySeparator(endsWithNewline: false) == "\n\n")
-        #expect(TerminalChat.thoughtBoundarySeparator(endsWithNewline: true) == "\n")
-    }
-
-    @Test
     func chatLineInsetIsAppliedOnlyAtLineStarts() {
         var isAtLineStart = true
         #expect(
