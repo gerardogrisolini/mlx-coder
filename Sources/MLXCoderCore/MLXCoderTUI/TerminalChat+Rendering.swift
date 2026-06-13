@@ -313,6 +313,9 @@ extension TerminalChat {
     public func finishAssistantContentFormatting() {
         let renderedContent = assistantMarkdownFormatter.finish()
         writeChatOutput(renderedContent)
+        if !renderedContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            writeChatOutput("\n\n")
+        }
     }
 
     public func writeSubmittedPrompt(_ prompt: String) {
@@ -324,7 +327,7 @@ extension TerminalChat {
                 return "\(prefix)\(line)"
             }
             .joined(separator: "\n")
-        writeChatError("\(renderedLines)\n\n")
+        writeChatError("\n\(renderedLines)\n\n")
     }
 
     public func finishThoughtOutputIfNeeded() {
