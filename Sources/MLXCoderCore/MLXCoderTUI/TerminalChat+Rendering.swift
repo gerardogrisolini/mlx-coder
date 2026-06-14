@@ -307,14 +307,15 @@ extension TerminalChat {
             return
         }
         let renderedContent = assistantMarkdownFormatter.consume(delta)
-        writeChatOutput(renderedContent)
+        if !renderedContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            writeChatOutput(renderedContent)
+        }
     }
 
     public func finishAssistantContentFormatting() {
         let renderedContent = assistantMarkdownFormatter.finish()
-        writeChatOutput(renderedContent)
         if !renderedContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            writeChatOutput("\n\n")
+            writeChatOutput("\(renderedContent)\n\n")
         }
     }
 
@@ -336,7 +337,9 @@ extension TerminalChat {
         }
         let renderedThought = thoughtMarkdownFormatter.finish()
         let markdown = Self.renderThoughtMarkdown(renderedThought)
-        writeChatError("\(markdown)\n\n")
+        if !markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            writeChatError("\(markdown)\n\n")
+        }
         isStreamingThoughtOutput = false
     }
 

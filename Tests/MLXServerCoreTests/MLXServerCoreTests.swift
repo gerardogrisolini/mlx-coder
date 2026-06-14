@@ -193,6 +193,30 @@ func transcriptSeparatesImplicitThinkingBlockClosedByEndTag() {
 }
 
 @Test
+func transcriptPreservesVisibleContentBetweenThinkingBlocks() {
+    let text = "Prima analisi.</think>Prima risposta.<think>Seconda analisi.</think>Seconda risposta."
+
+    #expect(
+        MLXServerChatSessionTranscriptText.visibleAssistantContent(
+            from: text,
+            startsInThinking: true
+        ) == "Prima risposta.Seconda risposta."
+    )
+    #expect(
+        MLXServerChatSessionTranscriptText.visibleAssistantContentForHistory(
+            from: text,
+            startsInThinking: true
+        ) == "Prima risposta.Seconda risposta."
+    )
+    #expect(
+        MLXServerChatSessionTranscriptText.reasoningContent(
+            from: text,
+            startsInThinking: true
+        ) == "Prima analisi.Seconda analisi."
+    )
+}
+
+@Test
 func assistantHistoryMessagesPreserveThinkingWhenEnabled() {
     let messages = MLXServerChatSessionTranscriptText.assistantHistoryMessages(
         from: "Ragionamento.</think>Risposta.",
@@ -315,6 +339,97 @@ func chatSessionTranscriptContinuationConsumesAssistantReplayRun() {
             request: request
         ) == 4
     )
+}
+
+@Test
+func rawChatSessionUsesOnlySuffixMessagesForCachedContinuation() {
+    let request = MLXServerGenerationRequest(
+        model: testModel(),
+        messages: [
+            .user("Find the file"),
+            .assistant(
+                "Found it.",
+                toolCalls: [
+                    MLXServerChatToolCall(
+                        id: "call_1",
+                        name: "local.readFile",
+                        arguments: ["path": "File.swift"]
+                    )
+                ]
+            ),
+            .tool("contents", toolCallID: "call_1", toolName: "local.readFile")
+        ],
+        tools: [
+            [
+                "type": "function",
+                "function": [
+                    "name": "local.readFile"
+                ] as [String: any Sendable]
+            ] as [String: any Sendable]
+        ],
+        sessionID: "session"
+    )
+
+    let suffix = MLXServerRawChatSession.suffixChatMessages(
+        request: request,
+        cachedPrefixMessageCount: 2
+    )
+
+    #expect(suffix.count == 1)
+    #expect(suffix.first?.role == .tool)
+    #expect(suffix.first?.content == "contents")
+}
+
+@Test
+func rawChatSessionUsesCachedMessageOnlyAsTemplateContextForContinuation() throws {
+    let request = MLXServerGenerationRequest(
+        model: testModel(),
+        messages: [
+            .user("Find the file"),
+            .assistant(
+                "Found it.",
+                toolCalls: [
+                    MLXServerChatToolCall(
+                        id: "call_1",
+                        name: "local.readFile",
+                        arguments: ["path": "File.swift"]
+                    )
+                ]
+            ),
+            .tool("contents", toolCallID: "call_1", toolName: "local.readFile")
+        ],
+        tools: [
+            [
+                "type": "function",
+                "function": [
+                    "name": "local.readFile"
+                ] as [String: any Sendable]
+            ] as [String: any Sendable]
+        ],
+        sessionID: "session"
+    )
+
+    let slice = MLXServerRawChatSession.cachedContinuationTemplateSlice(
+        request: request,
+        cachedPrefixMessageCount: 2
+    )
+
+    #expect(slice.cachedContextMessages.count == 2)
+    #expect(slice.cachedContextMessages.first?["role"] as? String == "user")
+    #expect(slice.cachedContextMessages.last?["role"] as? String == "assistant")
+    #expect(slice.continuationContextMessages.count == 3)
+    #expect(slice.continuationContextMessages.first?["role"] as? String == "user")
+    #expect(slice.continuationContextMessages.dropFirst().first?["role"] as? String == "assistant")
+    #expect(slice.continuationContextMessages.last?["role"] as? String == "tool")
+    #expect(slice.continuationContextMessages.last?["content"] as? String == "contents")
+
+    let toolCalls = try #require(
+        slice.continuationContextMessages.dropFirst().first?["tool_calls"]
+            as? [[String: any Sendable]]
+    )
+    let toolCall = try #require(toolCalls.first)
+    let function = try #require(toolCall["function"] as? [String: any Sendable])
+    #expect(function["name"] as? String == "local.readFile")
 }
 
 @Test
@@ -849,4 +964,140 @@ private func testModel(
         generationDefaults: generationDefaults,
         thinking: thinking
     )
+}
+
+@Test
+func chatMessageRendersAssistantToolCallAsStructuredRawPayload() throws {
+    let message = MLXServerChatMessage.assistant(
+        "",
+        toolCalls: [
+            MLXServerChatToolCall(
+                id: "call_1",
+                name: "local.pwd",
+                arguments: [
+                    "path": "/tmp",
+                    "recursive": false
+                ]
+            )
+        ]
+    )
+    let raw = message.rawTemplateMessage(toolResultStyle: .roleToolContent)
+    let toolCalls = try #require(
+        raw["tool_calls"] as? [[String: any Sendable]]
+    )
+    let toolCall = try #require(toolCalls.first)
+    let function = try #require(toolCall["function"] as? [String: any Sendable])
+    let arguments = try #require(function["arguments"] as? [String: any Sendable])
+
+    #expect(toolCall["id"] as? String == "call_1")
+    #expect(toolCall["type"] as? String == "function")
+    #expect(function["name"] as? String == "local.pwd")
+    #expect(arguments["path"] as? String == "/tmp")
+    #expect(arguments["recursive"] as? Bool == false)
+}
+
+@Test
+func chatMessageRendersQwenToolResultAsRoleToolContent() throws {
+    let message = MLXServerChatMessage.tool(
+        "result",
+        toolCallID: "call_1",
+        toolName: "local.pwd"
+    )
+    let raw = message.rawTemplateMessage(toolResultStyle: .roleToolContent)
+
+    #expect(raw["role"] as? String == "tool")
+    #expect(raw["content"] as? String == "result")
+    #expect(raw["tool_call_id"] as? String == "call_1")
+    #expect(raw["name"] as? String == "local.pwd")
+}
+
+@Test
+func chatMessageRendersGemmaToolResultAsStructuredToolResponse() throws {
+    let message = MLXServerChatMessage.tool(
+        "result",
+        toolCallID: "call_1",
+        toolName: "local.pwd"
+    )
+    let raw = message.rawTemplateMessage(toolResultStyle: .toolResponses)
+    let responses = try #require(
+        raw["tool_responses"] as? [[String: any Sendable]]
+    )
+    let response = try #require(responses.first)
+
+    #expect(raw["role"] as? String == "tool")
+    #expect(raw["content"] as? String == "")
+    #expect(raw["tool_call_id"] as? String == "call_1")
+    #expect(raw["name"] as? String == "local.pwd")
+    #expect(response["name"] as? String == "local.pwd")
+    #expect(response["response"] as? String == "result")
+}
+
+@Test
+func toolCallStreamProcessorPreservesSingleLineBeforeSplitTaggedToolCall() throws {
+    var processor = MLXServerToolCallStreamProcessor(format: .xmlFunction)
+
+    #expect(processor.processChunk("Analizzo il file <tool") == "Analizzo il file ")
+    #expect(processor.drainToolCalls().isEmpty)
+
+    #expect(
+        processor.processChunk(
+            "_call>\n<function=local.pwd>\n</function>\n</tool_call>"
+        ) == nil
+    )
+    let toolCall = try #require(processor.drainToolCalls().first)
+    #expect(toolCall.function.name == "local.pwd")
+    #expect(toolCall.function.arguments.isEmpty)
+    #expect(processor.processEOS(returnBufferedText: true) == nil)
+}
+
+@Test
+func toolCallStreamProcessorPreservesTextAroundToolCallAfterThinking() throws {
+    var processor = MLXServerToolCallStreamProcessor(format: .xmlFunction)
+
+    #expect(
+        processor.processChunk("Ragionamento.</think>\n\n<tool")
+            == "Ragionamento.</think>\n\n"
+    )
+    #expect(processor.drainToolCalls().isEmpty)
+
+    #expect(
+        processor.processChunk(
+            "_call>\n<function=local.pwd>\n</function>\n</tool_call>Continuo."
+        ) == "Continuo."
+    )
+    let toolCall = try #require(processor.drainToolCalls().first)
+    #expect(toolCall.function.name == "local.pwd")
+    #expect(processor.processEOS(returnBufferedText: true) == nil)
+}
+
+@Test
+func toolCallStreamProcessorPreservesTextBetweenConsecutiveToolCalls() throws {
+    var processor = MLXServerToolCallStreamProcessor(format: .xmlFunction)
+
+    #expect(
+        processor.processChunk(
+            """
+            Prima <tool_call>
+            <function=local.pwd>
+            </function>
+            </tool_call>Tra<tool_call>
+            <function=local.ls>
+            </function>
+            </tool_call>Dopo
+            """
+        ) == "Prima TraDopo"
+    )
+    let toolCalls = processor.drainToolCalls()
+    #expect(toolCalls.map(\.function.name) == ["local.pwd", "local.ls"])
+    #expect(processor.processEOS(returnBufferedText: true) == nil)
+}
+
+@Test
+func toolCallStreamProcessorFlushesIncompleteTaggedToolCallAtEnd() {
+    var processor = MLXServerToolCallStreamProcessor(format: .xmlFunction)
+
+    #expect(processor.processChunk("Risposta <tool") == "Risposta ")
+    #expect(processor.drainToolCalls().isEmpty)
+    #expect(processor.processEOS(returnBufferedText: true) == "<tool")
+    #expect(processor.drainToolCalls().isEmpty)
 }

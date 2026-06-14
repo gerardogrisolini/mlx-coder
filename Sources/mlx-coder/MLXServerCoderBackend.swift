@@ -344,7 +344,11 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
                 )
                 await onEvent(.toolCallCompleted(directToolCall, result))
                 session.messages.append(
-                    .tool(result.output, toolCallID: directToolCall.id)
+                    .tool(
+                        result.output,
+                        toolCallID: directToolCall.id,
+                        toolName: directToolCall.name
+                    )
                 )
             }
         }
@@ -468,7 +472,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         var toolCalls: [ToolCall] = []
         var completionInfo: GenerateCompletionInfo?
 
-        for await event in stream {
+        for try await event in stream {
             switch event {
             case .chunk(let chunk):
                 rawText += chunk
@@ -759,6 +763,9 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         if message.role == .tool, let toolCallID = message.toolCallID?.nilIfBlank {
             sections.append("Tool result id: \(toolCallID).")
         }
+        if message.role == .tool, let toolName = message.toolName?.nilIfBlank {
+            sections.append("Tool name: \(toolName).")
+        }
         return sections.joined(separator: "\n\n")
     }
 
@@ -771,7 +778,8 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
             reasoningContent: message.reasoningContent,
             attachments: message.attachments,
             toolCalls: message.toolCalls,
-            toolCallID: message.toolCallID
+            toolCallID: message.toolCallID,
+            toolName: message.toolName
         )
     }
 
@@ -781,7 +789,8 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         reasoningContent: String? = nil,
         attachments: [AgentRuntimeAttachment],
         toolCalls runtimeToolCalls: [AgentRuntimeToolCall] = [],
-        toolCallID: String? = nil
+        toolCallID: String? = nil,
+        toolName: String? = nil
     ) -> MLXServerChatMessage {
         let imageURLs = attachments.compactMap { attachment -> URL? in
             attachment.kind == .image ? attachment.fileURL : nil
@@ -809,7 +818,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
                 toolCalls: toolCalls
             )
         case .tool:
-            return .tool(content, toolCallID: toolCallID)
+            return .tool(content, toolCallID: toolCallID, toolName: toolName)
         }
     }
 

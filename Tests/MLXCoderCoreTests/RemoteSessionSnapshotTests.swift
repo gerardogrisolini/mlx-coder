@@ -288,9 +288,9 @@ struct RemoteSessionSnapshotTests {
             }
         )
 
-                #expect(result.text == "")
+        #expect(result.text == "Visible answer")
         #expect(capturedEvents.thoughtText() == "thinking")
-        #expect(capturedEvents.contentText() == "")
+        #expect(capturedEvents.contentText() == "Visible answer")
     }
 
     @Test
@@ -474,7 +474,7 @@ struct RemoteSessionSnapshotTests {
                 continue
             }
         }
-                #expect(contentText == "")
+        #expect(contentText == "Hello world")
         #expect(reasoningText == "thinking...")
     }
 
@@ -487,14 +487,54 @@ struct RemoteSessionSnapshotTests {
                 "content": "Visible answer"
             ]
         ])
-                var contentText = ""
+        var contentText = ""
         for event in events {
             if case let .content(delta) = event {
                 contentText += delta
             }
         }
 
-        #expect(contentText == "")
+        #expect(contentText == "Visible answer")
+    }
+
+    @Test
+    func streamResponsesDoesNotDuplicateOutputItemSnapshotAfterDelta() async throws {
+        let response = """
+        data: {"type":"response.output_text.delta","delta":"Visible answer"}
+
+        data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","content":[{"type":"output_text","text":"Visible answer"}]}}
+
+        data: {"type":"response.completed","response":{"output":[]}}
+
+        """
+        let urlSession = RemoteRequestCapturingURLProtocol.urlSession(
+            responseBody: Data(response.utf8)
+        )
+        let client = RemoteGenerationClient(
+            configuration: remoteStreamingConfiguration(),
+            provider: AgentRemoteProvider(
+                name: "Unit Test",
+                baseURL: "https://unit.test/v1",
+                modelID: "unit-model",
+                chatEndpoint: .responses
+            ),
+            apiKey: nil,
+            urlSession: urlSession
+        )
+        let capturedEvents = CapturedDirectAgentEvents()
+
+        let result = try await client.streamResponses(
+            messages: [["role": "user", "content": "hi"]],
+            sessionID: "session-output-item-message-dedup",
+            allowedToolNames: [],
+            thinkingSelection: nil,
+            onEvent: { event in
+                capturedEvents.append(event)
+            }
+        )
+
+        #expect(result.text == "Visible answer")
+        #expect(capturedEvents.contentText() == "Visible answer")
     }
 
     @Test

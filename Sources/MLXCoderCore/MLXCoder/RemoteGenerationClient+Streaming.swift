@@ -218,6 +218,21 @@ extension RemoteGenerationClient {
                     }
                     accumulatedText.append(normalizedDelta)
                     await onEvent(.content(normalizedDelta))
+                case let .contentSnapshot(snapshot):
+                    let delta = Self.streamContentDelta(
+                        fromSnapshot: snapshot,
+                        accumulatedText: accumulatedText
+                    )
+                    guard !delta.isEmpty else {
+                        continue
+                    }
+                    markFirstDelta()
+                    let normalizedDelta = contentNormalizer.append(delta)
+                    guard !normalizedDelta.isEmpty else {
+                        continue
+                    }
+                    accumulatedText.append(normalizedDelta)
+                    await onEvent(.content(normalizedDelta))
                 case let .reasoning(delta):
                     guard !delta.isEmpty else {
                         continue
@@ -362,7 +377,7 @@ extension RemoteGenerationClient {
             events.append(.stop(reason))
         }
         if let delta = choice["delta"] as? [String: Any] {
-            if let content = delta["content"] as? String {
+            if let content = Self.streamContentText(from: delta["content"]) {
                 events.append(.content(content))
             }
             if let reasoning = delta["reasoning"] as? String {
@@ -393,6 +408,17 @@ extension RemoteGenerationClient {
         case "response.output_text.delta":
             usageEvents.append(.content(object["delta"] as? String ?? ""))
             return usageEvents
+        case "response.content_part.delta":
+            if let delta = Self.responseContentPartDelta(from: object) {
+                usageEvents.append(.content(delta))
+            }
+            return usageEvents
+        case "response.content_part.done":
+            if let part = object["part"] as? [String: Any],
+               let text = Self.responseContentPartText(from: part) {
+                usageEvents.append(.contentSnapshot(text))
+            }
+            return usageEvents
         case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
             usageEvents.append(.reasoning(object["delta"] as? String ?? ""))
             return usageEvents
@@ -406,6 +432,9 @@ extension RemoteGenerationClient {
                             outputIndex: Self.integerValue(object["output_index"])
                         )
                     )
+                } else if type == "response.output_item.done",
+                          let text = Self.responseOutputText(from: item)?.nilIfBlank {
+                    events.append(.contentSnapshot(text))
                 }
             }
             return events.isEmpty ? [.ignored] : events
@@ -433,6 +462,63 @@ extension RemoteGenerationClient {
         default:
             return usageEvents.isEmpty ? [.ignored] : usageEvents
         }
+    }
+
+    static func streamContentDelta(
+        fromSnapshot snapshot: String,
+        accumulatedText: String
+    ) -> String {
+        guard !snapshot.isEmpty, !accumulatedText.isEmpty else {
+            return snapshot
+        }
+        if snapshot == accumulatedText {
+            return ""
+        }
+        if snapshot.hasPrefix(accumulatedText) {
+            return String(snapshot.dropFirst(accumulatedText.count))
+        }
+        return snapshot
+    }
+
+    private static func responseContentPartDelta(from object: [String: Any]) -> String? {
+        if let delta = responseContentPartText(from: object["delta"]) {
+            return delta
+        }
+        return responseContentPartText(from: object)
+    }
+
+    private static func responseContentPartText(from value: Any?) -> String? {
+        if let text = streamContentText(from: value)?.nilIfBlank {
+            return text
+        }
+        guard let object = value as? [String: Any] else {
+            return nil
+        }
+        let type = stringValue(object["type"])?.lowercased() ?? ""
+        guard !type.contains("reasoning") else {
+            return nil
+        }
+        return streamContentText(from: object["text"])?.nilIfBlank
+            ?? streamContentText(from: object["content"])?.nilIfBlank
+            ?? streamContentText(from: object["delta"])?.nilIfBlank
+    }
+
+    private static func streamContentText(from value: Any?) -> String? {
+        if let string = value as? String {
+            return string
+        }
+        if let items = value as? [[String: Any]] {
+            let text = items
+                .compactMap { item -> String? in
+                    if let text = item["text"] as? String {
+                        return text
+                    }
+                    return item["content"] as? String
+                }
+                .joined()
+            return text.isEmpty ? nil : text
+        }
+        return nil
     }
 
     public static func responseFailureMessage(

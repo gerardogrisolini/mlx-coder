@@ -94,6 +94,7 @@ public struct RemoteGenerationUsage: Sendable {
 
 public enum ParsedRemoteStreamEvent {
     case content(String)
+    case contentSnapshot(String)
     case reasoning(String)
     case toolCallDelta([[String: Any]])
     case responseToolCallItem([String: Any], outputIndex: Int?)

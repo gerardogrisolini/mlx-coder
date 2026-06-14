@@ -24,6 +24,7 @@ public struct MLXServerChatMessage: Sendable, Equatable {
     public var videoURLs: [URL]
     public var toolCalls: [MLXServerChatToolCall]
     public var toolCallID: String?
+    public var toolName: String?
 
     public init(
         role: Role,
@@ -32,7 +33,8 @@ public struct MLXServerChatMessage: Sendable, Equatable {
         imageURLs: [URL] = [],
         videoURLs: [URL] = [],
         toolCalls: [MLXServerChatToolCall] = [],
-        toolCallID: String? = nil
+        toolCallID: String? = nil,
+        toolName: String? = nil
     ) {
         self.role = role
         self.content = content
@@ -45,6 +47,8 @@ public struct MLXServerChatMessage: Sendable, Equatable {
         self.videoURLs = videoURLs
         self.toolCalls = toolCalls
         self.toolCallID = toolCallID
+        let trimmedToolName = toolName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.toolName = trimmedToolName?.isEmpty == false ? trimmedToolName : nil
     }
 
     public static func system(_ content: String) -> Self {
@@ -72,8 +76,12 @@ public struct MLXServerChatMessage: Sendable, Equatable {
         )
     }
 
-    public static func tool(_ content: String, toolCallID: String? = nil) -> Self {
-        Self(role: .tool, content: content, toolCallID: toolCallID)
+    public static func tool(
+        _ content: String,
+        toolCallID: String? = nil,
+        toolName: String? = nil
+    ) -> Self {
+        Self(role: .tool, content: content, toolCallID: toolCallID, toolName: toolName)
     }
 }
 
@@ -317,7 +325,7 @@ public struct MLXServerChatCacheEvent: Sendable, Equatable {
 public protocol MLXServerRuntimeGenerating: Sendable {
     func generateChatSession(
         request: MLXServerGenerationRequest
-    ) async throws -> AsyncStream<Generation>
+    ) async throws -> AsyncThrowingStream<Generation, Error>
 
     func generateChatSessionText(
         request: MLXServerGenerationRequest
@@ -331,7 +339,7 @@ public protocol MLXServerRuntimeCacheDiagnosing: Sendable {
 extension MLXServerRuntime: MLXServerRuntimeGenerating {
     public func generateChatSession(
         request: MLXServerGenerationRequest
-    ) async throws -> AsyncStream<Generation> {
+    ) async throws -> AsyncThrowingStream<Generation, Error> {
         try await generateChatSession(request: request, progressHandler: { _ in })
     }
 
@@ -493,9 +501,23 @@ public actor MLXServerRuntime {
     public func generateChatSession(
         request: MLXServerGenerationRequest,
         progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
-    ) async throws -> AsyncStream<Generation> {
+    ) async throws -> AsyncThrowingStream<Generation, Error> {
         guard request.messages.allSatisfy({ $0.imageURLs.isEmpty && $0.videoURLs.isEmpty }) else {
-            return try await generate(request: request, progressHandler: progressHandler)
+            let stream = try await generate(request: request, progressHandler: progressHandler)
+            return AsyncThrowingStream { continuation in
+                let task = Task {
+                    for await item in stream {
+                        if Task.isCancelled {
+                            break
+                        }
+                        continuation.yield(item)
+                    }
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in
+                    task.cancel()
+                }
+            }
         }
         guard !request.messages.isEmpty else {
             throw MLXServerRuntimeError.emptyPrompt
@@ -524,34 +546,33 @@ public actor MLXServerRuntime {
             request.additionalContext
         )
         let sessionTransfer = resolved.sessionTransfer
-        let suffixMessages = resolved.suffixMessages.map(\.mlxChatMessage)
         let cachedPromptTokenCount = resolved.cachedPromptTokenCount
-        let throwingStream = sessionTransfer.session.streamDetails(
-            to: suffixMessages
-        )
+        let throwingStream: AsyncStream<Generation>
+        do {
+            throwingStream = try await sessionTransfer.session.streamDetails(
+                request: request,
+                cachedPromptTokenCount: cachedPromptTokenCount,
+                cachedPrefixMessageCount: resolved.cachedPrefixMessageCount
+            )
+        } catch {
+            discardChatSession(for: cacheKey)
+            await generationLease.release()
+            throw error
+        }
 
-        return AsyncStream { continuation in
+        return AsyncThrowingStream { continuation in
             let task = Task {
                 var completionInfo: GenerateCompletionInfo?
                 var wasCancelled = false
-                do {
-                    for try await item in throwingStream {
-                        if Task.isCancelled {
-                            wasCancelled = true
-                            break
-                        }
-                        if case .info(let info) = item {
-                            completionInfo = info
-                        }
-                        continuation.yield(item)
+                for await item in throwingStream {
+                    if Task.isCancelled {
+                        wasCancelled = true
+                        break
                     }
-                } catch {
-                    // Mid-stream failures end the stream; the session is
-                    // not stored so the next request starts clean.
-                    self.discardChatSession(for: cacheKey)
-                    await generationLease.release()
-                    continuation.finish()
-                    return
+                    if case .info(let info) = item {
+                        completionInfo = info
+                    }
+                    continuation.yield(item)
                 }
 
                 if wasCancelled || Task.isCancelled {
@@ -561,7 +582,7 @@ public actor MLXServerRuntime {
                     // client transcript. Drop the session instead.
                     self.discardChatSession(for: cacheKey)
                     await generationLease.release()
-                    continuation.finish()
+                    continuation.finish(throwing: CancellationError())
                     return
                 }
 
@@ -596,7 +617,7 @@ public actor MLXServerRuntime {
         progressHandler: @Sendable @escaping (Progress) -> Void = { _ in }
     ) async throws -> MLXServerGenerationOutput {
         let stream = try await generateChatSession(request: request, progressHandler: progressHandler)
-        return await Self.collectGenerationOutput(stream)
+        return try await Self.collectThrowingGenerationOutput(stream)
     }
 
     private static func collectGenerationOutput(
@@ -607,6 +628,27 @@ public actor MLXServerRuntime {
         var info: GenerateCompletionInfo?
 
         for await event in stream {
+            switch event {
+            case .chunk(let chunk):
+                text += chunk
+            case .info(let completionInfo):
+                info = completionInfo
+            case .toolCall(let toolCall):
+                toolCalls.append(toolCall)
+            }
+        }
+
+        return MLXServerGenerationOutput(text: text, toolCalls: toolCalls, info: info)
+    }
+
+    private static func collectThrowingGenerationOutput(
+        _ stream: AsyncThrowingStream<Generation, Error>
+    ) async throws -> MLXServerGenerationOutput {
+        var text = ""
+        var toolCalls: [ToolCall] = []
+        var info: GenerateCompletionInfo?
+
+        for try await event in stream {
             switch event {
             case .chunk(let chunk):
                 text += chunk
@@ -634,7 +676,7 @@ public actor MLXServerRuntime {
     private struct ResolvedChatSession {
         var cacheKey: MLXServerChatSessionCacheKey
         var sessionTransfer: ChatSessionTransfer
-        var suffixMessages: [MLXServerChatMessage]
+        var cachedPrefixMessageCount: Int
         var cachedPromptTokenCount: Int?
     }
 
@@ -671,14 +713,6 @@ public actor MLXServerRuntime {
                 // the turn; it is re-inserted with updated fingerprints when
                 // the turn finishes.
                 chatSessions[cacheKey] = nil
-                let session = state.sessionTransfer.session
-                session.generateParameters = request.parameters
-                // The cached prefix already contains the tool schemas for this
-                // exact tools signature. Do not pass them again for the suffix,
-                // otherwise the chat template re-prefills the huge tools block
-                // on every cache hit.
-                session.tools = nil
-                session.additionalContext = request.additionalContext
                 lastChatCacheEvent = MLXServerChatCacheEvent(
                     status: .memoryHit,
                     cachedSessionCount: 1,
@@ -691,7 +725,7 @@ public actor MLXServerRuntime {
                 return ResolvedChatSession(
                     cacheKey: cacheKey,
                     sessionTransfer: state.sessionTransfer,
-                    suffixMessages: Array(request.messages.dropFirst(suffixStartIndex)),
+                    cachedPrefixMessageCount: suffixStartIndex,
                     cachedPromptTokenCount: state.contextTokenCount
                 )
             }
@@ -701,12 +735,9 @@ public actor MLXServerRuntime {
         }
 
         // 2. Fresh session: the whole transcript is prefilled this turn.
-        let session = ChatSession(
+        let session = MLXServerRawChatSession(
             container,
-            generateParameters: request.parameters,
-            processing: .init(resize: request.mediaResize),
-            additionalContext: request.additionalContext,
-            tools: request.tools
+            cache: nil
         )
         lastChatCacheEvent = MLXServerChatCacheEvent(
             status: .miss,
@@ -719,7 +750,7 @@ public actor MLXServerRuntime {
         return ResolvedChatSession(
             cacheKey: cacheKey,
             sessionTransfer: ChatSessionTransfer(session: session),
-            suffixMessages: request.messages,
+            cachedPrefixMessageCount: 0,
             cachedPromptTokenCount: nil
         )
     }
@@ -881,13 +912,9 @@ public actor MLXServerRuntime {
             parameters: request.parameters,
             progressHandler: progressHandler
         )
-        let session = ChatSession(
+        let session = MLXServerRawChatSession(
             container,
-            cache: diskMatch.cache,
-            generateParameters: request.parameters,
-            processing: .init(resize: request.mediaResize),
-            additionalContext: request.additionalContext,
-            tools: nil
+            cache: diskMatch.cache
         )
         chatSessionAccessGeneration += 1
         chatSessions[cacheKey] = ChatSessionState(
@@ -1028,11 +1055,516 @@ public actor MLXServerRuntime {
     }
 }
 
-/// `ChatSession` is a class with internal synchronization (its KV cache is
-/// guarded by a serial-access container); the wrapper lets the runtime pass
-/// it between the actor and detached persistence work.
+final class MLXServerRawChatSession: @unchecked Sendable {
+    let container: ModelContainer
+    var cache: [KVCache]?
+
+    init(
+        _ container: ModelContainer,
+        cache: [KVCache]? = nil
+    ) {
+        self.container = container
+        self.cache = cache
+    }
+
+    func streamDetails(
+        request: MLXServerGenerationRequest,
+        cachedPromptTokenCount: Int?,
+        cachedPrefixMessageCount: Int
+    ) async throws -> AsyncStream<Generation> {
+        let plan = MLXServerRawChatSessionPlan(
+            session: self,
+            request: request,
+            cachedPromptTokenCount: cachedPromptTokenCount,
+            cachedPrefixMessageCount: cachedPrefixMessageCount
+        )
+        return try await container.perform(nonSendable: plan) { context, plan in
+            let session = plan.session
+            let tools = plan.request.tools
+            let input = try await Self.input(
+                for: plan,
+                context: context
+            )
+            if session.cache == nil {
+                session.cache = context.model.newCache(parameters: plan.request.parameters)
+            }
+            guard let cache = session.cache else {
+                throw MLXServerRuntimeError.emptyPrompt
+            }
+            let tokenStream = try MLXLMCommon.generateTokens(
+                input: input,
+                cache: cache,
+                parameters: plan.request.parameters,
+                context: context
+            )
+            return Self.generationStream(
+                from: tokenStream,
+                tokenizer: context.tokenizer,
+                toolCallFormat: context.configuration.toolCallFormat ?? .json,
+                tools: tools
+            )
+        }
+    }
+
+    private static func input(
+        for plan: MLXServerRawChatSessionPlan,
+        context: ModelContext
+    ) async throws -> LMInput {
+        if plan.cachedPrefixMessageCount > 0 {
+            return try await cachedContinuationInput(for: plan, context: context)
+        }
+
+        let rawMessages = plan.request.messages.map {
+            $0.rawTemplateMessage(
+                toolResultStyle: .style(for: plan.request.model)
+            )
+        }
+        let renderedTokens = try context.tokenizer.applyChatTemplate(
+            messages: rawMessages,
+            tools: plan.request.tools,
+            additionalContext: plan.request.additionalContext
+        )
+        guard !renderedTokens.isEmpty else {
+            throw MLXServerRuntimeError.emptyPrompt
+        }
+        return LMInput(tokens: MLXArray(renderedTokens))
+    }
+
+    private static func cachedContinuationInput(
+        for plan: MLXServerRawChatSessionPlan,
+        context: ModelContext
+    ) async throws -> LMInput {
+        let suffixStartIndex = plan.cachedPrefixMessageCount
+        guard suffixStartIndex < plan.request.messages.count else {
+            throw MLXServerRuntimeError.emptyPrompt
+        }
+        guard plan.request.messages[suffixStartIndex].role == .tool else {
+            let suffixMessages = suffixChatMessages(
+                request: plan.request,
+                cachedPrefixMessageCount: suffixStartIndex
+            )
+            guard !suffixMessages.isEmpty else {
+                throw MLXServerRuntimeError.emptyPrompt
+            }
+            return try await context.processor.prepare(
+                input: UserInput(
+                    chat: suffixMessages,
+                    processing: .init(resize: plan.request.mediaResize)
+                )
+            )
+        }
+        guard suffixStartIndex > 0,
+              let tokenizer = context.tokenizer as? MLXServerChatTemplateTokenizing
+        else {
+            throw MLXServerRuntimeError.emptyPrompt
+        }
+
+        let templateSlice = cachedContinuationTemplateSlice(
+            request: plan.request,
+            cachedPrefixMessageCount: suffixStartIndex
+        )
+        let previousTokens = try tokenizer.applyChatTemplate(
+            messages: templateSlice.cachedContextMessages,
+            tools: nil,
+            additionalContext: plan.request.additionalContext,
+            addGenerationPrompt: false
+        )
+        let continuationTokens = try tokenizer.applyChatTemplate(
+            messages: templateSlice.continuationContextMessages,
+            tools: nil,
+            additionalContext: plan.request.additionalContext,
+            addGenerationPrompt: true
+        )
+        guard continuationTokens.count > previousTokens.count,
+              continuationTokens.starts(with: previousTokens)
+        else {
+            throw MLXServerRuntimeError.emptyPrompt
+        }
+
+        let suffixTokens = Array(continuationTokens.dropFirst(previousTokens.count))
+        guard !suffixTokens.isEmpty else {
+            throw MLXServerRuntimeError.emptyPrompt
+        }
+        return LMInput(tokens: MLXArray(suffixTokens))
+    }
+
+    struct CachedContinuationTemplateSlice {
+        var cachedContextMessages: [[String: any Sendable]]
+        var continuationContextMessages: [[String: any Sendable]]
+    }
+
+    static func cachedContinuationTemplateSlice(
+        request: MLXServerGenerationRequest,
+        cachedPrefixMessageCount: Int
+    ) -> CachedContinuationTemplateSlice {
+        let contextStartIndex = cachedContinuationContextStartIndex(
+            request: request,
+            cachedPrefixMessageCount: cachedPrefixMessageCount
+        )
+        let style = MLXServerToolResultTemplateStyle.style(for: request.model)
+        let cachedContextMessages = request.messages[contextStartIndex..<cachedPrefixMessageCount]
+            .map { $0.rawTemplateMessage(toolResultStyle: style) }
+        let continuationContextMessages = request.messages
+            .dropFirst(contextStartIndex)
+            .map { $0.rawTemplateMessage(toolResultStyle: style) }
+        return CachedContinuationTemplateSlice(
+            cachedContextMessages: cachedContextMessages,
+            continuationContextMessages: continuationContextMessages
+        )
+    }
+
+    private static func cachedContinuationContextStartIndex(
+        request: MLXServerGenerationRequest,
+        cachedPrefixMessageCount: Int
+    ) -> Int {
+        let prefix = request.messages.prefix(cachedPrefixMessageCount)
+        return prefix.lastIndex { $0.role == .user } ?? (cachedPrefixMessageCount - 1)
+    }
+
+    static func suffixChatMessages(
+        request: MLXServerGenerationRequest,
+        cachedPrefixMessageCount: Int
+    ) -> [Chat.Message] {
+        guard cachedPrefixMessageCount > 0 else {
+            return request.messages.map(\.mlxChatMessage)
+        }
+        return request.messages
+            .dropFirst(cachedPrefixMessageCount)
+            .map(\.mlxChatMessage)
+    }
+
+    private static func generationStream(
+        from tokenStream: AsyncStream<TokenGeneration>,
+        tokenizer: any MLXLMCommon.Tokenizer,
+        toolCallFormat: ToolCallFormat,
+        tools: [[String: any Sendable]]?
+    ) -> AsyncStream<Generation> {
+        AsyncStream { continuation in
+            let task = Task {
+                var detokenizer = NaiveStreamingDetokenizer(tokenizer: tokenizer)
+                var toolCallProcessor = MLXServerToolCallStreamProcessor(
+                    format: toolCallFormat,
+                    tools: tools
+                )
+                var didFinishWithInfo = false
+
+                func emitPendingToolCalls() {
+                    for toolCall in toolCallProcessor.drainToolCalls() {
+                        continuation.yield(.toolCall(toolCall))
+                    }
+                }
+
+                func finishBufferedOutput() {
+                    if let text = toolCallProcessor.processEOS(returnBufferedText: true),
+                       !text.isEmpty {
+                        continuation.yield(.chunk(text))
+                    }
+                    emitPendingToolCalls()
+                }
+
+                for await event in tokenStream {
+                    guard !Task.isCancelled else {
+                        break
+                    }
+                    switch event {
+                    case .token(let token):
+                        detokenizer.append(token: token)
+                        if let chunk = detokenizer.next() {
+                            if let text = toolCallProcessor.processChunk(chunk),
+                               !text.isEmpty {
+                                continuation.yield(.chunk(text))
+                            }
+                            emitPendingToolCalls()
+                        }
+                    case .info(let info):
+                        finishBufferedOutput()
+                        continuation.yield(.info(info))
+                        didFinishWithInfo = true
+                    }
+                }
+
+                if !didFinishWithInfo {
+                    finishBufferedOutput()
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
+    func saveCache(to url: URL) async throws {
+        guard let cache else {
+            throw ChatSessionError.noCacheAvailable
+        }
+        try savePromptCache(url: url, cache: cache)
+    }
+
+}
+
+private struct MLXServerRawChatSessionPlan {
+    var session: MLXServerRawChatSession
+    var request: MLXServerGenerationRequest
+    var cachedPromptTokenCount: Int?
+    var cachedPrefixMessageCount: Int
+}
+
+struct MLXServerToolCallStreamProcessor {
+    private enum State {
+        case normal
+        case potentialTaggedToolCall
+        case collectingTaggedToolCall
+        case collectingJSONToolCall
+    }
+
+    private let parser: any ToolCallParser
+    private let tools: [[String: any Sendable]]?
+    private let supportsBareJSONFallback: Bool
+    private let jsonObjectScanner = MLXServerJSONLeadingObjectScanner(startCharacter: "{")
+    private var fallbackProcessor: ToolCallProcessor?
+    private var fallbackToolCallDrainIndex = 0
+    private var state = State.normal
+    private var buffer = ""
+    private var toolCalls: [ToolCall] = []
+
+    init(format: ToolCallFormat, tools: [[String: any Sendable]]? = nil) {
+        let parser = format.createParser()
+        self.parser = parser
+        self.tools = tools
+        supportsBareJSONFallback = format == .json
+        if parser.startTag == nil {
+            fallbackProcessor = ToolCallProcessor(format: format, tools: tools)
+        }
+    }
+
+    mutating func processChunk(_ chunk: String) -> String? {
+        if let fallbackProcessor {
+            return fallbackProcessor.processChunk(chunk)
+        }
+        return processTaggedChunk(chunk)
+    }
+
+    mutating func processEOS(returnBufferedText: Bool = true) -> String? {
+        if let fallbackProcessor {
+            return fallbackProcessor.processEOS(returnBufferedText: returnBufferedText)
+        }
+
+        guard !buffer.isEmpty else {
+            state = .normal
+            return nil
+        }
+
+        let buffered = buffer
+        buffer = ""
+        let parsedCalls: [ToolCall]
+        switch state {
+        case .normal, .potentialTaggedToolCall:
+            parsedCalls = []
+        case .collectingTaggedToolCall, .collectingJSONToolCall:
+            parsedCalls = parser.parseEOS(buffered, tools: tools)
+        }
+        state = .normal
+        toolCalls.append(contentsOf: parsedCalls)
+
+        return returnBufferedText && parsedCalls.isEmpty ? buffered : nil
+    }
+
+    mutating func drainToolCalls() -> [ToolCall] {
+        if let fallbackProcessor {
+            let calls = Array(fallbackProcessor.toolCalls.dropFirst(fallbackToolCallDrainIndex))
+            fallbackToolCallDrainIndex += calls.count
+            return calls
+        }
+
+        guard !toolCalls.isEmpty else {
+            return []
+        }
+        let drained = toolCalls
+        toolCalls.removeAll(keepingCapacity: true)
+        return drained
+    }
+
+    private mutating func processTaggedChunk(_ chunk: String) -> String? {
+        buffer += chunk
+        var emitted = ""
+
+        scanLoop: while !buffer.isEmpty {
+            switch state {
+            case .normal:
+                guard let startIndex = potentialStartIndex(in: buffer) else {
+                    emitted += buffer
+                    buffer = ""
+                    continue
+                }
+                if startIndex > buffer.startIndex {
+                    emitted += buffer[..<startIndex]
+                    buffer.removeSubrange(buffer.startIndex..<startIndex)
+                }
+                if supportsBareJSONFallback,
+                   buffer.first == jsonObjectScanner.startCharacter {
+                    state = .collectingJSONToolCall
+                } else {
+                    state = .potentialTaggedToolCall
+                }
+
+            case .potentialTaggedToolCall:
+                guard let startTag = parser.startTag else {
+                    emitted += buffer
+                    buffer = ""
+                    state = .normal
+                    continue
+                }
+                if buffer.hasPrefix(startTag) {
+                    state = .collectingTaggedToolCall
+                    continue
+                }
+                if startTag.hasPrefix(buffer) {
+                    break scanLoop
+                }
+                emitted.append(buffer.removeFirst())
+                state = .normal
+
+            case .collectingTaggedToolCall:
+                guard let endTag = parser.endTag,
+                      let endRange = buffer.range(of: endTag) else {
+                    break scanLoop
+                }
+
+                let taggedToolCall = String(buffer[..<endRange.upperBound])
+                if let toolCall = parser.parse(content: taggedToolCall, tools: tools) {
+                    toolCalls.append(toolCall)
+                } else {
+                    emitted += taggedToolCall
+                }
+                buffer.removeSubrange(buffer.startIndex..<endRange.upperBound)
+                state = .normal
+
+            case .collectingJSONToolCall:
+                switch jsonObjectScanner.evaluatePrefix(in: buffer) {
+                case .invalidObject:
+                    emitted.append(buffer.removeFirst())
+                    state = .normal
+                case .needsMore:
+                    break scanLoop
+                case .validObject:
+                    guard let split = jsonObjectScanner.splitLeadingObject(from: buffer) else {
+                        break scanLoop
+                    }
+                    if let toolCall = parser.parse(content: split.object, tools: tools) {
+                        toolCalls.append(toolCall)
+                    } else {
+                        emitted += split.object
+                    }
+                    buffer = split.trailing
+                    state = .normal
+                }
+            }
+
+        }
+
+        return emitted.isEmpty ? nil : emitted
+    }
+
+    private func potentialStartIndex(in text: String) -> String.Index? {
+        var indexes: [String.Index] = []
+        if let startChar = parser.startTag?.first,
+           let index = text.firstIndex(of: startChar) {
+            indexes.append(index)
+        }
+        if supportsBareJSONFallback,
+           let index = text.firstIndex(of: jsonObjectScanner.startCharacter) {
+            indexes.append(index)
+        }
+        return indexes.min()
+    }
+}
+
+private struct MLXServerJSONLeadingObjectScanner {
+    enum PrefixState {
+        case needsMore
+        case validObject
+        case invalidObject
+    }
+
+    let startCharacter: Character
+
+    func evaluatePrefix(in buffer: String) -> PrefixState {
+        guard let start = buffer.firstIndex(where: { !$0.isWhitespace }) else {
+            return .invalidObject
+        }
+        return evaluatePrefix(in: buffer, from: start)
+    }
+
+    func evaluatePrefix(in buffer: String, from start: String.Index) -> PrefixState {
+        var openingIndex = start
+        while openingIndex < buffer.endIndex, buffer[openingIndex].isWhitespace {
+            openingIndex = buffer.index(after: openingIndex)
+        }
+        guard openingIndex < buffer.endIndex,
+              buffer[openingIndex] == startCharacter else {
+            return .invalidObject
+        }
+
+        var index = buffer.index(after: openingIndex)
+        while index < buffer.endIndex, buffer[index].isWhitespace {
+            index = buffer.index(after: index)
+        }
+        guard index < buffer.endIndex else {
+            return .needsMore
+        }
+
+        let firstToken = buffer[index]
+        return firstToken == "\"" || firstToken == "}"
+            ? .validObject
+            : .invalidObject
+    }
+
+    func splitLeadingObject(from buffer: String) -> (object: String, trailing: String)? {
+        guard let openingIndex = buffer.firstIndex(where: { !$0.isWhitespace }) else {
+            return nil
+        }
+        guard buffer[openingIndex] == startCharacter else {
+            return nil
+        }
+
+        var depth = 0
+        var isEscaped = false
+        var isInString = false
+        var index = openingIndex
+        while index < buffer.endIndex {
+            let character = buffer[index]
+            if isEscaped {
+                isEscaped = false
+            } else if character == "\\" {
+                isEscaped = isInString
+            } else if character == "\"" {
+                isInString.toggle()
+            } else if !isInString {
+                if character == startCharacter {
+                    depth += 1
+                } else if character == "}" {
+                    depth -= 1
+                    if depth == 0 {
+                        let end = buffer.index(after: index)
+                        return (
+                            String(buffer[..<end]),
+                            String(buffer[end...])
+                        )
+                    }
+                }
+            }
+            index = buffer.index(after: index)
+        }
+
+        return nil
+    }
+}
+
+/// The raw session owns a KV cache; the wrapper lets the runtime pass it
+/// between the actor and detached persistence work.
 struct ChatSessionTransfer: @unchecked Sendable {
-    let session: ChatSession
+    let session: MLXServerRawChatSession
 }
 
 private struct LoadedModelKey: Hashable, Sendable {
@@ -1197,7 +1729,103 @@ public enum MLXServerChatSessionTranscriptText {
     }
 }
 
+enum MLXServerToolResultTemplateStyle {
+    case roleToolContent
+    case toolResponses
+
+    static func style(for model: MLXServerModelDescriptor) -> Self {
+        let name = "\(model.id) \(model.displayName)".lowercased()
+        return name.contains("gemma") ? .toolResponses : .roleToolContent
+    }
+}
+
 extension MLXServerChatMessage {
+    func rawTemplateMessage(
+        toolResultStyle: MLXServerToolResultTemplateStyle
+    ) -> [String: any Sendable] {
+        switch role {
+        case .system, .user:
+            return [
+                "role": role.rawValue,
+                "content": content
+            ]
+        case .assistant:
+            var message: [String: any Sendable] = [
+                "role": role.rawValue,
+                "content": content
+            ]
+            if let reasoningContent {
+                message["reasoning_content"] = reasoningContent
+            }
+            if !toolCalls.isEmpty {
+                message["tool_calls"] = toolCalls.map(Self.rawToolCallPayload)
+            }
+            return message
+        case .tool:
+            return rawToolResultMessage(style: toolResultStyle)
+        }
+    }
+
+    private func rawToolResultMessage(
+        style: MLXServerToolResultTemplateStyle
+    ) -> [String: any Sendable] {
+        var message: [String: any Sendable] = [
+            "role": role.rawValue,
+            "content": style == .toolResponses ? "" : content
+        ]
+        if let toolCallID {
+            message["tool_call_id"] = toolCallID
+        }
+        if let toolName {
+            message["name"] = toolName
+        }
+        if style == .toolResponses {
+            message["tool_responses"] = [
+                [
+                    "name": toolName ?? "unknown",
+                    "response": content
+                ] as [String: any Sendable]
+            ]
+        }
+        return message
+    }
+
+    private static func rawToolCallPayload(
+        _ toolCall: MLXServerChatToolCall
+    ) -> [String: any Sendable] {
+        var payload: [String: any Sendable] = [
+            "type": "function",
+            "function": [
+                "name": toolCall.function.name,
+                "arguments": toolCall.function.arguments.mapValues(Self.sendableTemplateValue)
+            ] as [String: any Sendable]
+        ]
+        if let id = toolCall.id?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !id.isEmpty {
+            payload["id"] = id
+        }
+        return payload
+    }
+
+    private static func sendableTemplateValue(_ value: JSONValue) -> any Sendable {
+        switch value {
+        case .null:
+            return "null"
+        case .bool(let value):
+            return value
+        case .int(let value):
+            return value
+        case .double(let value):
+            return value
+        case .string(let value):
+            return value
+        case .array(let values):
+            return values.map(Self.sendableTemplateValue)
+        case .object(let values):
+            return values.mapValues(Self.sendableTemplateValue)
+        }
+    }
+
     var mlxChatMessage: Chat.Message {
         Chat.Message(
             role: mlxRole,
@@ -1214,17 +1842,41 @@ extension MLXServerChatMessage {
         guard role == .assistant, !toolCalls.isEmpty else {
             return content
         }
-        let renderedCalls = toolCalls.map { toolCall in
-            let arguments = toolCall.function.arguments
-                .map { key, value in "\"\(key)\": \(String(describing: value))" }
-                .sorted()
-                .joined(separator: ", ")
-            return "{\"name\": \"\(toolCall.function.name)\", \"arguments\": {\(arguments)}}"
-        }
-        let callsText = renderedCalls
-            .map { "<tool_call>\n\($0)\n</tool_call>" }
-            .joined(separator: "\n")
+        let renderedCalls = toolCalls.map(Self.toolCallTemplateContent)
+        let callsText = renderedCalls.joined(separator: "\n")
         return content.isEmpty ? callsText : "\(content)\n\(callsText)"
+    }
+
+    private static func toolCallTemplateContent(_ toolCall: MLXServerChatToolCall) -> String {
+        var lines = [
+            "<tool_call>",
+            "<function=\(toolCall.function.name)>"
+        ]
+        for key in toolCall.function.arguments.keys.sorted() {
+            guard let value = toolCall.function.arguments[key] else {
+                continue
+            }
+            lines.append("<parameter=\(key)>")
+            lines.append(toolArgumentTemplateValue(value))
+            lines.append("</parameter>")
+        }
+        lines.append("</function>")
+        lines.append("</tool_call>")
+        return lines.joined(separator: "\n")
+    }
+
+    private static func toolArgumentTemplateValue(_ value: JSONValue) -> String {
+        if case .string(let string) = value {
+            return string
+        }
+        guard JSONSerialization.isValidJSONObject(value.anyValue),
+              let data = try? JSONSerialization.data(
+                  withJSONObject: value.anyValue,
+                  options: [.sortedKeys, .withoutEscapingSlashes]
+              ) else {
+            return String(describing: value.anyValue)
+        }
+        return String(decoding: data, as: UTF8.self)
     }
 
     var mlxRole: Chat.Message.Role {

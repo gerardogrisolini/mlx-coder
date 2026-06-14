@@ -180,6 +180,7 @@ extension MLXServerChatMessage {
         SHA256.appendLengthPrefixed("mlx-server-chat-message-fingerprint-v1", to: &hasher)
         SHA256.appendLengthPrefixed(content, to: &hasher)
         SHA256.appendLengthPrefixed(toolCallID ?? "", to: &hasher)
+        SHA256.appendLengthPrefixed(toolName ?? "", to: &hasher)
         for toolCall in toolCalls {
             SHA256.appendLengthPrefixed(toolCall.id ?? "", to: &hasher)
             SHA256.appendLengthPrefixed(toolCall.function.name, to: &hasher)

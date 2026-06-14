@@ -295,6 +295,18 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                     didReceiveContentDelta = true
                     responseText.append(delta)
                     events.append(.content(delta))
+                case let .contentSnapshot(snapshot):
+                    let delta = RemoteGenerationClient.streamContentDelta(
+                        fromSnapshot: snapshot,
+                        accumulatedText: responseText
+                    )
+                    guard !delta.isEmpty else {
+                        continue
+                    }
+                    markFirstDelta()
+                    didReceiveContentDelta = true
+                    responseText.append(delta)
+                    events.append(.content(delta))
                 case let .reasoning(delta):
                     guard !delta.isEmpty else {
                         continue
@@ -336,10 +348,17 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                       !delta.isEmpty else {
                     return events
                 }
+                let nonDuplicatingDelta = RemoteGenerationClient.streamContentDelta(
+                    fromSnapshot: delta,
+                    accumulatedText: responseText
+                )
+                guard !nonDuplicatingDelta.isEmpty else {
+                    return events
+                }
                 markFirstDelta()
                 didReceiveContentDelta = true
-                responseText.append(delta)
-                events.append(.content(delta))
+                responseText.append(nonDuplicatingDelta)
+                events.append(.content(nonDuplicatingDelta))
             case "response_reasoning_summary_text_delta",
                  "response_reasoning_text_delta",
                  "response_reasoning_delta",
@@ -358,10 +377,17 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                 if !didReceiveContentDelta,
                    let completedText = ChatGPTSubscriptionGenerationClient.completedResponseText(from: object),
                    !completedText.isEmpty {
+                    let nonDuplicatingText = RemoteGenerationClient.streamContentDelta(
+                        fromSnapshot: completedText,
+                        accumulatedText: responseText
+                    )
+                    guard !nonDuplicatingText.isEmpty else {
+                        return events
+                    }
                     markFirstDelta()
                     didReceiveContentDelta = true
-                    responseText.append(completedText)
-                    events.append(.content(completedText))
+                    responseText.append(nonDuplicatingText)
+                    events.append(.content(nonDuplicatingText))
                 }
             default:
                 break
