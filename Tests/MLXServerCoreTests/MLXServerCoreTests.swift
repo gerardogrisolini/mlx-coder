@@ -251,12 +251,6 @@ func serverSupportFilesDefaultToHomeMlxCoderMLXDirectory() {
     #expect(MLXServerSettingsStore.defaultSupportDirectoryURL() == supportDirectory)
     #expect(MLXServerSettingsStore.settingsURL() == supportDirectory.appendingPathComponent("settings.json"))
     #expect(MLXServerModelsManifestStore.modelsURL() == supportDirectory.appendingPathComponent("models.json"))
-    #expect(
-        MLXServerSettingsStore.legacySupportDirectoryURL()
-            == MLXServerUserHomeDirectory.current()
-                .appendingPathComponent(".mlx-server", isDirectory: true)
-                .standardizedFileURL
-    )
 }
 
 @Test

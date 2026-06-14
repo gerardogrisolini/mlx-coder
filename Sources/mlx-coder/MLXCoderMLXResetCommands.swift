@@ -7,22 +7,10 @@ import Foundation
 import MLXServerCore
 
 enum MLXCoderMLXResetConfigurationCommand {
-    static let option = "--reset"
-
-    static func shouldRun(arguments: [String]) -> Bool {
-        arguments.contains(option)
-    }
-
-    static func argumentsAfterRemovingOption(arguments: [String]) -> [String] {
-        arguments.filter { $0 != option }
-    }
-
     static func run(fileManager: FileManager = .default) throws {
         let fileURLs = uniqueURLs([
             MLXServerSettingsStore.settingsURL(fileManager: fileManager),
-            MLXServerModelsManifestStore.modelsURL(fileManager: fileManager),
-            MLXServerSettingsStore.legacySettingsURL(fileManager: fileManager),
-            MLXServerModelsManifestStore.legacyModelsURL(fileManager: fileManager)
+            MLXServerModelsManifestStore.modelsURL(fileManager: fileManager)
         ])
 
         var removed: [URL] = []
@@ -67,16 +55,6 @@ enum MLXCoderMLXResetConfigurationCommand {
 }
 
 enum MLXCoderMLXResetDiskCacheCommand {
-    static let option = "--reset-disk-cache"
-
-    static func shouldRun(arguments: [String]) -> Bool {
-        arguments.contains(option)
-    }
-
-    static func argumentsAfterRemovingOption(arguments: [String]) -> [String] {
-        arguments.filter { $0 != option }
-    }
-
     static func run(fileManager: FileManager = .default) throws {
         let settings = MLXServerSettingsStore.loadOrDefault(fileManager: fileManager)
         let cacheDirectory = settings.diskKVCache.configuration.directory.standardizedFileURL

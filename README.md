@@ -48,8 +48,7 @@ mlx-coder --cwd /path/to/project
 Set up and run the local MLX runtime:
 
 ```bash
-mlx-coder --mlx --setup
-mlx-coder --mlx --setup-models
+mlx-coder --setup
 mlx-coder --mlx --cwd /path/to/project
 ```
 
@@ -67,11 +66,8 @@ Useful commands:
 
 ```bash
 mlx-coder --mlx --help
-mlx-coder --mlx --setup
-mlx-coder --mlx --setup-models
 mlx-coder --mlx --agent Feature --model qwen3-mlx --cwd /path/to/project
-mlx-coder --mlx --reset
-mlx-coder --mlx --reset-disk-cache
+mlx-coder --setup
 ```
 
 Local MLX configuration lives in:
@@ -81,8 +77,6 @@ Local MLX configuration lives in:
 ~/.mlx-coder/mlx/models.json
 ~/.mlx-coder/mlx/KVCaches/
 ```
-
-On first use, `mlx-coder --mlx` can import legacy `settings.json` and `models.json` from `~/.mlx-server/` when the new files do not exist.
 
 ## TUI Commands
 
@@ -120,19 +114,14 @@ On first use, `mlx-coder --mlx` can import legacy `settings.json` and `models.js
 swift test
 swift build -c release --product mlx-coder
 
-swift run -c release mlx-coder --help
-swift run -c release mlx-coder --setup
-swift run -c release mlx-coder --cwd /path/to/project
-swift run -c release mlx-coder --acp --cwd /path/to/project
-swift run -c release mlx-coder --reset
+mlx-coder --help
+mlx-coder --setup
+mlx-coder --cwd /path/to/project
+mlx-coder --acp --cwd /path/to/project
 
-swift run -c release mlx-coder --mlx --help
-swift run -c release mlx-coder --mlx --setup
-swift run -c release mlx-coder --mlx --setup-models
-swift run -c release mlx-coder --mlx --cwd /path/to/project
-swift run -c release mlx-coder --mlx --acp --cwd /path/to/project
-swift run -c release mlx-coder --mlx --reset
-swift run -c release mlx-coder --mlx --reset-disk-cache
+mlx-coder --mlx --help
+mlx-coder --mlx --cwd /path/to/project
+mlx-coder --mlx --acp --cwd /path/to/project
 ```
 
 ## More Docs

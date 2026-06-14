@@ -215,7 +215,7 @@ public actor MLXServerHuggingFaceCacheAccessStore {
                 includingPropertiesForKeys: nil
             )
             let probeURL = directoryURL.appendingPathComponent(
-                ".mlx-server-access-\(UUID().uuidString)"
+                ".mlx-coder-mlx-access-\(UUID().uuidString)"
             )
             try Data().write(to: probeURL, options: [.atomic])
             try? fileManager.removeItem(at: probeURL)

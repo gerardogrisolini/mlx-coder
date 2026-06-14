@@ -9,16 +9,7 @@ import Foundation
 import MLXCoderCore
 
 public enum MLXCoderSetupRunner {
-    public static let option = "--setup"
     private static let interactiveLineReader = TerminalInteractiveLineReader()
-
-    public static func shouldRunSetup(arguments: [String]) -> Bool {
-        arguments.dropFirst().contains(option)
-    }
-
-    public static func argumentsAfterRemovingSetup(arguments: [String]) -> [String] {
-        arguments.filter { $0 != option }
-    }
 
     public static func run(arguments: [String]) async throws {
         _ = arguments

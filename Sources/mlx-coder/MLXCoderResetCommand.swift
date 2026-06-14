@@ -2,16 +2,6 @@ import Foundation
 import MLXCoderCore
 
 enum MLXCoderResetConfigurationCommand {
-    static let option = "--reset"
-
-    static func shouldRun(arguments: [String]) -> Bool {
-        arguments.contains(option)
-    }
-
-    static func argumentsAfterRemovingOption(arguments: [String]) -> [String] {
-        arguments.filter { $0 != option }
-    }
-
     static func run(fileManager: FileManager = .default) throws {
         let fileURLs = uniqueURLs([
             MLXAgentsContextService(fileManager: fileManager).globalAgentsFileURL(),

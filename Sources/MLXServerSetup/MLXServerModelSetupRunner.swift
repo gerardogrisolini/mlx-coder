@@ -8,17 +8,8 @@ import HuggingFace
 import MLXServerCore
 
 public enum MLXServerModelSetupRunner {
-    public static let option = "--setup-models"
     private static let recommendedContextWindow = 65_536
     private static let interactiveLineReader = MLXServerSetupInteractiveLineReader()
-
-    public static func shouldRunSetup(arguments: [String]) -> Bool {
-        arguments.contains(option)
-    }
-
-    public static func argumentsAfterRemovingSetup(arguments: [String]) -> [String] {
-        arguments.filter { $0 != option }
-    }
 
     @MainActor
     public static func run(arguments: [String], configureRetentionPolicy: Bool = true) async throws {
@@ -1087,7 +1078,7 @@ enum MLXServerModelSetupError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .nonInteractiveTerminal:
-            return "mlx-coder --mlx --setup-models requires an interactive terminal."
+            return "Local MLX model setup requires an interactive terminal."
         case .inputClosed:
             return "Input closed during mlx-coder MLX model setup."
         }

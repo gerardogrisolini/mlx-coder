@@ -1,7 +1,6 @@
 import Foundation
 import MLXCoderCore
 import MLXServerCore
-import MLXServerSetup
 
 enum MLXCoderMLXCommand {
     static let option = "--mlx"
@@ -30,42 +29,11 @@ enum MLXCoderMLXCommand {
             return
         }
 
-        let didResetDiskCache = MLXCoderMLXResetDiskCacheCommand.shouldRun(arguments: arguments)
-        let didResetConfiguration = MLXCoderMLXResetConfigurationCommand.shouldRun(arguments: arguments)
-        if didResetDiskCache {
-            try MLXCoderMLXResetDiskCacheCommand.run()
-            arguments = MLXCoderMLXResetDiskCacheCommand.argumentsAfterRemovingOption(
-                arguments: arguments
-            )
-        }
-        if didResetConfiguration {
-            try MLXCoderMLXResetConfigurationCommand.run()
-            arguments = MLXCoderMLXResetConfigurationCommand.argumentsAfterRemovingOption(
-                arguments: arguments
-            )
-        }
-        if didResetDiskCache || didResetConfiguration, arguments.isEmpty {
-            return
-        }
-
-        var didRunSetup = false
-        if MLXServerSetupRunner.shouldRunSetup(arguments: arguments) {
-            didRunSetup = true
-            try MLXServerSetupRunner.run(arguments: arguments)
-            arguments = MLXServerSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
-        }
-
-        if MLXServerModelSetupRunner.shouldRunSetup(arguments: arguments) {
-            didRunSetup = true
-            try await MLXServerModelSetupRunner.run(
-                arguments: arguments,
-                configureRetentionPolicy: true
-            )
-            arguments = MLXServerModelSetupRunner.argumentsAfterRemovingSetup(arguments: arguments)
-        }
-
-        if didRunSetup, arguments.isEmpty {
-            return
+        if let option = MLXCoderSetupMenuRunner.movedSetupOption(
+            in: rawArguments,
+            mlxMode: true
+        ) {
+            throw MLXCoderSetupMenuError.setupActionMovedToSetup(option)
         }
 
         try await runAgent(arguments: arguments)
@@ -276,15 +244,10 @@ enum MLXCoderMLXCommand {
 
     Usage:
       mlx-coder --mlx [--help] [--version]
-      mlx-coder --mlx --setup
-      mlx-coder --mlx --setup-models
-      mlx-coder --mlx --reset
-      mlx-coder --mlx --reset-disk-cache
       mlx-coder --mlx [--acp] [--cwd <path>] [--model <id>] [--agent <name>] [--skills <list>]
                       [--max-output-tokens <count>] [--max-tool-rounds <count>] [--verbose]
 
-    Run mlx-coder --mlx --setup once to create ~/.mlx-coder/mlx/settings.json.
-    Run mlx-coder --mlx --setup-models to create or update ~/.mlx-coder/mlx/models.json and download MLX models.
+    Run mlx-coder --setup for local MLX setup, model setup, and reset options.
     Run mlx-coder --mlx to start the mlx-coder TUI with the local MLX runtime directly.
     Add --acp to expose the same direct runtime over ACP stdio.
     """

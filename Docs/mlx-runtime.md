@@ -5,19 +5,17 @@
 ## Setup
 
 ```bash
-mlx-coder --mlx --setup
-mlx-coder --mlx --setup-models
+mlx-coder --setup
 ```
 
-The setup writes:
+Choose the local MLX runtime and local MLX models actions from the setup menu.
+Those actions write:
 
 ```text
 ~/.mlx-coder/mlx/settings.json
 ~/.mlx-coder/mlx/models.json
 ~/.mlx-coder/mlx/KVCaches/
 ```
-
-If the new files do not exist, legacy `settings.json` and `models.json` can be imported automatically from `~/.mlx-server/`.
 
 ## Run
 
@@ -52,14 +50,15 @@ Persistence behavior:
 Empty the disk cache with:
 
 ```bash
-mlx-coder --mlx --reset-disk-cache
+mlx-coder --setup
 ```
 
 ## Reset
 
 ```bash
-mlx-coder --mlx --reset
-mlx-coder --mlx --reset-disk-cache
+mlx-coder --setup
 ```
 
-`--reset` removes managed MLX settings and model catalog files from both the new `~/.mlx-coder/mlx/` location and the legacy `~/.mlx-server/` location.
+Choose the reset actions from the setup menu. Local MLX reset removes managed
+MLX settings and model catalog files from `~/.mlx-coder/mlx/`; local MLX disk
+cache reset empties `~/.mlx-coder/mlx/KVCaches/`.

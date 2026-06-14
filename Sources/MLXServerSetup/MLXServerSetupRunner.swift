@@ -7,16 +7,7 @@ import Foundation
 import MLXServerCore
 
 public enum MLXServerSetupRunner {
-    public static let option = "--setup"
     private static let interactiveLineReader = MLXServerSetupInteractiveLineReader()
-
-    public static func shouldRunSetup(arguments: [String]) -> Bool {
-        arguments.contains(option)
-    }
-
-    public static func argumentsAfterRemovingSetup(arguments: [String]) -> [String] {
-        arguments.filter { $0 != option }
-    }
 
     public static func run(arguments: [String]) throws {
         _ = arguments
@@ -498,7 +489,7 @@ enum MLXServerSetupError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .nonInteractiveTerminal:
-            return "mlx-coder --mlx --setup requires an interactive terminal."
+            return "Local MLX runtime setup requires an interactive terminal."
         case .inputClosed:
             return "Input closed during mlx-coder MLX setup."
         case let .invalidChoice(value):

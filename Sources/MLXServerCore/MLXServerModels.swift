@@ -545,23 +545,11 @@ public enum MLXServerModelsManifestStore {
             .standardizedFileURL
     }
 
-    public static func legacyModelsURL(fileManager: FileManager = .default) -> URL {
-        MLXServerSettingsStore.legacySupportDirectoryURL(fileManager: fileManager)
-            .appendingPathComponent(modelsFilename)
-            .standardizedFileURL
-    }
-
     public static func loadRequired(
         from url: URL = modelsURL(),
         fileManager: FileManager = .default
     ) throws -> MLXServerModelsManifest {
         guard fileManager.fileExists(atPath: url.path) else {
-            if let imported = try importLegacyModelsIfNeeded(
-                requestedURL: url,
-                fileManager: fileManager
-            ) {
-                return imported
-            }
             throw MLXServerModelsManifestError.missingModels(url)
         }
         return try loadManifest(from: url).validated()
@@ -583,25 +571,6 @@ public enum MLXServerModelsManifestStore {
         try data.write(to: url, options: [.atomic])
     }
 
-    private static func importLegacyModelsIfNeeded(
-        requestedURL url: URL,
-        fileManager: FileManager
-    ) throws -> MLXServerModelsManifest? {
-        let defaultURL = modelsURL(fileManager: fileManager)
-        guard url.standardizedFileURL.path == defaultURL.standardizedFileURL.path else {
-            return nil
-        }
-
-        let legacyURL = legacyModelsURL(fileManager: fileManager)
-        guard fileManager.fileExists(atPath: legacyURL.path) else {
-            return nil
-        }
-
-        let manifest = try loadManifest(from: legacyURL).validated()
-        try? save(manifest, to: defaultURL, fileManager: fileManager)
-        return manifest
-    }
-
     private static func loadManifest(from url: URL) throws -> MLXServerModelsManifest {
         let data = try Data(contentsOf: url)
         return try JSONDecoder().decode(MLXServerModelsManifest.self, from: data)
@@ -620,7 +589,7 @@ public enum MLXServerModelsManifestError: LocalizedError, Equatable, Sendable {
     public var errorDescription: String? {
         switch self {
         case .missingModels(let url):
-            return "models.json not found at \(url.path). Run mlx-coder --mlx --setup-models first."
+            return "models.json not found at \(url.path). Run mlx-coder --setup and choose local MLX models setup first."
         case .emptyModelID:
             return "Model id can not be empty."
         case .emptyRepositoryID:

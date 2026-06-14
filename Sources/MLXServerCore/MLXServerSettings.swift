@@ -319,29 +319,11 @@ public enum MLXServerSettingsStore {
             .standardizedFileURL
     }
 
-    public static func legacySupportDirectoryURL(fileManager: FileManager = .default) -> URL {
-        MLXServerUserHomeDirectory.current(fileManager: fileManager)
-            .appendingPathComponent(".mlx-server", isDirectory: true)
-            .standardizedFileURL
-    }
-
-    public static func legacySettingsURL(fileManager: FileManager = .default) -> URL {
-        legacySupportDirectoryURL(fileManager: fileManager)
-            .appendingPathComponent(settingsFilename)
-            .standardizedFileURL
-    }
-
     public static func loadRequired(
         from url: URL = settingsURL(),
         fileManager: FileManager = .default
     ) throws -> MLXServerSettings {
         guard fileManager.fileExists(atPath: url.path) else {
-            if let imported = try importLegacySettingsIfNeeded(
-                requestedURL: url,
-                fileManager: fileManager
-            ) {
-                return imported
-            }
             throw MLXServerSettingsError.missingSettings(url)
         }
         return try loadSettings(from: url).validated()
@@ -391,25 +373,6 @@ public enum MLXServerSettingsStore {
         try? save(settings, fileManager: fileManager)
     }
 
-    private static func importLegacySettingsIfNeeded(
-        requestedURL url: URL,
-        fileManager: FileManager
-    ) throws -> MLXServerSettings? {
-        let defaultURL = settingsURL(fileManager: fileManager)
-        guard url.standardizedFileURL.path == defaultURL.standardizedFileURL.path else {
-            return nil
-        }
-
-        let legacyURL = legacySettingsURL(fileManager: fileManager)
-        guard fileManager.fileExists(atPath: legacyURL.path) else {
-            return nil
-        }
-
-        let settings = try loadSettings(from: legacyURL).validated()
-        try? save(settings, to: defaultURL, fileManager: fileManager)
-        return settings
-    }
-
     private static func loadSettings(from url: URL) throws -> MLXServerSettings {
         let data = try Data(contentsOf: url)
         return try JSONDecoder().decode(MLXServerSettings.self, from: data)
@@ -425,7 +388,7 @@ public enum MLXServerSettingsError: LocalizedError, Equatable, Sendable {
     public var errorDescription: String? {
         switch self {
         case .missingSettings(let url):
-            return "settings.json not found at \(url.path). Run mlx-coder --mlx --setup first."
+            return "settings.json not found at \(url.path). Run mlx-coder --setup and choose local MLX runtime setup first."
         case .incompleteTLSConfiguration:
             return "TLS requires both certificate and private key paths."
         case .invalidDiskKVCacheLimit:

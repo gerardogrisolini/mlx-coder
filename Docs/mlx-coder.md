@@ -11,19 +11,19 @@ Use this guide to set up providers, agent profiles, tools, skills, saved session
 1. Standalone chat TUI:
 
    ```bash
-   swift run -c release mlx-coder
+   mlx-coder
    ```
 
 2. ACP over stdio for compatible clients:
 
    ```bash
-   swift run -c release mlx-coder --acp
+   mlx-coder --acp
    ```
 
 3. Direct local MLX runtime:
 
    ```bash
-   swift run -c release mlx-coder --mlx --cwd /path/to/project
+   mlx-coder --mlx --cwd /path/to/project
    ```
 
 Standalone `mlx-coder` uses providers/models from `~/.mlx-coder/settings.json`. Direct `mlx-coder --mlx` uses the local `~/.mlx-coder/mlx/models.json` catalog and the local MLX runtime directly.
@@ -33,18 +33,17 @@ Standalone `mlx-coder` uses providers/models from `~/.mlx-coder/settings.json`. 
 Create standalone support files and configure providers/models:
 
 ```bash
-swift run -c release mlx-coder --setup
+mlx-coder --setup
 ```
 
 The first setup creates files under `~/.mlx-coder/`. During setup you can also
 enable Telegram remote control, pair the bot once, enable local voice tools, and
 store those settings in `settings.json`.
 
-Create or update the local MLX runtime settings and model catalog:
+Create or update the local MLX runtime settings and model catalog from the same setup menu:
 
 ```bash
-swift run -c release mlx-coder --mlx --setup
-swift run -c release mlx-coder --mlx --setup-models
+mlx-coder --setup
 ```
 
 - `settings.json`: provider/model configuration, selected model, optional Telegram remote control token plus linked chat, and optional local voice tool settings.
@@ -58,13 +57,12 @@ swift run -c release mlx-coder --mlx --setup-models
 ## Command Line Options
 
 ```text
-mlx-coder [--setup] [--reset] [--acp] [--agent NAME] [--model MODEL_ID] [--cwd PATH] [--skills LIST]
+mlx-coder [--setup] [--acp] [--agent NAME] [--model MODEL_ID] [--cwd PATH] [--skills LIST]
 ```
 
 Important options:
 
-- `--setup`: create standalone support files and configure providers, models, and agents, then exit. The agent profiles are configured in the last section of the setup menu.
-- `--reset`: delete managed files in `~/.mlx-coder/`, then exit.
+- `--setup`: open setup for providers, models, agents, local MLX runtime/model setup, and reset actions, then exit.
 - `--acp`: run ACP JSON-RPC over stdio instead of terminal chat.
 - `--agent NAME`: select an agent profile from `agents.json`; defaults to `Default` when omitted.
 - `--model MODEL_ID`: override the agent-selected model for this run. Accepted forms include a model id, `remoteapimodel:<uuid>`, or `remoteapi:<uuid>`.
@@ -84,15 +82,13 @@ Environment variables mirror the main options:
 - `MLX_CODER_AGENT_VERBOSE`: `1` or `true` for verbose progress.
 - `MLX_CODER_AGENT_BEARER_TOKEN`: fallback bearer token for configured remote providers.
 
-Legacy `SWIFTMLX_AGENT_*` environment names are still accepted.
-
 ## Agent Profiles
 
 Agent profiles live in `~/.mlx-coder/agents.json` and are managed in the Agents
 section of the setup menu:
 
 ```bash
-swift run -c release mlx-coder --setup
+mlx-coder --setup
 ```
 
 The setup can create the recommended profiles:
@@ -180,9 +176,9 @@ Skills are prompt modules that can be selected per session. Use:
 The TUI can select installed skills or install a skill from GitHub or a local folder. Start with `--skills LIST` when you want a fixed initial selection for a run:
 
 ```bash
-swift run -c release mlx-coder --skills all
-swift run -c release mlx-coder --skills none
-swift run -c release mlx-coder --skills "review,swift"
+mlx-coder --skills all
+mlx-coder --skills none
+mlx-coder --skills "review,swift"
 ```
 
 ## Attachments
@@ -301,7 +297,7 @@ See the [Builder agent guide](builder.md) for Builder usage and technical featur
 ACP mode is for clients that manage the UI and communicate with the agent over stdio:
 
 ```bash
-swift run -c release mlx-coder --acp --cwd /path/to/project
+mlx-coder --acp --cwd /path/to/project
 ```
 
 In ACP mode:
@@ -316,7 +312,7 @@ In ACP mode:
 For fully local MLX inference without HTTP, run:
 
 ```bash
-swift run -c release mlx-coder --mlx --cwd /path/to/project
+mlx-coder --mlx --cwd /path/to/project
 ```
 
 This mode:
@@ -333,7 +329,7 @@ This mode:
 Example with explicit model and profile:
 
 ```bash
-swift run -c release mlx-coder --mlx \
+mlx-coder --mlx \
   --cwd /path/to/project \
   --model qwen3-mlx \
   --agent Feature \
@@ -346,14 +342,14 @@ swift run -c release mlx-coder --mlx \
 1. Run setup once:
 
       ```bash
-   swift run -c release mlx-coder --setup
+   mlx-coder --setup
    ```
 
 2. Start in the target project:
 
    ```bash
    cd /path/to/project
-   swift run -c release mlx-coder --agent Default
+   mlx-coder --agent Default
    ```
 
 3. Select tools and skills:
