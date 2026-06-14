@@ -437,16 +437,21 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
     private let configuration: AgentRuntimeConfiguration
     private let urlSession: URLSession
     private let toolExecutor: DirectToolExecutor
-    private let webSocketPool = ChatGPTSubscriptionWebSocketPool()
+    private let webSocketPool: ChatGPTSubscriptionWebSocketPool
+    private let usesWebSocketTransport: Bool
     private var sessions: [String: AgentSession] = [:]
     private var sessionIDsByIdentity = ChatGPTSubscriptionGenerationClient.loadStoredSessionIDs()
 
     public init(
         configuration: AgentRuntimeConfiguration,
         urlSession: URLSession? = nil,
-        mcpRuntime: DirectMCPToolRuntime = DirectMCPToolRuntime()
+        mcpRuntime: DirectMCPToolRuntime = DirectMCPToolRuntime(),
+        webSocketPool: ChatGPTSubscriptionWebSocketPool = ChatGPTSubscriptionWebSocketPool(),
+        usesWebSocketTransport: Bool = true
     ) {
         self.configuration = configuration
+        self.webSocketPool = webSocketPool
+        self.usesWebSocketTransport = usesWebSocketTransport
         if let urlSession {
             self.urlSession = urlSession
         } else {
@@ -464,7 +469,9 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
                 ChatGPTSubscriptionGenerationClient(
                     configuration: configuration,
                     urlSession: urlSession,
-                    mcpRuntime: mcpRuntime
+                    mcpRuntime: mcpRuntime,
+                    webSocketPool: ChatGPTSubscriptionWebSocketPool(),
+                    usesWebSocketTransport: usesWebSocketTransport
                 )
             }
         )
@@ -661,10 +668,11 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         session.chatGPTSessionID = chatGPTSessionID
         sessions[sessionID] = session
 
-        let client = ChatGPTSubscriptionResponsesClient(
+                        let client = ChatGPTSubscriptionResponsesClient(
             credentials: credentials,
             urlSession: urlSession,
-            webSocketPool: webSocketPool
+            webSocketPool: webSocketPool,
+            usesWebSocketTransport: usesWebSocketTransport
         )
         let reasoningEffort = session.thinkingSelection
             .flatMap(Self.chatGPTReasoningEffort(for:))
@@ -682,172 +690,150 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
 
         var accumulatedText = ""
         var generationStats: [RemoteGenerationStats] = []
+        var didRetryAfterContextLimit = false
 
         for round in 0..<configuration.maxToolRounds {
-            if let result = compactSessionIfNeeded(
-                &session,
-                maxTokens: maxContextWindowTokens,
-                maxOutputTokens: configuration.maxOutputTokens,
-                sessionIdentity: sessionIdentity
-            ) {
-                await onEvent(.diagnostic(Self.compactionDiagnostic(from: result)))
-            }
-            let toolCatalog = RemoteToolWireCatalog(
-                descriptors: await toolExecutor.descriptors(
-                    allowedToolNames: session.allowedToolNames,
-                    preferredWorkspaceRootURL: URL(fileURLWithPath: session.cwd)
-                )
-            )
-            if configuration.verboseLogging {
-                await onEvent(
-                    .diagnostic(
-                        RemoteGenerationClient.toolExposureDiagnostic(
-                            from: toolCatalog.bindings.map(\.descriptor)
-                        )
+            while true {
+                let toolCatalog = RemoteToolWireCatalog(
+                    descriptors: await toolExecutor.descriptors(
+                        allowedToolNames: session.allowedToolNames,
+                        preferredWorkspaceRootURL: URL(fileURLWithPath: session.cwd)
                     )
                 )
-            }
-            var requestPayload = ChatGPTSubscriptionRequestBuilder.requestInputPayload(
-                from: toolCatalog.wireMessages(from: session.messages),
-                continuation: session.continuation
-            )
-            var instructions = requestPayload.instructions?.nilIfBlank
-                ?? "You are a helpful coding assistant."
-            let toolPayloads = toolCatalog.responsesToolPayloads
-            var estimatedContextTokens = ChatGPTSubscriptionRequestBuilder.estimatedContextTokenCount(
-                instructions: instructions,
-                input: requestPayload.input,
-                toolPayloads: toolPayloads
-            )
-            if let result = compactSessionForEstimatedContextIfNeeded(
-                &session,
-                estimatedContextTokens: estimatedContextTokens,
-                maxTokens: maxContextWindowTokens,
-                maxOutputTokens: configuration.maxOutputTokens,
-                sessionIdentity: sessionIdentity
-            ) {
-                await onEvent(.diagnostic(Self.compactionDiagnostic(from: result)))
-                requestPayload = ChatGPTSubscriptionRequestBuilder.requestInputPayload(
+                if configuration.verboseLogging {
+                    await onEvent(
+                        .diagnostic(
+                            RemoteGenerationClient.toolExposureDiagnostic(
+                                from: toolCatalog.bindings.map(\.descriptor)
+                            )
+                        )
+                    )
+                }
+                let requestPayload = ChatGPTSubscriptionRequestBuilder.requestInputPayload(
                     from: toolCatalog.wireMessages(from: session.messages),
                     continuation: session.continuation
                 )
-                instructions = requestPayload.instructions?.nilIfBlank
+                let instructions = requestPayload.instructions?.nilIfBlank
                     ?? "You are a helpful coding assistant."
-                estimatedContextTokens = ChatGPTSubscriptionRequestBuilder.estimatedContextTokenCount(
-                    instructions: instructions,
-                    input: requestPayload.input,
-                    toolPayloads: toolPayloads
-                )
-            }
-            if let estimatedContextTokens {
-                await onEvent(
-                    .contextWindow(
-                        DirectAgentContextWindowStatus(
-                            usedTokens: estimatedContextTokens,
-                            maxTokens: maxContextWindowTokens,
-                            modelID: modelLLMID,
-                            isApproximate: true
-                        )
+                let toolPayloads = toolCatalog.responsesToolPayloads
+                let requestStartedAt = Date()
+                let streamAccumulator = StreamAccumulator()
+                let completion: ChatGPTSubscriptionResponsesClient.StreamCompletion
+
+                do {
+                    completion = try await client.streamEvents(
+                        input: JSONValue.acpValue(from: requestPayload.input),
+                        model: modelID,
+                        instructions: instructions,
+                        reasoningEffort: reasoningEffort,
+                        textVerbosity: "medium",
+                        sessionID: session.chatGPTSessionID ?? chatGPTSessionID,
+                        cachedWebSocketInput: requestPayload.cachedWebSocketInput.map {
+                            JSONValue.acpValue(from: $0)
+                        },
+                        previousResponseID: requestPayload.previousResponseID,
+                        toolPayloads: JSONValue.acpValue(from: toolPayloads),
+                        maxOutputTokens: configuration.maxOutputTokens
+                    ) { object in
+                        try Task.checkCancellation()
+                        let events = try streamAccumulator.ingest(object)
+                        for event in events {
+                            await onEvent(event)
+                        }
+                    }
+                } catch {
+                    guard Self.isContextLimitError(error), !didRetryAfterContextLimit else {
+                        throw error
+                    }
+                    guard let result = compactSessionForContextLimitRetry(
+                        &session,
+                        maxTokens: maxContextWindowTokens,
+                        maxOutputTokens: configuration.maxOutputTokens,
+                        sessionIdentity: sessionIdentity
+                    ) else {
+                        await onEvent(.diagnostic(Self.contextLimitRetryUnavailableDiagnostic()))
+                        throw error
+                    }
+                    didRetryAfterContextLimit = true
+                    sessions[sessionID] = session
+                    await onEvent(.diagnostic(Self.contextLimitRetryDiagnostic(from: result)))
+                    continue
+                }
+
+                streamAccumulator.recordCompletionResponseID(completion.responseID)
+                let streamResult = try streamAccumulator.result(toolCatalog: toolCatalog)
+                generationStats.append(
+                    RemoteGenerationStats(
+                        usage: streamResult.usage,
+                        requestStartedAt: requestStartedAt,
+                        firstDeltaAt: streamResult.firstDeltaAt,
+                        finishedAt: Date(),
+                        generatedCharacterCount: streamResult.text.count
                     )
                 )
-            }
+                accumulatedText.append(streamResult.text)
 
-            let requestStartedAt = Date()
-            let streamAccumulator = StreamAccumulator()
-
-            let completion = try await client.streamEvents(
-                input: JSONValue.acpValue(from: requestPayload.input),
-                model: modelID,
-                instructions: instructions,
-                reasoningEffort: reasoningEffort,
-                textVerbosity: "low",
-                sessionID: session.chatGPTSessionID ?? chatGPTSessionID,
-                cachedWebSocketInput: requestPayload.cachedWebSocketInput.map {
-                    JSONValue.acpValue(from: $0)
-                },
-                previousResponseID: requestPayload.previousResponseID,
-                toolPayloads: JSONValue.acpValue(from: toolPayloads),
-                maxOutputTokens: configuration.maxOutputTokens
-            ) { object in
-                try Task.checkCancellation()
-                let events = try streamAccumulator.ingest(object)
-                for event in events {
-                    await onEvent(event)
+                Self.appendAssistantMessage(
+                    text: streamResult.text,
+                    reasoningText: streamResult.reasoningText,
+                    toolCalls: streamResult.toolCalls,
+                    to: &session.messages
+                )
+                if let responseID = streamResult.latestResponseID?.nilIfBlank {
+                    session.continuation = ChatGPTSubscriptionContinuationState(
+                        responseID: responseID,
+                        messageCount: session.messages.count,
+                        instructions: instructions
+                    )
+                } else {
+                    session.continuation = nil
                 }
-            }
 
-            streamAccumulator.recordCompletionResponseID(completion.responseID)
-            let streamResult = try streamAccumulator.result(toolCatalog: toolCatalog)
-            generationStats.append(
-                RemoteGenerationStats(
-                    usage: streamResult.usage,
-                    requestStartedAt: requestStartedAt,
-                    firstDeltaAt: streamResult.firstDeltaAt,
-                    finishedAt: Date(),
-                    generatedCharacterCount: streamResult.text.count
-                )
-            )
-            accumulatedText.append(streamResult.text)
+                if let metrics = RemoteGenerationClient.generationMetrics(generationStats) {
+                    await Self.publishChatGPTSubscriptionMetrics(
+                        metrics,
+                        estimatedContextTokens: nil,
+                        completionTokens: streamResult.usage?.completionTokens,
+                        generatedText: streamResult.text,
+                        maxTokens: maxContextWindowTokens,
+                        modelID: modelLLMID,
+                        onEvent: onEvent
+                    )
+                }
 
-            Self.appendAssistantMessage(
-                text: streamResult.text,
-                reasoningText: streamResult.reasoningText,
-                toolCalls: streamResult.toolCalls,
-                to: &session.messages
-            )
-            if let responseID = streamResult.latestResponseID?.nilIfBlank {
-                session.continuation = ChatGPTSubscriptionContinuationState(
-                    responseID: responseID,
-                    messageCount: session.messages.count,
-                    instructions: instructions
-                )
-            } else {
-                session.continuation = nil
-            }
+                if streamResult.toolCalls.isEmpty {
+                    sessions[sessionID] = session
+                    return DirectAgentResponse(
+                        text: accumulatedText,
+                        stopReason: streamResult.stopReason,
+                        modelID: modelLLMID
+                    )
+                }
 
-            if let metrics = RemoteGenerationClient.generationMetrics(generationStats) {
-                await Self.publishChatGPTSubscriptionMetrics(
-                    metrics,
-                    estimatedContextTokens: estimatedContextTokens,
-                    completionTokens: streamResult.usage?.completionTokens,
-                    generatedText: streamResult.text,
-                    maxTokens: maxContextWindowTokens,
-                    modelID: modelLLMID,
-                    onEvent: onEvent
-                )
-            }
+                for toolCall in streamResult.toolCalls {
+                    await onEvent(.toolCallStarted(toolCall))
+                    let result = await toolExecutor.execute(
+                        sessionID: session.id,
+                        toolCall: toolCall,
+                        workingDirectory: URL(fileURLWithPath: session.cwd),
+                        allowedToolNames: session.allowedToolNames
+                    )
+                    await onEvent(.toolCallCompleted(toolCall, result))
+                    session.messages.append([
+                        "role": "tool",
+                        "tool_call_id": toolCall.id,
+                        "name": toolCall.name,
+                        "content": result.output
+                    ])
+                }
 
-            if streamResult.toolCalls.isEmpty {
-                sessions[sessionID] = session
-                return DirectAgentResponse(
-                    text: accumulatedText,
-                    stopReason: streamResult.stopReason,
-                    modelID: modelLLMID
-                )
-            }
-
-            for toolCall in streamResult.toolCalls {
-                await onEvent(.toolCallStarted(toolCall))
-                let result = await toolExecutor.execute(
-                    sessionID: session.id,
-                    toolCall: toolCall,
-                    workingDirectory: URL(fileURLWithPath: session.cwd),
-                    allowedToolNames: session.allowedToolNames
-                )
-                await onEvent(.toolCallCompleted(toolCall, result))
-                session.messages.append([
-                    "role": "tool",
-                    "tool_call_id": toolCall.id,
-                    "name": toolCall.name,
-                    "content": result.output
-                ])
-            }
-
-            if round == configuration.maxToolRounds - 1 {
-                sessions[sessionID] = session
-                throw ChatGPTSubscriptionGenerationError.tooManyToolRounds(
-                    configuration.maxToolRounds
-                )
+                if round == configuration.maxToolRounds - 1 {
+                    sessions[sessionID] = session
+                    throw ChatGPTSubscriptionGenerationError.tooManyToolRounds(
+                        configuration.maxToolRounds
+                    )
+                }
+                break
             }
         }
 
@@ -855,7 +841,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         throw ChatGPTSubscriptionGenerationError.tooManyToolRounds(configuration.maxToolRounds)
     }
 
-    private func compactSessionIfNeeded(
+    private func compactSessionForContextLimitRetry(
         _ session: inout AgentSession,
         maxTokens: Int?,
         maxOutputTokens: Int?,
@@ -864,37 +850,11 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         let result = Self.compactedMessagesIfNeeded(
             session.messages,
             maxTokens: maxTokens,
-            maxOutputTokens: maxOutputTokens
+            maxOutputTokens: maxOutputTokens,
+            force: true
         )
 
         guard result.wasCompacted else {
-            return nil
-        }
-
-        session.messages = RemoteGenerationClient.remoteMessages(
-            compactionResult: result,
-            preservingRecentFrom: session.messages
-        )
-        resetContinuationAfterCompaction(
-            session: &session,
-            sessionIdentity: sessionIdentity
-        )
-        return result
-    }
-
-    private func compactSessionForEstimatedContextIfNeeded(
-        _ session: inout AgentSession,
-        estimatedContextTokens: Int?,
-        maxTokens: Int?,
-        maxOutputTokens: Int?,
-        sessionIdentity: SessionIdentity
-    ) -> AgentConversationCompactionResult? {
-        guard let result = Self.compactedMessagesForEstimatedContextIfNeeded(
-            session.messages,
-            estimatedContextTokens: estimatedContextTokens,
-            maxTokens: maxTokens,
-            maxOutputTokens: maxOutputTokens
-        ) else {
             return nil
         }
 
@@ -983,18 +943,7 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         maxOutputTokens: Int?,
         messageCount: Int
     ) -> Bool {
-        guard let estimatedContextTokens,
-              let compactionLimit = compactionPolicyMaxTokens(
-                  for: maxTokens,
-                  maxOutputTokens: maxOutputTokens
-              ) else {
-            return false
-        }
-        return AgentConversationCompactionPolicy.shouldCompactHistory(
-            usedTokens: estimatedContextTokens,
-            maxTokens: compactionLimit,
-            messageCount: messageCount
-        )
+        false
     }
 
     private static func conversationMessageCount(in messages: [[String: Any]]) -> Int {
@@ -1010,6 +959,62 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         from result: AgentConversationCompactionResult
     ) -> String {
         "Compacted conversation history from \(result.originalEstimatedTokenCount) to \(result.estimatedTokenCount) estimated tokens."
+    }
+
+    private static func contextLimitRetryDiagnostic(
+        from result: AgentConversationCompactionResult
+    ) -> String {
+        "ChatGPT Subscription context limit reached. Retrying once with compacted conversation history from \(result.originalEstimatedTokenCount) to \(result.estimatedTokenCount) estimated tokens."
+    }
+
+    private static func contextLimitRetryUnavailableDiagnostic() -> String {
+        "ChatGPT Subscription context limit reached, but conversation history could not be compacted for retry."
+    }
+
+    static func isContextLimitError(_ error: Error) -> Bool {
+        if let error = error as? ChatGPTSubscriptionGenerationError {
+            switch error {
+            case let .http(_, output), let .responseFailed(output):
+                return messageIndicatesContextLimit(output)
+            default:
+                return false
+            }
+        }
+        return messageIndicatesContextLimit(error.localizedDescription)
+    }
+
+    private static func messageIndicatesContextLimit(_ message: String) -> Bool {
+        let normalizedMessage = message
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalizedMessage.isEmpty else {
+            return false
+        }
+
+        let compactMessage = normalizedMessage
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        if compactMessage.contains("context_length_exceeded")
+            || compactMessage.contains("context_window_exceeded")
+            || compactMessage.contains("context_limit_exceeded")
+            || compactMessage.contains("input_too_long")
+            || compactMessage.contains("prompt_too_long")
+            || compactMessage.contains("too_many_tokens") {
+            return true
+        }
+
+        return normalizedMessage.contains("context length")
+            || normalizedMessage.contains("context window")
+            || normalizedMessage.contains("context limit")
+            || normalizedMessage.contains("maximum context")
+            || normalizedMessage.contains("max context")
+            || normalizedMessage.contains("too many tokens")
+            || normalizedMessage.contains("input is too long")
+            || normalizedMessage.contains("prompt is too long")
+            || normalizedMessage.contains("token limit")
+            || normalizedMessage.contains("tokens exceed")
+            || normalizedMessage.contains("exceeds the maximum")
+            || normalizedMessage.contains("exceeded maximum")
     }
 
     private func resolvedContextWindowTokenLimit(forLLMID modelLLMID: String) -> Int? {
@@ -1823,7 +1828,9 @@ public struct ChatGPTSubscriptionResponsesClient {
     public let credentials: CodexAgentCredentials
     public let baseURL: URL
     public let urlSession: URLSession
-    public let webSocketPool: ChatGPTSubscriptionWebSocketPool
+        public let webSocketPool: ChatGPTSubscriptionWebSocketPool
+    public let usesWebSocketTransport: Bool
+
 
     private static let maxRetries = 3
     private static let baseRetryDelayNanoseconds: UInt64 = 1_000_000_000
@@ -1833,13 +1840,15 @@ public struct ChatGPTSubscriptionResponsesClient {
     public init(
         credentials: CodexAgentCredentials,
         baseURL: URL = URL(string: "https://chatgpt.com/backend-api")!,
-        urlSession: URLSession = .shared,
-        webSocketPool: ChatGPTSubscriptionWebSocketPool = ChatGPTSubscriptionWebSocketPool()
+                urlSession: URLSession = .shared,
+        webSocketPool: ChatGPTSubscriptionWebSocketPool = ChatGPTSubscriptionWebSocketPool(),
+        usesWebSocketTransport: Bool = true
     ) {
         self.credentials = credentials
         self.baseURL = baseURL
         self.urlSession = urlSession
         self.webSocketPool = webSocketPool
+        self.usesWebSocketTransport = usesWebSocketTransport
     }
 
     public func streamEvents(
@@ -1866,7 +1875,8 @@ public struct ChatGPTSubscriptionResponsesClient {
             maxOutputTokens: maxOutputTokens
         )
 
-        if !webSocketPool.isFallbackToSSEActive(sessionID: sessionID) {
+                                if usesWebSocketTransport,
+           !webSocketPool.isFallbackToSSEActive(sessionID: sessionID) {
             do {
                 return try await streamEventsOverWebSocket(
                     body: body,

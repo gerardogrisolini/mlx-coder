@@ -1,16 +1,32 @@
 // swift-tools-version: 6.3
 
+import Foundation
 import PackageDescription
 
-let products: [Product] = [
-    .library(
-        name: "MLXServerCore",
-        targets: ["MLXServerCore"]
-    ),
-    .library(
-        name: "MLXServerSetup",
-        targets: ["MLXServerSetup"]
-    ),
+let localMLXEnabled: Bool = {
+    #if os(macOS)
+    ProcessInfo.processInfo.environment["MLX_CODER_DISABLE_LOCAL_MLX"] != "1"
+    #else
+    false
+    #endif
+}()
+
+var products: [Product] = []
+
+if localMLXEnabled {
+    products += [
+        .library(
+            name: "MLXServerCore",
+            targets: ["MLXServerCore"]
+        ),
+        .library(
+            name: "MLXServerSetup",
+            targets: ["MLXServerSetup"]
+        )
+    ]
+}
+
+products += [
     .library(
         name: "MLXCoderCore",
         targets: ["MLXCoderCore"]
@@ -57,23 +73,29 @@ let products: [Product] = [
     )
 ]
 
-let targets: [Target] = [
+var mlxCoderDependencies: [Target.Dependency] = [
+    "MLXCoderCore",
+    "MLXCoderSetup",
+    "MLXPackageMetadata"
+]
+
+var mlxCoderSwiftSettings: [SwiftSetting] = [
+    .define("SWIFTPM_NON_SANDBOX_TUI")
+]
+
+if localMLXEnabled {
+    mlxCoderDependencies += [
+        "MLXServerCore",
+        "MLXServerSetup",
+        .product(name: "MLXLMCommon", package: "mlx-swift-lm")
+    ]
+    mlxCoderSwiftSettings.append(.define("MLX_CODER_LOCAL_MLX"))
+}
+
+var targets: [Target] = [
     .target(
         name: "MLXPackageMetadata",
         dependencies: []
-    ),
-    .target(
-        name: "MLXServerCore",
-        dependencies: [
-            "MLXPackageMetadata",
-            .product(name: "HuggingFace", package: "swift-huggingface"),
-            .product(name: "MLX", package: "mlx-swift"),
-            .product(name: "MLXHuggingFace", package: "mlx-swift-lm"),
-            .product(name: "MLXLLM", package: "mlx-swift-lm"),
-            .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
-            .product(name: "MLXVLM", package: "mlx-swift-lm"),
-            .product(name: "Tokenizers", package: "swift-transformers")
-        ]
     ),
     .target(
         name: "MLXCoderCore",
@@ -105,31 +127,8 @@ let targets: [Target] = [
     ),
     .executableTarget(
         name: "mlx-coder",
-        dependencies: [
-            "MLXCoderCore",
-            "MLXCoderSetup",
-            "MLXServerCore",
-            "MLXServerSetup",
-            .product(name: "MLXLMCommon", package: "mlx-swift-lm")
-        ],
-        swiftSettings: [
-            .define("SWIFTPM_NON_SANDBOX_TUI")
-        ]
-    ),
-    .target(
-        name: "MLXServerSetup",
-        dependencies: [
-            "MLXServerCore",
-            .product(name: "HuggingFace", package: "swift-huggingface")
-        ]
-    ),
-    .testTarget(
-        name: "MLXServerCoreTests",
-        dependencies: ["MLXServerCore"]
-    ),
-    .testTarget(
-        name: "MLXServerSetupTests",
-        dependencies: ["MLXServerSetup"]
+        dependencies: mlxCoderDependencies,
+        swiftSettings: mlxCoderSwiftSettings
     ),
     .testTarget(
         name: "MLXCoderCoreTests",
@@ -186,19 +185,59 @@ let targets: [Target] = [
     )
 ]
 
+if localMLXEnabled {
+    targets += [
+        .target(
+            name: "MLXServerCore",
+            dependencies: [
+                "MLXPackageMetadata",
+                .product(name: "HuggingFace", package: "swift-huggingface"),
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXHuggingFace", package: "mlx-swift-lm"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "MLXVLM", package: "mlx-swift-lm"),
+                .product(name: "Tokenizers", package: "swift-transformers")
+            ]
+        ),
+        .target(
+            name: "MLXServerSetup",
+            dependencies: [
+                "MLXServerCore",
+                .product(name: "HuggingFace", package: "swift-huggingface")
+            ]
+        ),
+        .testTarget(
+            name: "MLXServerCoreTests",
+            dependencies: ["MLXServerCore"]
+        ),
+        .testTarget(
+            name: "MLXServerSetupTests",
+            dependencies: ["MLXServerSetup"]
+        )
+    ]
+}
+
+var dependencies: [Package.Dependency] = [
+    .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
+    .package(url: "https://github.com/swiftlang/swift-markdown.git", from: "0.8.0")
+]
+
+if localMLXEnabled {
+    dependencies += [
+        .package(url: "https://github.com/huggingface/swift-huggingface.git", from: "0.9.0"),
+        .package(url: "https://github.com/huggingface/swift-transformers.git", from: "1.3.3"),
+        .package(url: "https://github.com/ml-explore/mlx-swift", .upToNextMinor(from: "0.31.3")),
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", branch: "main")
+    ]
+}
+
 let package = Package(
     name: "mlx-coder",
     platforms: [
         .macOS(.v26)
     ],
     products: products,
-    dependencies: [
-        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
-        .package(url: "https://github.com/huggingface/swift-huggingface.git", from: "0.9.0"),
-        .package(url: "https://github.com/huggingface/swift-transformers.git", from: "1.3.3"),
-        .package(url: "https://github.com/ml-explore/mlx-swift", .upToNextMinor(from: "0.31.3")),
-        .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", branch: "main"),
-        .package(url: "https://github.com/swiftlang/swift-markdown.git", from: "0.8.0")
-    ],
+    dependencies: dependencies,
     targets: targets
 )

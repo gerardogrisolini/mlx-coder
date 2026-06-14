@@ -27,6 +27,7 @@ public final class TerminalChat: @unchecked Sendable {
     public var printedModelID: String?
     public var didPrintActiveTools = false
     public var didReceiveMetricsForCurrentPrompt = false
+    public var didRefreshGitStatusDuringCurrentPrompt = false
     public var selectedAgent: AgentProfile?
     public var manualModelIDOverride: String?
     public var manualThinkingSelectionOverride: AgentThinkingSelection?
@@ -242,6 +243,7 @@ public final class TerminalChat: @unchecked Sendable {
         func startGeneration(attempt: TerminalPromptAttempt) {
             isGenerating = true
             didReceiveMetricsForCurrentPrompt = false
+            didRefreshGitStatusDuringCurrentPrompt = false
             statusBar.setProcessing(true)
             interactiveReader.setPanelProcessing(true)
             generationTask = Task {
@@ -413,7 +415,7 @@ public final class TerminalChat: @unchecked Sendable {
                 statusBar.setProcessing(false)
                 interactiveReader.setPanelProcessing(false)
                 await finishPromptResult(result)
-                refreshStatusBarGitStatusSummary()
+                refreshStatusBarGitStatusSummaryAfterPromptIfNeeded()
             case let .telegramMessage(message):
                 await handleTelegramMessage(
                     message,
@@ -679,6 +681,7 @@ public final class TerminalChat: @unchecked Sendable {
     func runPromptBlocking(_ attempt: TerminalPromptAttempt) async {
         do {
             didReceiveMetricsForCurrentPrompt = false
+            didRefreshGitStatusDuringCurrentPrompt = false
             statusBar.setProcessing(true)
             defer {
                 statusBar.setProcessing(false)
@@ -706,7 +709,7 @@ public final class TerminalChat: @unchecked Sendable {
                 await stopMonitor.value
             }
             await finishPromptResult(.success(success))
-            refreshStatusBarGitStatusSummary()
+            refreshStatusBarGitStatusSummaryAfterPromptIfNeeded()
         } catch {
             let failure = TerminalChatGenerationFailure(
                 error: error,
@@ -714,8 +717,20 @@ public final class TerminalChat: @unchecked Sendable {
                 origin: attempt.origin
             )
             await finishPromptResult(.failure(failure))
-            refreshStatusBarGitStatusSummary()
+            refreshStatusBarGitStatusSummaryAfterPromptIfNeeded()
         }
+    }
+
+    private func refreshStatusBarGitStatusSummaryForFileMutation() {
+        didRefreshGitStatusDuringCurrentPrompt = true
+        refreshStatusBarGitStatusSummary()
+    }
+
+    private func refreshStatusBarGitStatusSummaryAfterPromptIfNeeded() {
+        guard !didRefreshGitStatusDuringCurrentPrompt else {
+            return
+        }
+        refreshStatusBarGitStatusSummary()
     }
 
     private func refreshStatusBarGitStatusSummary() {
@@ -901,6 +916,9 @@ public final class TerminalChat: @unchecked Sendable {
                         self.finishThoughtOutputIfNeeded()
                         self.finishAssistantContentFormatting()
                         self.writeToolCallCompleted(toolCall, result: result)
+                        if Self.isFileMutationTool(toolCall.name) {
+                            self.refreshStatusBarGitStatusSummaryForFileMutation()
+                        }
                         if let telegramProgressReporter = telegramProgressReporter {
                             await telegramProgressReporter.enqueue(
                                 self.telegramToolCompletedMessage(toolCall, result: result)

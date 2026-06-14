@@ -225,12 +225,9 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
             )
         )
 
-        var accumulatedText = ""
+                var accumulatedText = ""
         var generationStats: [RemoteGenerationStats] = []
         for round in 0..<configuration.maxToolRounds {
-            if let result = compactSessionIfNeeded(&session) {
-                await onEvent(.diagnostic(Self.compactionDiagnostic(from: result)))
-            }
             let streamResult: RemoteStreamResult
             switch provider.chatEndpoint {
             case .chatCompletions:
@@ -316,30 +313,6 @@ public actor RemoteGenerationClient: AgentRuntimeBackend {
         sessions[sessionID] = session
 
         throw RemoteGenerationClientError.tooManyToolRounds(configuration.maxToolRounds)
-    }
-
-    private func compactSessionIfNeeded(
-        _ session: inout AgentSession
-    ) -> AgentConversationCompactionResult? {
-        let result = AgentConversationCompactionSupport.compactedMessagesIfNeeded(
-            Self.agentRuntimeMessages(from: session.messages),
-            maxTokens: configuration.configuredContextWindowLimit
-        )
-        guard result.wasCompacted else {
-            return nil
-        }
-
-        session.messages = Self.remoteMessages(
-            compactionResult: result,
-            preservingRecentFrom: session.messages
-        )
-        return result
-    }
-
-    private static func compactionDiagnostic(
-        from result: AgentConversationCompactionResult
-    ) -> String {
-        "Compacted conversation history from \(result.originalEstimatedTokenCount) to \(result.estimatedTokenCount) estimated tokens."
     }
 
     public static func agentRuntimeMessages(

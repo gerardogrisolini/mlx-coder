@@ -1,3 +1,4 @@
+#if MLX_CODER_LOCAL_MLX
 //
 //  MLXServerCoderBackend.swift
 //  mlx-coder
@@ -984,3 +985,5 @@ private extension String {
         return self
     }
 }
+
+#endif

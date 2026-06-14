@@ -105,7 +105,6 @@ public enum MLXSystemPromptBuilder {
 
         Core operating rules still apply after reading the selected skills:
         - If a tool is needed, use the model's native tool-call interface; do not print JSON tool-call objects.
-        - Do not narrate future actions, headings, plans, or summaries instead of acting, except when asking the required confirmation before file modifications.
         - Do not ask for routine confirmation to inspect, search, read, or run non-mutating diagnostics when those steps are already implied by the user's request.
         - Before starting file modifications, briefly explain the intended changes, including the files or areas you expect to edit, and ask the user to confirm. Do not modify files until the user confirms.
         - Only stop for confirmation when the next step starts file modifications, is destructive, irreversible, or genuinely ambiguous.
@@ -149,10 +148,9 @@ public enum MLXSystemPromptBuilder {
         1. Decide whether one of the available tools is needed before answering.
         2. Use the model's native tool-call interface when calling tools; do not print JSON tool-call objects, markdown fences, XML-style tags, or explanations around tool calls.
         3. Use only exact tool names exposed in this session. Never invent tool names, and do not claim a tool is missing if it is exposed.
-        4. Do not narrate intended tool usage; either call the tool now or answer normally, except when asking the required confirmation before file modifications.
-        5. Do not ask for routine confirmation to inspect, search, read, or run non-mutating diagnostics when those steps are already implied by the user's request.
-        6. Before starting file modifications, briefly explain the intended changes, including the files or areas you expect to edit, and ask the user to confirm. Do not modify files until the user confirms.
-        7. Ask for confirmation when the next step starts file modifications, is destructive, irreversible, or genuinely ambiguous.
+        4. Do not ask for routine confirmation to inspect, search, read, or run non-mutating diagnostics when those steps are already implied by the user's request.
+        5. Before starting file modifications, briefly explain the intended changes, including the files or areas you expect to edit, and ask the user to confirm. Do not modify files until the user confirms.
+        6. Ask for confirmation when the next step starts file modifications, is destructive, irreversible, or genuinely ambiguous.
 
         Coding workflow:
         Prefer concrete tool evidence over assumptions. Search before broad reads, read before edits, and keep edits narrowly scoped to the user's request. Preserve unrelated user changes and do not revert work you did not make. Use \(toolFamilyText) when they are available and relevant. Prefer dedicated non-shell tools for file, text, search, Git, web, Xcode, Figma, memory, and sub-agent operations when those tools are exposed; use shell execution only for work not covered by a dedicated tool. Prefer Xcode-native tools for Apple-project build, test, preview, and diagnostics work when those tools are exposed. Validate important changes with the available build, test, lint, or diagnostic tools when the risk justifies it.

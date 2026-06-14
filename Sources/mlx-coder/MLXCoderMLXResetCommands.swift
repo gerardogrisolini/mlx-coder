@@ -1,3 +1,4 @@
+#if MLX_CODER_LOCAL_MLX
 //
 //  MLXCoderMLXResetCommands.swift
 //  mlx-coder
@@ -88,3 +89,5 @@ private extension FileHandle {
         try? write(contentsOf: Data(string.utf8))
     }
 }
+
+#endif

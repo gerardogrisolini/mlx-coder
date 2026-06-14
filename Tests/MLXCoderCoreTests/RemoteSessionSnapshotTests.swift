@@ -392,7 +392,7 @@ struct RemoteSessionSnapshotTests {
             model: "gpt-5.5",
             instructions: payload.instructions ?? "",
             reasoningEffort: nil,
-            textVerbosity: "low",
+            textVerbosity: "medium",
             sessionID: "session-chatgpt"
         )
 
@@ -419,7 +419,7 @@ struct RemoteSessionSnapshotTests {
             model: "gpt-5.5",
             instructions: payload.instructions ?? "",
             reasoningEffort: nil,
-            textVerbosity: "low",
+            textVerbosity: "medium",
             sessionID: "session-chatgpt"
         )
         let freshPayload = ChatGPTSubscriptionResponsesClient.webSocketRequestPayload(
@@ -571,7 +571,7 @@ struct RemoteSessionSnapshotTests {
             model: "gpt-5.5",
             instructions: payload.instructions ?? "",
             reasoningEffort: nil,
-            textVerbosity: "low",
+            textVerbosity: "medium",
             sessionID: "session-chatgpt-xcode",
             toolPayloads: JSONValue.acpValue(from: catalog.responsesToolPayloads)
         )
@@ -627,7 +627,7 @@ struct RemoteSessionSnapshotTests {
             model: "gpt-5.5",
             instructions: payload.instructions ?? "",
             reasoningEffort: nil,
-            textVerbosity: "low",
+            textVerbosity: "medium",
             sessionID: "session-chatgpt-xcode-ws",
             toolPayloads: JSONValue.acpValue(from: catalog.responsesToolPayloads)
         )
@@ -684,7 +684,7 @@ struct RemoteSessionSnapshotTests {
             model: "gpt-5.5",
             instructions: payload.instructions ?? "",
             reasoningEffort: nil,
-            textVerbosity: "low",
+            textVerbosity: "medium",
             sessionID: sessionID,
             toolPayloads: JSONValue.acpValue(from: catalog.responsesToolPayloads),
             maxOutputTokens: nil
@@ -812,7 +812,7 @@ struct RemoteSessionSnapshotTests {
             model: "gpt-5.5",
             instructions: payload.instructions ?? "",
             reasoningEffort: nil,
-            textVerbosity: "low",
+            textVerbosity: "medium",
             sessionID: "session-after-compaction"
         )
         let cachedPayload = ChatGPTSubscriptionResponsesClient.webSocketRequestPayload(
@@ -840,15 +840,10 @@ struct RemoteSessionSnapshotTests {
     }
 
     @Test
-    func chatGPTSubscriptionPreflightCompactsWhenEstimatedPayloadExceedsUsableContext() throws {
+    func chatGPTSubscriptionDoesNotPreflightCompactWhenEstimatedPayloadExceedsUsableContext() throws {
         let maxTokens = 50_000
         let maxOutputTokens = 1_000
         let messages = chatGPTPreflightCompactionMessages()
-        let normalResult = ChatGPTSubscriptionGenerationClient.compactedMessagesIfNeeded(
-            messages,
-            maxTokens: maxTokens,
-            maxOutputTokens: maxOutputTokens
-        )
         let requestPayload = ChatGPTSubscriptionRequestBuilder.requestInputPayload(
             from: messages,
             continuation: nil
@@ -875,30 +870,41 @@ struct RemoteSessionSnapshotTests {
                 maxOutputTokens: maxOutputTokens
             )
         )
-        let preflightResult = try #require(
-            ChatGPTSubscriptionGenerationClient.compactedMessagesForEstimatedContextIfNeeded(
-                messages,
-                estimatedContextTokens: estimatedContextTokens,
-                maxTokens: maxTokens,
-                maxOutputTokens: maxOutputTokens
-            )
-        )
-        let compactedMessages = RemoteGenerationClient.remoteMessages(
-            compactionResult: preflightResult,
-            preservingRecentFrom: messages
+        let preflightResult = ChatGPTSubscriptionGenerationClient.compactedMessagesForEstimatedContextIfNeeded(
+            messages,
+            estimatedContextTokens: estimatedContextTokens,
+            maxTokens: maxTokens,
+            maxOutputTokens: maxOutputTokens
         )
 
-        #expect(normalResult.wasCompacted == false)
         #expect(estimatedContextTokens > AgentConversationCompactionPolicy.triggerTokenCount(for: policyMaxTokens))
-        #expect(preflightResult.wasCompacted)
-        #expect(compactedMessages.count < messages.count)
-        #expect(
-            preflightResult.compactedSystemPrompt?.contains(
-                AgentConversationCompactionSupport.memorySummaryHeader
-            ) == true
-        )
+        #expect(preflightResult == nil)
     }
-#endif
+
+    @Test
+    func chatGPTSubscriptionContextLimitErrorDetectionRecognizesCommonMessages() {
+        let contextLengthError = NSError(
+            domain: "ChatGPTSubscriptionTests",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "context_length_exceeded"]
+        )
+        let promptTooLongError = NSError(
+            domain: "ChatGPTSubscriptionTests",
+            code: 2,
+            userInfo: [NSLocalizedDescriptionKey: "Prompt is too long for this model."]
+        )
+        let rateLimitError = NSError(
+            domain: "ChatGPTSubscriptionTests",
+            code: 3,
+            userInfo: [NSLocalizedDescriptionKey: "rate limit exceeded"]
+        )
+
+        #expect(ChatGPTSubscriptionGenerationClient.isContextLimitError(contextLengthError))
+        #expect(ChatGPTSubscriptionGenerationClient.isContextLimitError(promptTooLongError))
+        #expect(!ChatGPTSubscriptionGenerationClient.isContextLimitError(rateLimitError))
+    }
+
+    #endif
 
     private func remoteHistory() -> [AgentRuntimeMessage] {
         [

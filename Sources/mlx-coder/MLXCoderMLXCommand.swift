@@ -1,6 +1,10 @@
 import Foundation
 import MLXCoderCore
+import MLXPackageMetadata
+
+#if MLX_CODER_LOCAL_MLX
 import MLXServerCore
+
 
 enum MLXCoderMLXCommand {
     static let option = "--mlx"
@@ -354,3 +358,52 @@ private enum MLXCoderMLXError: LocalizedError {
         }
     }
 }
+
+#else
+
+enum MLXCoderMLXCommand {
+    static let option = "--mlx"
+
+    @MainActor
+    static func run(arguments rawArguments: [String]) async throws {
+        let arguments = Array(
+            MLXCoderCommandLineArgumentSanitizer
+                .sanitized(rawArguments)
+                .dropFirst()
+        )
+
+        if arguments.contains("--help") || arguments.contains("-h") {
+            AgentOutput.standardOutput.writeString(helpText)
+            return
+        }
+
+        if arguments.contains("--version") {
+            AgentOutput.standardOutput.writeString("mlx-coder \(MLXPackageMetadata.version)\n")
+            return
+        }
+
+        throw MLXCoderMLXUnavailableError.unavailable
+    }
+
+    private static let helpText = """
+    mlx-coder --mlx
+
+    Local MLX runtime mode is not available in this build.
+
+    This binary was built without mlx-swift, so local inference is disabled.
+    Configure a remote provider with mlx-coder --setup and run mlx-coder without --mlx.
+    """
+}
+
+private enum MLXCoderMLXUnavailableError: LocalizedError {
+    case unavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable:
+            "Local MLX runtime is not available in this build. Configure a remote model with mlx-coder --setup and run mlx-coder without --mlx."
+        }
+    }
+}
+
+#endif

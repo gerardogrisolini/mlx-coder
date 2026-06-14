@@ -90,6 +90,8 @@ extension MLXCoderACPBridge {
         [
             "sessionUpdate": "tool_call_update",
             "toolCallId": toolCall.id,
+            "title": toolTitle(for: toolCall),
+            "kind": toolKind(for: toolCall.name),
             "status": "in_progress",
             "rawInput": toolCall.argumentsObject,
             "locations": toolLocations(for: toolCall)
@@ -128,56 +130,92 @@ extension MLXCoderACPBridge {
     }
 
     public static func toolTitle(for toolCall: DirectAgentToolCall) -> String {
-//        switch toolKind(for: toolCall.name) {
-//        case "read":
-//            return "Read \(displayToolTarget(for: toolCall) ?? toolCall.name)"
-//        case "edit":
-//            return "Edit \(displayToolTarget(for: toolCall) ?? toolCall.name)"
-//        case "delete":
-//            return "Delete \(displayToolTarget(for: toolCall) ?? toolCall.name)"
-//        case "move":
-//            return "Move \(displayToolTarget(for: toolCall) ?? toolCall.name)"
-//        case "search":
-//            return "Search \(displayToolTarget(for: toolCall) ?? toolCall.name)"
-//        case "execute":
-//            return "Run \(displayToolTarget(for: toolCall) ?? toolCall.name)"
-//        default:
-//            return "\(toolCall.name) \(displayToolTarget(for: toolCall) ?? toolCall.name)"
-//        }
-        "\(toolKind(for: toolCall.name)) \(displayToolTarget(for: toolCall) ?? "")"
+        switch toolKind(for: toolCall.name) {
+        case "read":
+            return "Read \(displayToolTarget(for: toolCall) ?? toolCall.name)"
+        case "edit":
+            return "Edit \(displayToolTarget(for: toolCall) ?? toolCall.name)"
+        case "delete":
+            return "Delete \(displayToolTarget(for: toolCall) ?? toolCall.name)"
+        case "move":
+            return "Move \(displayToolTarget(for: toolCall) ?? toolCall.name)"
+        case "search":
+            return "Search \(displayToolTarget(for: toolCall) ?? toolCall.name)"
+        case "execute":
+            return "Run \(displayToolTarget(for: toolCall) ?? toolCall.name)"
+        default:
+            return displayToolTarget(for: toolCall).map { "\(toolCall.name) \($0)" } ?? toolCall.name
+        }
     }
 
     public static func toolKind(for toolName: String) -> String {
-//        switch toolName {
-//        case "local.readFile", "local.ls", "local.pwd",
-//             "text.head", "text.tail", "text.sort", "text.wc",
-//             "git.status", "git.diff", "git.show", "git.log",
-//             "git.branch", "git.remote", "git.lsFiles", "git.grep", "git.blame":
-//            return "read"
-//        case "search.grep", "search.glob":
-//            return "search"
-//        case "local.writeFile", "local.replace", "local.append", "local.mkdir", "local.editFile", "local.multiEdit":
-//            return "edit"
-//        case "local.delete":
-//            return "delete"
-//        case "local.move":
-//            return "move"
-//        case "local.exec", "git.add", "git.restore", "git.commit", "git.push", "git.stash", "git.switch":
-//            return "execute"
-//        case "agent.list", "agent.get", "agent.wait":
-//            return "read"
-//        case "agent.create", "agent.message", "agent.close":
-//            return "execute"
-//        default:
-//            if toolName.hasPrefix("xcode.") {
-//                return xcodeToolKind(for: String(toolName.dropFirst("xcode.".count)))
-//            }
-//            if toolName.hasPrefix("figma.") {
-//                return "read"
-//            }
-//            return "other"
-//        }
-        toolName
+        switch toolName {
+        case "local.readFile", "local.ls", "local.pwd",
+             "text.head", "text.tail", "text.sort", "text.wc",
+             "git.status", "git.diff", "git.show", "git.log",
+             "git.branch", "git.remote", "git.lsFiles", "git.grep", "git.blame":
+            return "read"
+        case "search.grep", "search.glob":
+            return "search"
+        case "local.writeFile", "local.replace", "local.append", "local.mkdir",
+             "local.editFile", "local.multiEdit":
+            return "edit"
+        case "local.delete":
+            return "delete"
+        case "local.move":
+            return "move"
+        case "local.exec", "git.add", "git.restore", "git.commit", "git.push",
+             "git.stash", "git.switch":
+            return "execute"
+        case "agent.list", "agent.get", "agent.wait":
+            return "read"
+        case "agent.create", "agent.message", "agent.close":
+            return "execute"
+        default:
+            if toolName.hasPrefix("xcode.") {
+                return xcodeToolKind(for: String(toolName.dropFirst("xcode.".count)))
+            }
+            if DirectMCPToolRuntime.isXcodeToolName(toolName) {
+                return xcodeToolKind(for: toolName)
+            }
+            switch toolName {
+            case "web.search", "memory.search":
+                return "search"
+            case "web.fetch", "memory.read", "todo.read", "task.list", "task.get",
+                 "feature.list", "feature.validate":
+                return "read"
+            case "memory.write", "todo.write", "task.update", "feature.scaffold",
+                 "feature.install":
+                return "edit"
+            case "memory.archive", "feature.delete":
+                return "delete"
+            case "feature.enable", "feature.disable", "feature.reload", "feature.build":
+                return "execute"
+            default:
+                break
+            }
+            if toolName.hasPrefix("figma.") || toolName.hasPrefix("jira.") {
+                return "read"
+            }
+            return "other"
+        }
+    }
+
+    public static func xcodeToolKind(for rawName: String) -> String {
+        switch rawName {
+        case "XcodeUpdate", "XcodeWrite", "XcodeMakeDir":
+            return "edit"
+        case "XcodeRM":
+            return "delete"
+        case "XcodeMV":
+            return "move"
+        case "BuildProject", "RunAllTests", "RunSomeTests", "ExecuteSnippet", "RenderPreview":
+            return "execute"
+        case "XcodeGrep", "XcodeGlob", "DocumentationSearch":
+            return "search"
+        default:
+            return "read"
+        }
     }
 
     public static func toolIcon(for toolName: String) -> String {

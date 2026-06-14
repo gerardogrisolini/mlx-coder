@@ -507,11 +507,26 @@ public enum AgentSettingsStore {
                 modelID: modelID,
                 remoteProvider: resolvedProvider,
                 apiKey: apiKey(providerID: provider.id),
-                configuredContextWindowLimit: model.configuredContextWindowLimit,
+                                configuredContextWindowLimit: resolvedConfiguredContextWindowLimit(
+                    for: model,
+                    provider: resolvedProvider
+                ),
                 generationParameterOverrides: model.generationParameterOverrides,
                 thinkingSelection: resolvedThinkingSelection
             )
         }
+    }
+
+        private static func resolvedConfiguredContextWindowLimit(
+        for model: AgentSettingsModelManifest,
+        provider: AgentRemoteProvider
+    ) -> Int? {
+        let configuredLimit = model.configuredContextWindowLimit
+        guard provider.isChatGPTSubscriptionProvider,
+              configuredLimit == CodexAgentModel.legacyContextWindowTokenLimit else {
+            return configuredLimit
+        }
+        return CodexAgentModel.contextWindowTokenLimit(forLLMID: model.id)
     }
 
     private static func manifestModel(

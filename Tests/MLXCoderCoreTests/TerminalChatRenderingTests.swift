@@ -238,9 +238,9 @@ struct TerminalChatRenderingTests {
             argumentsJSON: #"{"file_path":"Sources/App.swift","oldString":"old","newString":"new"}"#
         )
 
-                let lines = TerminalChat.compactToolLines(for: toolCall, statusIcon: "⏳")
+        let lines = TerminalChat.compactToolLines(for: toolCall, statusIcon: "⏳")
 
-        #expect(lines.contains("🛠️  local.editFile:"))
+        #expect(lines.contains("🛠️  Edit:"))
         #expect(lines.contains { $0.contains("Sources/App.swift") })
     }
 
@@ -273,6 +273,32 @@ struct TerminalChatRenderingTests {
 
         #expect(rendered.hasSuffix(" ✅"))
         #expect(!rendered.contains("  ✅"))
+    }
+
+    @Test
+    func compactExecToolLinesCollapseMultilineCommand() {
+        let toolCall = DirectAgentToolCall(
+            id: "call_1",
+            name: "local.exec",
+            argumentsObject: [
+                "command": """
+                python3 - <<'PY'
+                from pathlib import Path
+                path = Path('Tests/MLXCoderCoreTests/RemoteSessionSnapshotTests.swift')
+                print(path)
+                PY
+                """
+            ],
+            argumentsJSON: "{}"
+        )
+
+        let lines = TerminalChat.compactToolLines(for: toolCall, statusIcon: "✅")
+
+        #expect(lines.count == 2)
+        #expect(lines[0] == "🛠️  Run:")
+        #expect(lines[1].contains("python3 - <<'PY' from pathlib import Path"))
+        #expect(!lines[1].contains("\n"))
+        #expect(lines[1].hasSuffix(" ✅"))
     }
 
     @Test
@@ -310,12 +336,12 @@ struct TerminalChatRenderingTests {
             argumentsJSON: #"{"path":"/tmp/project/Sources/App.swift"}"#
         )
 
-                let lines = TerminalChat.detailedToolCallStartedLines(for: toolCall)
+        let lines = TerminalChat.detailedToolCallStartedLines(for: toolCall)
 
-                #expect(lines.contains("🛠️  local.readFile /tmp/project/Sources/App.swift"))
+        #expect(lines.contains("🛠️  Read /tmp/project/Sources/App.swift"))
         #expect(lines.contains("status: ⏳"))
         #expect(lines.last == "status: ⏳")
-        #expect(lines.contains("kind: local.readFile"))
+        #expect(lines.contains("kind: read"))
         #expect(lines.contains("location: /tmp/project/Sources/App.swift"))
         #expect(!lines.contains("rawInput:"))
         #expect(!lines.contains { $0.contains("call_1") })
@@ -341,9 +367,9 @@ struct TerminalChatRenderingTests {
             result: result
         )
 
-                                #expect(lines.contains("status: ✅"))
+        #expect(lines.contains("status: ✅"))
         #expect(lines.last == "status: ✅")
-        #expect(lines.contains("kind: local.readFile"))
+        #expect(lines.contains("kind: read"))
         #expect(lines.contains("summary: read 2 lines"))
         #expect(!lines.contains("rawOutput.output:"))
         #expect(!lines.contains("let value = 1"))

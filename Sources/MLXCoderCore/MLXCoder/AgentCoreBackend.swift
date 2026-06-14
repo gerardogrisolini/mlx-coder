@@ -272,7 +272,7 @@ public actor AgentCoreBackend {
                 throw AgentCoreBackendError.missingRemoteAPIKey(provider.displayTitle)
             }
 
-            let resolvedConfiguration = configuration
+                                                            let resolvedConfiguration = configuration
                 .withModelID(selection?.modelID)
                 .withModelSettings(
                     configuredContextWindowLimit: selection?.configuredContextWindowLimit,

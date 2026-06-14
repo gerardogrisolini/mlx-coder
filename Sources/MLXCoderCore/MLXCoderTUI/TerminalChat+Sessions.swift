@@ -571,11 +571,11 @@ extension TerminalChat {
 
     public static func savedSessionTokenCountText(_ value: Int) -> String {
         let absoluteValue = abs(value)
-        if absoluteValue >= 1_048_576 {
-            return String(format: "%.1fm", Double(value) / 1_048_576)
+                if absoluteValue >= 1_000_000 {
+            return String(format: "%.1fm", Double(value) / 1_000_000)
         }
-        if absoluteValue >= 1_024 {
-            return String(format: "%.1fk", Double(value) / 1_024)
+        if absoluteValue >= 1_000 {
+            return String(format: "%.1fk", Double(value) / 1_000)
         }
         return "\(value)"
     }

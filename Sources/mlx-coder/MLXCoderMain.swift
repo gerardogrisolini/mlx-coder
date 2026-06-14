@@ -74,6 +74,7 @@ struct MLXCoderMain {
 
 private enum MLXCoderStandaloneHelp {
     static var text: String {
+        #if MLX_CODER_LOCAL_MLX
         AgentConfiguration.helpText
             .replacingOccurrences(
                 of: "mlx-coder [--acp]",
@@ -87,5 +88,19 @@ private enum MLXCoderStandaloneHelp {
                   --mlx                  Use the embedded local MLX runtime. Run mlx-coder --setup for setup and reset options.
                 """
             )
+        #else
+        AgentConfiguration.helpText
+            .replacingOccurrences(
+                of: "mlx-coder [--acp]",
+                with: "mlx-coder [--setup] [--acp]"
+            )
+            .replacingOccurrences(
+                of: "  --acp                  ACP JSON-RPC over stdio for compatible clients.",
+                with: """
+                  --acp                  ACP JSON-RPC over stdio for compatible clients.
+                  --setup                Open setup for providers, models, agents, and resets.
+                """
+            )
+        #endif
     }
 }

@@ -75,7 +75,8 @@ public nonisolated enum CodexAgentModel {
         selectionID(forModelID: defaultModelID)
     }
     public static let modelID = defaultModelID
-    public static let contextWindowTokenLimit = 272_000
+                public static let legacyContextWindowTokenLimit = 272_000
+    public static let contextWindowTokenLimit = 1_000_000
     public static let displayTitle = "ChatGPT Subscription"
     public static let displaySubtitle = "ChatGPT Plus/Pro"
     public static let availableModels: [ModelOption] = [

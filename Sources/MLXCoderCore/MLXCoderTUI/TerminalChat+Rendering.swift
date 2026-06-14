@@ -741,7 +741,10 @@ extension TerminalChat {
         let columns = max(20, terminalColumnCount() - contentInsetWidth)
         let suffixWidth = displayWidth(statusIcon)
         let textWidthLimit = max(1, columns - suffixWidth - 1)
-        let fittedTarget = fitDisplayWidth(target, width: textWidthLimit)
+        let fittedTarget = fitDisplayWidth(
+            compactToolInlineTarget(target),
+            width: textWidthLimit
+        )
         return "\(fittedTarget) \(statusIcon)"
     }
 
@@ -751,9 +754,21 @@ extension TerminalChat {
     ) -> Int {
         let columns = max(1, terminalColumnCount() - contentInsetWidth)
         return lines.reduce(0) { result, line in
-            let width = max(1, displayWidth(line))
-            return result + max(1, (width + columns - 1) / columns)
+            let segments = line.split(
+                omittingEmptySubsequences: false,
+                whereSeparator: \.isNewline
+            )
+            return result + segments.reduce(0) { segmentResult, segment in
+                let width = max(1, displayWidth(String(segment)))
+                return segmentResult + max(1, (width + columns - 1) / columns)
+            }
         }
+    }
+
+    private static func compactToolInlineTarget(_ target: String) -> String {
+        target
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
     }
 
     private static func fitDisplayWidth(_ text: String, width: Int) -> String {
@@ -943,7 +958,7 @@ extension TerminalChat {
         return lines
     }
 
-    private static func isFileMutationTool(_ toolName: String) -> Bool {
+    static func isFileMutationTool(_ toolName: String) -> Bool {
         switch normalizedMutationToolName(toolName) {
         case "local.writeFile", "local.append", "local.replace",
              "local.editFile", "local.multiEdit", "local.delete",

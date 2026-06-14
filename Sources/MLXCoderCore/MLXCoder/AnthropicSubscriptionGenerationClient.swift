@@ -318,67 +318,82 @@ public actor AnthropicSubscriptionGenerationClient: AgentRuntimeBackend {
 
         var accumulatedText = ""
         var generationStats: [RemoteGenerationStats] = []
+        var didRetryAfterContextLimit = false
         for round in 0..<configuration.maxToolRounds {
-            if let result = compactSessionIfNeeded(
-                &session,
-                modelLLMID: modelLLMID
-            ) {
-                await onEvent(.diagnostic(Self.compactionDiagnostic(from: result)))
-            }
-
-            let streamResult = try await streamAnthropicMessages(
-                session: &session,
-                modelID: modelID,
-                modelLLMID: modelLLMID,
-                credentials: credentials,
-                onEvent: onEvent
-            )
-
-            accumulatedText.append(streamResult.text)
-            generationStats.append(streamResult.stats)
-            appendAssistantMessage(streamResult: streamResult, to: &session.messages)
-            if let metrics = RemoteGenerationClient.generationMetrics(generationStats) {
-                await Self.publishAnthropicSubscriptionMetrics(
-                    metrics,
-                    maxTokens: resolvedContextWindowTokenLimit(forLLMID: modelLLMID),
-                    modelID: modelID,
-                    onEvent: onEvent
-                )
-            }
-
-            if streamResult.toolCalls.isEmpty {
-                if !configuration.appMode,
-                   let summary = RemoteGenerationClient.generationSummary(generationStats) {
-                    await onEvent(.diagnostic(summary))
+            while true {
+                let streamResult: RemoteStreamResult
+                do {
+                    streamResult = try await streamAnthropicMessages(
+                        session: &session,
+                        modelID: modelID,
+                        modelLLMID: modelLLMID,
+                        credentials: credentials,
+                        onEvent: onEvent
+                    )
+                } catch {
+                    guard Self.isContextLimitError(error), !didRetryAfterContextLimit else {
+                        throw error
+                    }
+                    guard let result = compactSessionForContextLimitRetry(
+                        &session,
+                        modelLLMID: modelLLMID
+                    ) else {
+                        await onEvent(.diagnostic(Self.contextLimitRetryUnavailableDiagnostic()))
+                        throw error
+                    }
+                    didRetryAfterContextLimit = true
+                    sessions[sessionID] = session
+                    await onEvent(.diagnostic(Self.contextLimitRetryDiagnostic(from: result)))
+                    continue
                 }
-                sessions[sessionID] = session
-                return DirectAgentResponse(
-                    text: accumulatedText,
-                    stopReason: streamResult.stopReason,
-                    modelID: modelID
-                )
-            }
 
-            for toolCall in streamResult.toolCalls {
-                await onEvent(.toolCallStarted(toolCall))
-                let result = await toolExecutor.execute(
-                    sessionID: session.id,
-                    toolCall: toolCall,
-                    workingDirectory: session.cwd,
-                    allowedToolNames: session.allowedToolNames
-                )
-                await onEvent(.toolCallCompleted(toolCall, result))
-                session.messages.append([
-                    "role": "tool",
-                    "tool_call_id": toolCall.id,
-                    "name": toolCall.name,
-                    "content": result.output
-                ])
-            }
+                accumulatedText.append(streamResult.text)
+                generationStats.append(streamResult.stats)
+                appendAssistantMessage(streamResult: streamResult, to: &session.messages)
+                if let metrics = RemoteGenerationClient.generationMetrics(generationStats) {
+                    await Self.publishAnthropicSubscriptionMetrics(
+                        metrics,
+                        maxTokens: resolvedContextWindowTokenLimit(forLLMID: modelLLMID),
+                        modelID: modelID,
+                        onEvent: onEvent
+                    )
+                }
 
-            if round == configuration.maxToolRounds - 1 {
-                sessions[sessionID] = session
-                throw RemoteGenerationClientError.tooManyToolRounds(configuration.maxToolRounds)
+                if streamResult.toolCalls.isEmpty {
+                    if !configuration.appMode,
+                       let summary = RemoteGenerationClient.generationSummary(generationStats) {
+                        await onEvent(.diagnostic(summary))
+                    }
+                    sessions[sessionID] = session
+                    return DirectAgentResponse(
+                        text: accumulatedText,
+                        stopReason: streamResult.stopReason,
+                        modelID: modelID
+                    )
+                }
+
+                for toolCall in streamResult.toolCalls {
+                    await onEvent(.toolCallStarted(toolCall))
+                    let result = await toolExecutor.execute(
+                        sessionID: session.id,
+                        toolCall: toolCall,
+                        workingDirectory: session.cwd,
+                        allowedToolNames: session.allowedToolNames
+                    )
+                    await onEvent(.toolCallCompleted(toolCall, result))
+                    session.messages.append([
+                        "role": "tool",
+                        "tool_call_id": toolCall.id,
+                        "name": toolCall.name,
+                        "content": result.output
+                    ])
+                }
+
+                if round == configuration.maxToolRounds - 1 {
+                    sessions[sessionID] = session
+                    throw RemoteGenerationClientError.tooManyToolRounds(configuration.maxToolRounds)
+                }
+                break
             }
         }
         sessions[sessionID] = session
@@ -400,13 +415,13 @@ public actor AnthropicSubscriptionGenerationClient: AgentRuntimeBackend {
             await onEvent(.diagnostic(RemoteGenerationClient.toolExposureDiagnostic(from: toolDescriptors)))
         }
         let toolCatalog = RemoteToolWireCatalog(descriptors: toolDescriptors)
-        var anthropicPayload = Self.anthropicMessagesPayload(
+                let anthropicPayload = Self.anthropicMessagesPayload(
             from: toolCatalog.wireMessages(from: session.messages)
         )
-        var requestMessages = Self.addingCacheControlToLastUserMessage(
+                let requestMessages = Self.addingCacheControlToLastUserMessage(
             anthropicPayload.messages
         )
-        var systemBlocks = Self.subscriptionSystemBlocks(
+                let systemBlocks = Self.subscriptionSystemBlocks(
             userSystemPrompt: anthropicPayload.system
         )
         let tools = Self.anthropicTools(from: toolCatalog.bindings)
@@ -414,47 +429,6 @@ public actor AnthropicSubscriptionGenerationClient: AgentRuntimeBackend {
             forLLMID: modelLLMID,
             thinkingSelection: session.thinkingSelection
         )
-        var estimatedContextTokens = AnthropicSubscriptionRequestBuilder
-            .estimatedContextTokenCount(
-                system: systemBlocks,
-                messages: requestMessages,
-                tools: tools
-            )
-        if let result = compactSessionForEstimatedContextIfNeeded(
-            &session,
-            estimatedContextTokens: estimatedContextTokens,
-            modelLLMID: modelLLMID,
-            maxOutputTokens: maxOutputTokens
-        ) {
-            await onEvent(.diagnostic(Self.compactionDiagnostic(from: result)))
-            anthropicPayload = Self.anthropicMessagesPayload(
-                from: toolCatalog.wireMessages(from: session.messages)
-            )
-            requestMessages = Self.addingCacheControlToLastUserMessage(
-                anthropicPayload.messages
-            )
-            systemBlocks = Self.subscriptionSystemBlocks(
-                userSystemPrompt: anthropicPayload.system
-            )
-            estimatedContextTokens = AnthropicSubscriptionRequestBuilder
-                .estimatedContextTokenCount(
-                    system: systemBlocks,
-                    messages: requestMessages,
-                    tools: tools
-                )
-        }
-        if let estimatedContextTokens {
-            await onEvent(
-                .contextWindow(
-                    DirectAgentContextWindowStatus(
-                        usedTokens: estimatedContextTokens,
-                        maxTokens: resolvedContextWindowTokenLimit(forLLMID: modelLLMID),
-                        modelID: modelID,
-                        isApproximate: true
-                    )
-                )
-            )
-        }
 
         var body: [String: Any] = [
             "model": modelID,
@@ -602,6 +576,30 @@ public actor AnthropicSubscriptionGenerationClient: AgentRuntimeBackend {
         )
     }
 
+        private func compactSessionForContextLimitRetry(
+        _ session: inout AgentSession,
+        modelLLMID: String
+    ) -> AgentConversationCompactionResult? {
+        let result = Self.compactedMessagesIfNeeded(
+            session.messages,
+            maxTokens: resolvedContextWindowTokenLimit(forLLMID: modelLLMID),
+            maxOutputTokens: resolvedMaxOutputTokens(
+                forLLMID: modelLLMID,
+                thinkingSelection: session.thinkingSelection
+            ),
+            force: true
+        )
+        guard result.wasCompacted else {
+            return nil
+        }
+
+        session.messages = RemoteGenerationClient.remoteMessages(
+            compactionResult: result,
+            preservingRecentFrom: session.messages
+        )
+        return result
+    }
+
     private func compactSessionIfNeeded(
         _ session: inout AgentSession,
         modelLLMID: String
@@ -731,11 +729,63 @@ public actor AnthropicSubscriptionGenerationClient: AgentRuntimeBackend {
         return messages.count
     }
 
-    private static func compactionDiagnostic(
+            private static func compactionDiagnostic(
         from result: AgentConversationCompactionResult
     ) -> String {
         "Compacted conversation history from \(result.originalEstimatedTokenCount) to \(result.estimatedTokenCount) estimated tokens."
     }
+
+    private static func contextLimitRetryDiagnostic(
+        from result: AgentConversationCompactionResult
+    ) -> String {
+        "Anthropic Subscription context limit reached. Retrying once with compacted conversation history from \(result.originalEstimatedTokenCount) to \(result.estimatedTokenCount) estimated tokens."
+    }
+
+    private static func contextLimitRetryUnavailableDiagnostic() -> String {
+        "Anthropic Subscription context limit reached, but conversation history could not be compacted for retry."
+    }
+
+    static func isContextLimitError(_ error: Error) -> Bool {
+        if let error = error as? RemoteGenerationClientError,
+           case let .remoteFailure(message) = error {
+            return messageIndicatesContextLimit(message)
+        }
+        return messageIndicatesContextLimit(error.localizedDescription)
+    }
+
+    private static func messageIndicatesContextLimit(_ message: String) -> Bool {
+        let normalizedMessage = message
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !normalizedMessage.isEmpty else {
+            return false
+        }
+
+        let compactMessage = normalizedMessage
+            .replacingOccurrences(of: "-", with: "_")
+            .replacingOccurrences(of: " ", with: "_")
+        if compactMessage.contains("context_length_exceeded")
+            || compactMessage.contains("context_window_exceeded")
+            || compactMessage.contains("context_limit_exceeded")
+            || compactMessage.contains("input_too_long")
+            || compactMessage.contains("prompt_too_long")
+            || compactMessage.contains("too_many_tokens") {
+            return true
+        }
+
+        return normalizedMessage.contains("context length")
+            || normalizedMessage.contains("context window")
+            || normalizedMessage.contains("context limit")
+            || normalizedMessage.contains("maximum context")
+            || normalizedMessage.contains("max context")
+            || normalizedMessage.contains("too many tokens")
+            || normalizedMessage.contains("input is too long")
+            || normalizedMessage.contains("prompt is too long")
+            || normalizedMessage.contains("token limit")
+            || normalizedMessage.contains("tokens exceed")
+            || normalizedMessage.contains("exceeds the maximum")
+            || normalizedMessage.contains("exceeded maximum")
+        }
 
     private func modelLLMID() -> String {
         configuration.modelID?.nilIfBlank ?? provider.modelID
