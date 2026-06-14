@@ -8,10 +8,71 @@
 import Foundation
 import MLXCoderCore
 
+public enum MLXCoderSetupAdditionalSectionResult {
+    case unchanged
+    case removedStandaloneConfiguration
+}
+
+public struct MLXCoderSetupAdditionalSection {
+    let title: String
+    let detail: String?
+    let aliases: Set<String>
+    private let action: () async throws -> MLXCoderSetupAdditionalSectionResult
+
+    public init(
+        title: String,
+        detail: String? = nil,
+        aliases: Set<String> = [],
+        action: @escaping () async throws -> MLXCoderSetupAdditionalSectionResult
+    ) {
+        self.title = title
+        self.detail = detail
+        self.aliases = aliases
+        self.action = action
+    }
+
+    func run() async throws -> MLXCoderSetupAdditionalSectionResult {
+        try await action()
+    }
+}
+
+public struct MLXCoderSetupAdditionalSectionGroup {
+    let title: String
+    let detail: String?
+    let aliases: Set<String>
+    let placement: MLXCoderSetupAdditionalSectionGroupPlacement
+    let prefersBackDefault: Bool
+    let sections: [MLXCoderSetupAdditionalSection]
+
+    public init(
+        title: String,
+        detail: String? = nil,
+        aliases: Set<String> = [],
+        placement: MLXCoderSetupAdditionalSectionGroupPlacement = .afterAgents,
+        prefersBackDefault: Bool = false,
+        sections: [MLXCoderSetupAdditionalSection]
+    ) {
+        self.title = title
+        self.detail = detail
+        self.aliases = aliases
+        self.placement = placement
+        self.prefersBackDefault = prefersBackDefault
+        self.sections = sections
+    }
+}
+
+public enum MLXCoderSetupAdditionalSectionGroupPlacement {
+    case afterAgents
+    case afterVoice
+}
+
 public enum MLXCoderSetupRunner {
     private static let interactiveLineReader = TerminalInteractiveLineReader()
 
-    public static func run(arguments: [String]) async throws {
+    public static func run(
+        arguments: [String],
+        additionalSectionGroups: [MLXCoderSetupAdditionalSectionGroup] = []
+    ) async throws {
         _ = arguments
         guard TerminalRawInput.supportsInteractiveInput() else {
             throw MLXCoderSetupError.nonInteractiveTerminal
@@ -51,16 +112,35 @@ public enum MLXCoderSetupRunner {
         }
 
         var didChangeSettings = false
+        var didRunAdditionalSection = false
         while true {
-            let section = try promptSetupSection(currentManifest: manifest)
+            let section = try promptSetupSection(
+                currentManifest: manifest,
+                additionalSectionGroups: additionalSectionGroups
+            )
             guard section != .finish else {
                 break
             }
 
             let previousManifest = manifest
-            manifest = try await configureSetupSection(section, currentManifest: manifest)
-            if manifest != previousManifest {
+            let result = try await configureSetupSection(
+                section,
+                currentManifest: manifest,
+                additionalSectionGroups: additionalSectionGroups
+            )
+            if result.additionalResult == .removedStandaloneConfiguration {
+                manifest = nil
+                originalManifest = nil
+                didChangeSettings = false
+                didRunAdditionalSection = true
+            } else if section.isAdditional {
+                manifest = result.manifest
+                didRunAdditionalSection = true
+            } else if result.manifest != previousManifest {
+                manifest = result.manifest
                 didChangeSettings = true
+            } else {
+                manifest = result.manifest
             }
 
             guard try promptYesNo("Modify another setup section?", defaultValue: false) else {
@@ -69,6 +149,10 @@ public enum MLXCoderSetupRunner {
         }
 
         guard let finalManifest = manifest else {
+            if didRunAdditionalSection {
+                printCompletion()
+                return
+            }
             throw MLXCoderSetupError.noModelsConfigured
         }
 
@@ -97,10 +181,14 @@ public enum MLXCoderSetupRunner {
     }
 
     private static func promptSetupSection(
-        currentManifest manifest: AgentSettingsManifest?
+        currentManifest manifest: AgentSettingsManifest?,
+        additionalSectionGroups: [MLXCoderSetupAdditionalSectionGroup]
     ) throws -> SetupSection {
         while true {
-            let options = setupSectionOptions(currentManifest: manifest)
+            let options = setupSectionOptions(
+                currentManifest: manifest,
+                additionalSectionGroups: additionalSectionGroups
+            )
             let defaultSection: SetupSection = manifest?.models.isEmpty == false ? .finish : .providersAndModels
             let defaultIndex = options.firstIndex { $0.section == defaultSection } ?? 0
 
@@ -144,35 +232,68 @@ public enum MLXCoderSetupRunner {
     }
 
     private static func setupSectionOptions(
-        currentManifest manifest: AgentSettingsManifest?
+        currentManifest manifest: AgentSettingsManifest?,
+        additionalSectionGroups: [MLXCoderSetupAdditionalSectionGroup]
     ) -> [SetupSectionOption] {
-        [
+        let groupsAfterAgents = additionalSectionGroupOptions(
+            additionalSectionGroups,
+            placement: .afterAgents
+        )
+        let groupsAfterVoice = additionalSectionGroupOptions(
+            additionalSectionGroups,
+            placement: .afterVoice
+        )
+
+        var options = [
             SetupSectionOption(
                 section: .providersAndModels,
                 detail: providersAndModelsSetupDetail(manifest)
             ),
             SetupSectionOption(
-                section: .defaultModel,
-                detail: defaultModelSetupDetail(manifest)
-            ),
-            SetupSectionOption(
-                section: .defaultThinking,
-                detail: defaultThinkingSetupDetail(manifest)
-            ),
-            SetupSectionOption(
-                section: .telegram,
-                detail: manifest?.telegram?.isEnabled == true ? "enabled" : "disabled"
-            ),
-            SetupSectionOption(
-                section: .voice,
-                detail: manifest?.voice?.isConfigured == true ? "enabled" : "disabled"
+                section: .defaultModelSettings,
+                detail: defaultModelSettingsSetupDetail(manifest)
             ),
             SetupSectionOption(
                 section: .agents,
                 detail: agentsSetupDetail()
-            ),
-            SetupSectionOption(section: .finish, detail: nil)
+            )
         ]
+
+        options.append(contentsOf: groupsAfterAgents)
+        options.append(
+            contentsOf: [
+                SetupSectionOption(
+                    section: .telegram,
+                    detail: manifest?.telegram?.isEnabled == true ? "enabled" : "disabled"
+                ),
+                SetupSectionOption(
+                    section: .voice,
+                    detail: manifest?.voice?.isConfigured == true ? "enabled" : "disabled"
+                )
+            ]
+        )
+        options.append(contentsOf: groupsAfterVoice)
+        options.append(SetupSectionOption(section: .finish, detail: nil))
+        return options
+    }
+
+    private static func additionalSectionGroupOptions(
+        _ groups: [MLXCoderSetupAdditionalSectionGroup],
+        placement: MLXCoderSetupAdditionalSectionGroupPlacement
+    ) -> [SetupSectionOption] {
+        groups.enumerated().compactMap { index, group in
+            guard group.placement == placement else {
+                return nil
+            }
+            return SetupSectionOption(
+                section: .additionalGroup(
+                    index,
+                    title: group.title,
+                    aliases: group.aliases
+                ),
+                detail: group.detail
+            )
+        }
     }
 
     private static func agentsSetupDetail() -> String {
@@ -227,26 +348,189 @@ public enum MLXCoderSetupRunner {
         return selection?.displayTitle ?? "default"
     }
 
+    private static func defaultModelSettingsSetupDetail(
+        _ manifest: AgentSettingsManifest?
+    ) -> String {
+        let modelDetail = defaultModelSetupDetail(manifest)
+        let thinkingDetail = defaultThinkingSetupDetail(manifest)
+        if modelDetail.hasPrefix("requires") {
+            return modelDetail
+        }
+        return "\(modelDetail), thinking: \(thinkingDetail)"
+    }
+
+    private static func promptDefaultModelSetupSection(
+        currentManifest manifest: AgentSettingsManifest
+    ) throws -> SetupSection? {
+        let options = [
+            SetupSectionOption(
+                section: .defaultModel,
+                detail: defaultModelSetupDetail(manifest)
+            ),
+            SetupSectionOption(
+                section: .defaultThinking,
+                detail: defaultThinkingSetupDetail(manifest)
+            )
+        ]
+        return try promptNestedSetupSection(
+            title: "Default model",
+            options: options,
+            defaultIndex: 0
+        )
+    }
+
+    private static func promptNestedSetupSection(
+        title: String,
+        options: [SetupSectionOption],
+        defaultIndex: Int
+    ) throws -> SetupSection? {
+        let backIndex = options.count + 1
+        let defaultValue = options.indices.contains(defaultIndex)
+            ? String(defaultIndex + 1)
+            : String(backIndex)
+
+        AgentOutput.standardError.writeString("\n\(title):\n")
+        for (index, option) in options.enumerated() {
+            let marker = index == defaultIndex ? " *" : ""
+            let detail = option.detail.map { " - \($0)" } ?? ""
+            AgentOutput.standardError.writeString(
+                "  \(index + 1). \(option.section.title)\(detail)\(marker)\n"
+            )
+        }
+        if defaultValue == String(backIndex) {
+            AgentOutput.standardError.writeString("  \(backIndex). Back *\n")
+        } else {
+            AgentOutput.standardError.writeString("  \(backIndex). Back\n")
+        }
+
+        let value = try promptString(
+            "Section",
+            defaultValue: defaultValue,
+            allowEmpty: false
+        )
+        let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let index = Int(normalizedValue) {
+            if options.indices.contains(index - 1) {
+                return options[index - 1].section
+            }
+            if index == backIndex {
+                return nil
+            }
+        }
+        if ["back", "exit", "done", "cancel"].contains(normalizedValue) {
+            return nil
+        }
+        if let option = options.first(where: { $0.section.matches(normalizedValue) }) {
+            return option.section
+        }
+        throw MLXCoderSetupError.invalidChoice(value)
+    }
+
+    private static func promptAdditionalSetupSection(
+        in group: MLXCoderSetupAdditionalSectionGroup
+    ) throws -> MLXCoderSetupAdditionalSection? {
+        guard !group.sections.isEmpty else {
+            return nil
+        }
+
+        let backIndex = group.sections.count + 1
+        let defaultValue = group.prefersBackDefault ? String(backIndex) : "1"
+
+        AgentOutput.standardError.writeString("\n\(group.title):\n")
+        for (index, section) in group.sections.enumerated() {
+            let marker = !group.prefersBackDefault && index == 0 ? " *" : ""
+            let detail = section.detail.map { " - \($0)" } ?? ""
+            AgentOutput.standardError.writeString(
+                "  \(index + 1). \(section.title)\(detail)\(marker)\n"
+            )
+        }
+        if group.prefersBackDefault {
+            AgentOutput.standardError.writeString("  \(backIndex). Back *\n")
+        } else {
+            AgentOutput.standardError.writeString("  \(backIndex). Back\n")
+        }
+
+        let value = try promptString(
+            "Section",
+            defaultValue: defaultValue,
+            allowEmpty: false
+        )
+        let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let index = Int(normalizedValue) {
+            if group.sections.indices.contains(index - 1) {
+                return group.sections[index - 1]
+            }
+            if index == backIndex {
+                return nil
+            }
+        }
+        if ["back", "exit", "done", "cancel"].contains(normalizedValue) {
+            return nil
+        }
+        if let section = group.sections.first(where: { $0.aliases.contains(normalizedValue) }) {
+            return section
+        }
+        throw MLXCoderSetupError.invalidChoice(value)
+    }
+
     private static func configureSetupSection(
         _ section: SetupSection,
-        currentManifest manifest: AgentSettingsManifest?
-    ) async throws -> AgentSettingsManifest {
+        currentManifest manifest: AgentSettingsManifest?,
+        additionalSectionGroups: [MLXCoderSetupAdditionalSectionGroup]
+    ) async throws -> SetupSectionConfigurationResult {
         switch section {
         case .providersAndModels:
-            return try await configureProvidersAndModels(existingManifest: manifest)
+            return SetupSectionConfigurationResult(
+                manifest: try await configureProvidersAndModels(existingManifest: manifest)
+            )
+        case .defaultModelSettings:
+            guard let nestedSection = try promptDefaultModelSetupSection(
+                currentManifest: requireExistingManifest(manifest)
+            ) else {
+                return SetupSectionConfigurationResult(manifest: manifest)
+            }
+            return try await configureSetupSection(
+                nestedSection,
+                currentManifest: manifest,
+                additionalSectionGroups: additionalSectionGroups
+            )
         case .defaultModel:
-            return try configureDefaultModel(in: requireExistingManifest(manifest))
+            return SetupSectionConfigurationResult(
+                manifest: try configureDefaultModel(in: requireExistingManifest(manifest))
+            )
         case .defaultThinking:
-            return try configureDefaultThinking(in: requireExistingManifest(manifest))
+            return SetupSectionConfigurationResult(
+                manifest: try configureDefaultThinking(in: requireExistingManifest(manifest))
+            )
         case .telegram:
-            return try await configureTelegram(in: requireExistingManifest(manifest))
+            return SetupSectionConfigurationResult(
+                manifest: try await configureTelegram(in: requireExistingManifest(manifest))
+            )
         case .voice:
-            return try configureVoice(in: requireExistingManifest(manifest))
+            return SetupSectionConfigurationResult(
+                manifest: try configureVoice(in: requireExistingManifest(manifest))
+            )
         case .agents:
             try MLXCoderAgentProfileSetupRunner.configureInteractively()
-            return try requireExistingManifest(manifest)
+            return SetupSectionConfigurationResult(
+                manifest: try requireExistingManifest(manifest)
+            )
+        case .additionalGroup(let index, _, _):
+            guard additionalSectionGroups.indices.contains(index) else {
+                throw MLXCoderSetupError.invalidChoice(String(index + 1))
+            }
+            guard let additionalSection = try promptAdditionalSetupSection(
+                in: additionalSectionGroups[index]
+            ) else {
+                return SetupSectionConfigurationResult(manifest: manifest)
+            }
+            let result = try await additionalSection.run()
+            return SetupSectionConfigurationResult(
+                manifest: manifest,
+                additionalResult: result
+            )
         case .finish:
-            return try requireExistingManifest(manifest)
+            return SetupSectionConfigurationResult(manifest: manifest)
         }
     }
 
@@ -1838,19 +2122,28 @@ private struct SetupSectionOption {
     let detail: String?
 }
 
+private struct SetupSectionConfigurationResult {
+    var manifest: AgentSettingsManifest?
+    var additionalResult: MLXCoderSetupAdditionalSectionResult = .unchanged
+}
+
 private enum SetupSection: Equatable {
     case providersAndModels
+    case defaultModelSettings
     case defaultModel
     case defaultThinking
     case telegram
     case voice
     case agents
+    case additionalGroup(Int, title: String, aliases: Set<String>)
     case finish
 
     var title: String {
         switch self {
         case .providersAndModels:
             return "Providers and models"
+        case .defaultModelSettings:
+            return "Default model"
         case .defaultModel:
             return "Default model"
         case .defaultThinking:
@@ -1861,6 +2154,8 @@ private enum SetupSection: Equatable {
             return "Local voice tools"
         case .agents:
             return "Agents"
+        case .additionalGroup(_, let title, _):
+            return title
         case .finish:
             return "Finish setup"
         }
@@ -1868,11 +2163,18 @@ private enum SetupSection: Equatable {
 
     var requiresConfiguredModels: Bool {
         switch self {
-        case .providersAndModels, .agents, .finish:
+        case .providersAndModels, .agents, .additionalGroup, .finish:
             return false
-        case .defaultModel, .defaultThinking, .telegram, .voice:
+        case .defaultModelSettings, .defaultModel, .defaultThinking, .telegram, .voice:
             return true
         }
+    }
+
+    var isAdditional: Bool {
+        if case .additionalGroup = self {
+            return true
+        }
+        return false
     }
 
     func matches(_ value: String) -> Bool {
@@ -1883,6 +2185,8 @@ private enum SetupSection: Equatable {
         switch self {
         case .providersAndModels:
             return ["providers", "provider", "models", "model", "providers and models", "providers/models", "remote"]
+        case .defaultModelSettings:
+            return ["default", "default model", "selected model", "model default", "thinking", "default thinking"]
         case .defaultModel:
             return ["default", "default model", "selected model", "model default"]
         case .defaultThinking:
@@ -1893,6 +2197,8 @@ private enum SetupSection: Equatable {
             return ["voice", "local voice", "voice tools", "speech"]
         case .agents:
             return ["agents", "agent", "profiles", "agent profiles"]
+        case .additionalGroup(_, _, let aliases):
+            return aliases
         case .finish:
             return ["finish", "done", "exit", "quit", "end", "stop"]
         }

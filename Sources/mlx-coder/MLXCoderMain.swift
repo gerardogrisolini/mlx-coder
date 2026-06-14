@@ -20,7 +20,10 @@ struct MLXCoderMain {
         let didRequestSetup = MLXCoderSetupMenuRunner.shouldRun(arguments: arguments)
         if didRequestSetup {
             do {
-                try await MLXCoderSetupMenuRunner.run()
+                try await MLXCoderSetupRunner.run(
+                    arguments: [],
+                    additionalSectionGroups: MLXCoderSetupMenuRunner.additionalSectionGroups()
+                )
             } catch {
                 AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
                 Foundation.exit(1)
@@ -55,7 +58,10 @@ struct MLXCoderMain {
 
         if MLXCoderSetupInspector.status().requiresSetup {
             do {
-                try await MLXCoderSetupMenuRunner.run()
+                try await MLXCoderSetupRunner.run(
+                    arguments: [],
+                    additionalSectionGroups: MLXCoderSetupMenuRunner.additionalSectionGroups()
+                )
             } catch {
                 AgentOutput.standardError.writeString("mlx-coder: \(error.localizedDescription)\n")
                 Foundation.exit(1)
