@@ -133,7 +133,7 @@ Inside chat mode, type a prompt and press return. Commands start with `/`:
 - `/subagents`: show delegated sub-agent status.
 - `/subagents off`: hide automatic sub-agent status updates.
 - `/telegram`: show Telegram status for the current TUI session.
-- `/telegram on`: turn Telegram on for the current TUI session.
+- `/telegram on`: turn Telegram on for the current TUI session. This also sends a confirmation message to the linked Telegram chat, so the iOS client is woken up and you do not need to message the bot first to start receiving notifications.
 - `/telegram off`: turn Telegram off for the current TUI session.
   This command is available only after Telegram was enabled and paired during `mlx-coder --setup`; otherwise it is treated as unknown.
 - `/voice`: start recording a voice prompt. Press `Enter` again to stop; the transcript becomes the prompt.

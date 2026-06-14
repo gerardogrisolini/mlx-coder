@@ -312,8 +312,9 @@ struct TerminalChatRenderingTests {
 
                 let lines = TerminalChat.detailedToolCallStartedLines(for: toolCall)
 
-        #expect(lines.contains("🛠️  local.readFile /tmp/project/Sources/App.swift ⏳"))
-        #expect(lines.contains("status: in_progress"))
+                #expect(lines.contains("🛠️  local.readFile /tmp/project/Sources/App.swift"))
+        #expect(lines.contains("status: ⏳"))
+        #expect(lines.last == "status: ⏳")
         #expect(lines.contains("kind: local.readFile"))
         #expect(lines.contains("location: /tmp/project/Sources/App.swift"))
         #expect(!lines.contains("rawInput:"))
@@ -340,7 +341,8 @@ struct TerminalChatRenderingTests {
             result: result
         )
 
-                #expect(lines.contains("status: completed"))
+                                #expect(lines.contains("status: ✅"))
+        #expect(lines.last == "status: ✅")
         #expect(lines.contains("kind: local.readFile"))
         #expect(lines.contains("summary: read 2 lines"))
         #expect(!lines.contains("rawOutput.output:"))

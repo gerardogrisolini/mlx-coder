@@ -216,7 +216,7 @@ extension TerminalChat {
         do {
             telegramLinkedChatID = linkedChatID
             telegramLinkedChatTitle = settings.linkedChatTitle
-            telegramControlState = try await telegramControlService.start()
+                        telegramControlState = try await telegramControlService.start()
             let chatTitle = telegramLinkedChatTitle?.nilIfBlank ?? "chat \(linkedChatID)"
             writeSystemMessage(
                 """
@@ -224,6 +224,12 @@ extension TerminalChat {
                 Linked chat: \(chatTitle)
 
                 """
+            )
+            await sendTelegramSystemMessage(
+                """
+                mlx-coder remote control is active. Send a prompt or /help to begin.
+                """,
+                to: linkedChatID
             )
         } catch {
             telegramControlState.lastError = error.localizedDescription

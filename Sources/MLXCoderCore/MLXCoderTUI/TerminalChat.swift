@@ -40,8 +40,10 @@ public final class TerminalChat: @unchecked Sendable {
     public var subAgentOverviewRefreshTask: Task<Void, Never>?
     public var availableSkillsCache: [MLXPromptSkill]?
     public var isDetailedToolOutputEnabled = false
-    public var activeCompactToolCallID: String?
+        public var activeCompactToolCallID: String?
     public var activeCompactToolRenderedRowCount = 0
+    public var activeDetailedToolCallID: String?
+    public var activeDetailedToolRenderedRowCount = 0
     public var isStreamingThoughtOutput = false
     var isAtStartOfChatLine = true
     public var assistantMarkdownFormatter = TerminalMarkdownStreamFormatter(

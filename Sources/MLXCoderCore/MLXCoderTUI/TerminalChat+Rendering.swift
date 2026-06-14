@@ -581,13 +581,13 @@ extension TerminalChat {
         return "\u{1B}[\(renderedCodes)m"
     }
 
-    public func writeToolCallStarted(_ toolCall: DirectAgentToolCall) {
+        public func writeToolCallStarted(_ toolCall: DirectAgentToolCall) {
         guard isDetailedToolOutputEnabled else {
             writeCompactToolCallStarted(toolCall)
             return
         }
 
-        writeToolBlock(Self.detailedToolCallStartedLines(for: toolCall))
+        writeDetailedToolCallStarted(toolCall)
     }
 
     public func writeToolCallCompleted(
@@ -600,15 +600,47 @@ extension TerminalChat {
             return
         }
 
-        writeToolBlock(Self.detailedToolCallCompletedLines(for: toolCall, result: result))
+        writeDetailedToolCallCompleted(toolCall, result: result)
+    }
+
+    private func writeDetailedToolCallStarted(_ toolCall: DirectAgentToolCall) {
+        let lines = Self.detailedToolCallStartedLines(for: toolCall)
+        activeDetailedToolCallID = toolCall.id
+        activeDetailedToolRenderedRowCount = Self.renderedTerminalRowCount(
+            for: lines,
+            contentInsetWidth: chatLineInsetPrefix.count
+        )
+        writeToolBlock(lines)
+    }
+
+    private func writeDetailedToolCallCompleted(
+        _ toolCall: DirectAgentToolCall,
+        result: DirectAgentToolResult
+    ) {
+        let lines = Self.detailedToolCallCompletedLines(for: toolCall, result: result)
+        let shouldRewriteActiveBlock = activeDetailedToolCallID == toolCall.id
+            && AgentOutput.standardErrorIsTerminal
+        let rewriteRowCount = activeDetailedToolRenderedRowCount
+        activeDetailedToolCallID = nil
+        activeDetailedToolRenderedRowCount = 0
+
+        if shouldRewriteActiveBlock {
+            AgentOutput.standardError.writeString("\u{1B}[\(max(1, rewriteRowCount))A\r\u{1B}[J")
+        }
+        writeToolBlock(lines)
         writeChatError("\n")
     }
 
-    public func toggleToolDetailsOutput() {
+        public func toggleToolDetailsOutput() {
         if activeCompactToolCallID != nil {
             writeChatError("\n")
             activeCompactToolCallID = nil
             activeCompactToolRenderedRowCount = 0
+        }
+        if activeDetailedToolCallID != nil {
+            writeChatError("\n")
+            activeDetailedToolCallID = nil
+            activeDetailedToolRenderedRowCount = 0
         }
         isDetailedToolOutputEnabled.toggle()
         writeSystemMessage(
@@ -776,17 +808,14 @@ extension TerminalChat {
     private static let detailedSnippetLineLimit = 12
     private static let detailedSnippetCharacterLimit = 1_200
 
-    static func detailedToolCallStartedLines(
+        static func detailedToolCallStartedLines(
         for toolCall: DirectAgentToolCall
     ) -> [String] {
-        var lines = detailedToolBaseLines(
-            for: toolCall,
-            statusIcon: "⏳",
-            status: "in_progress"
-        )
+        var lines = detailedToolBaseLines(for: toolCall)
         if isFileMutationTool(toolCall.name) {
             lines.append("change: pending")
         }
+        lines.append("status: ⏳")
         return lines
     }
 
@@ -794,18 +823,15 @@ extension TerminalChat {
         for toolCall: DirectAgentToolCall,
         result: DirectAgentToolResult
     ) -> [String] {
-        let failed = result.output
+                let failed = result.output
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .hasPrefix("Tool error:")
-        var lines = detailedToolBaseLines(
-            for: toolCall,
-            statusIcon: failed ? "⚠️" : "✅",
-            status: failed ? "failed" : "completed"
-        )
+        var lines = detailedToolBaseLines(for: toolCall)
 
         if failed {
             lines.append("error:")
             lines.append(contentsOf: indentedSnippet(result.output))
+            lines.append("status: ⚠️")
             return lines
         }
 
@@ -815,20 +841,18 @@ extension TerminalChat {
         } else if let summary = compactSummaryLine(result.summary) {
             lines.append("summary: \(summary)")
         }
+        lines.append("status: ✅")
         return lines
     }
 
     private static func detailedToolBaseLines(
-        for toolCall: DirectAgentToolCall,
-        statusIcon: String,
-        status: String
+        for toolCall: DirectAgentToolCall
     ) -> [String] {
         let title = MLXCoderACPBridge.toolTitle(for: toolCall)
         let kind = MLXCoderACPBridge.toolKind(for: toolCall.name)
         let icon = MLXCoderACPBridge.toolIcon(for: toolCall.name)
         var lines = [
-            "\(icon)  \(title) \(statusIcon)",
-            "status: \(status)",
+            "\(icon)  \(title)",
             "kind: \(kind)"
         ]
         lines.append(contentsOf: toolLocationLines(for: toolCall))

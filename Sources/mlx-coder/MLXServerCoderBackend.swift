@@ -253,18 +253,26 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
     }
 
     func saveSessionRuntimeCache(id: String) async {
-        guard let session = sessions[id] else {
+                guard let session = sessions[id] else {
             return
         }
-        let request = await generationRequest(for: session, sessionID: id)
+        let tools = await toolSpecs(
+            allowedToolNames: session.allowedToolNames,
+            preferredWorkspaceRootURL: session.cwd
+        )
+        let request = generationRequest(for: session, sessionID: id, tools: tools)
         _ = await runtime.saveChatSessionCacheToDisk(request: request)
     }
 
     func restoreSessionRuntimeCache(id: String) async {
-        guard let session = sessions[id] else {
+                guard let session = sessions[id] else {
             return
         }
-        let request = await generationRequest(for: session, sessionID: id)
+        let tools = await toolSpecs(
+            allowedToolNames: session.allowedToolNames,
+            preferredWorkspaceRootURL: session.cwd
+        )
+        let request = generationRequest(for: session, sessionID: id, tools: tools)
         do {
             _ = try await runtime.restoreChatSessionCacheFromDisk(request: request)
         } catch {
@@ -306,12 +314,25 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
             )
         )
 
+                // Tool specs depend only on the session's allowed tool names and
+        // working directory, neither of which changes within a single
+        // sendPrompt call. Compute them once (this includes the async MCP
+        // round-trip) and reuse them across every tool round.
+        let toolSpecs = await toolSpecs(
+            allowedToolNames: session.allowedToolNames,
+            preferredWorkspaceRootURL: session.cwd
+        )
+
         var accumulatedVisibleText = ""
         for _ in 0..<configuration.maxToolRounds {
             if let result = compactSessionIfNeeded(&session) {
                 await onEvent(.diagnostic(Self.compactionDiagnostic(from: result)))
             }
-            let request = await generationRequest(for: session, sessionID: sessionID)
+            let request = generationRequest(
+                for: session,
+                sessionID: sessionID,
+                tools: toolSpecs
+            )
             await onEvent(.modelRuntime(request.runtimeKind.rawValue))
             let turn = try await runGenerationTurn(
                 request: request,
@@ -357,10 +378,11 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
         throw MLXServerCoderBackendError.tooManyToolRounds(configuration.maxToolRounds)
     }
 
-    private func generationRequest(
+        private func generationRequest(
         for session: SessionState,
-        sessionID: String
-    ) async -> MLXServerGenerationRequest {
+        sessionID: String,
+        tools: [ToolSpec]?
+    ) -> MLXServerGenerationRequest {
         let thinkingSelection = resolvedThinkingSelection(for: session)
         var additionalContext = model.thinking.additionalContext(for: thinkingSelection)
         additionalContext["preserve_thinking"] = session.preserveThinking
@@ -371,10 +393,7 @@ actor MLXServerCoderBackend: AgentRuntimeBackend {
             model: model,
             messages: session.messages,
             parameters: generationParameters(),
-            tools: await toolSpecs(
-                allowedToolNames: session.allowedToolNames,
-                preferredWorkspaceRootURL: session.cwd
-            ),
+            tools: tools,
             additionalContext: additionalContext,
                                     retainsReasoningInHistory: session.preserveThinking && thinkingSelection.isEnabled,
             // Prefer an explicit client-provided cache key. When absent, leave
