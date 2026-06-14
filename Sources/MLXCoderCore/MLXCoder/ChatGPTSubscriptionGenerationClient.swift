@@ -692,7 +692,18 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         var generationStats: [RemoteGenerationStats] = []
         var didRetryAfterContextLimit = false
 
+
         for round in 0..<configuration.maxToolRounds {
+            if let result = compactSessionIfNeeded(
+                &session,
+                maxTokens: maxContextWindowTokens,
+                maxOutputTokens: configuration.maxOutputTokens,
+                sessionIdentity: sessionIdentity
+            ) {
+                sessions[sessionID] = session
+                await onEvent(.diagnostic(Self.compactionDiagnostic(from: result)))
+            }
+
             while true {
                 let toolCatalog = RemoteToolWireCatalog(
                     descriptors: await toolExecutor.descriptors(
@@ -841,17 +852,49 @@ public actor ChatGPTSubscriptionGenerationClient: AgentRuntimeBackend {
         throw ChatGPTSubscriptionGenerationError.tooManyToolRounds(configuration.maxToolRounds)
     }
 
+
     private func compactSessionForContextLimitRetry(
         _ session: inout AgentSession,
         maxTokens: Int?,
         maxOutputTokens: Int?,
         sessionIdentity: SessionIdentity
     ) -> AgentConversationCompactionResult? {
+        compactSession(
+            &session,
+            maxTokens: maxTokens,
+            maxOutputTokens: maxOutputTokens,
+            sessionIdentity: sessionIdentity,
+            force: true
+        )
+    }
+
+    private func compactSessionIfNeeded(
+        _ session: inout AgentSession,
+        maxTokens: Int?,
+        maxOutputTokens: Int?,
+        sessionIdentity: SessionIdentity
+    ) -> AgentConversationCompactionResult? {
+        compactSession(
+            &session,
+            maxTokens: maxTokens,
+            maxOutputTokens: maxOutputTokens,
+            sessionIdentity: sessionIdentity,
+            force: false
+        )
+    }
+
+    private func compactSession(
+        _ session: inout AgentSession,
+        maxTokens: Int?,
+        maxOutputTokens: Int?,
+        sessionIdentity: SessionIdentity,
+        force: Bool
+    ) -> AgentConversationCompactionResult? {
         let result = Self.compactedMessagesIfNeeded(
             session.messages,
             maxTokens: maxTokens,
             maxOutputTokens: maxOutputTokens,
-            force: true
+            force: force
         )
 
         guard result.wasCompacted else {

@@ -98,18 +98,10 @@ public enum MLXSystemPromptBuilder {
             .joined(separator: "\n\n")
 
         return """
-        Selected skill guidance for this task is supplemental context. Use it when relevant, but it never overrides the core operating rules for tool usage, autonomy, confirmation handling, or response language.
+        Selected skill guidance for this task is supplemental context. Use it when relevant.
 
         Additional skill guidance selected for this task:
         \(skillPrompt)
-
-        Core operating rules still apply after reading the selected skills:
-        - If a tool is needed, use the model's native tool-call interface; do not print JSON tool-call objects.
-        - Do not ask for routine confirmation to inspect, search, read, or run non-mutating diagnostics when those steps are already implied by the user's request.
-        - Before starting file modifications, briefly explain the intended changes, including the files or areas you expect to edit, and ask the user to confirm. Do not modify files until the user confirms.
-        - Only stop for confirmation when the next step starts file modifications, is destructive, irreversible, or genuinely ambiguous.
-        - Do not stop after a preamble; either use the next tool now, ask for required confirmation before file modifications, or provide the completed answer now.
-        - When you provide the final direct answer for a turn, briefly report any modified files if files changed, then stop.
         """
     }
 

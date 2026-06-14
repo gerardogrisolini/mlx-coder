@@ -459,17 +459,92 @@ extension TerminalChat {
             return text
         }
 
-        let color = fileChangeSummaryANSIColor
-        let reset = "\u{1B}[0m"
         return text
             .split(separator: "\n", omittingEmptySubsequences: false)
             .map { line in
-                line.isEmpty ? "" : "\(color)\(line)\(reset)"
+                fileChangeSummaryLineColorApplied(String(line))
             }
             .joined(separator: "\n")
     }
 
-    private static let fileChangeSummaryANSIColor = "\u{1B}[1;38;5;214m"
+    private static func fileChangeSummaryLineColorApplied(_ line: String) -> String {
+        guard !line.isEmpty else {
+            return ""
+        }
+
+        if line.hasPrefix("Changed files:") {
+            return colorFileChangeSummaryHeader(line)
+        }
+        if line.hasPrefix("  ") {
+            return colorFileChangeSummaryEntry(line)
+        }
+        return colorFileChangeSummaryHint(line)
+    }
+
+    private static func colorFileChangeSummaryHeader(_ line: String) -> String {
+        let reset = "\u{1B}[0m"
+        let orange = fileChangeSummaryHeaderANSIColor
+        let count = "\u{1B}[38;5;81m"
+        let addition = "\u{1B}[38;5;114m"
+        let deletion = "\u{1B}[38;5;203m"
+        let pattern = #"^(Changed files:) (.+)  (\+\d+) ([-]\d+)$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+              match.numberOfRanges == 5,
+              let titleRange = Range(match.range(at: 1), in: line),
+              let countRange = Range(match.range(at: 2), in: line),
+              let additionsRange = Range(match.range(at: 3), in: line),
+              let deletionsRange = Range(match.range(at: 4), in: line) else {
+            return "\(orange)\(line)\(reset)"
+        }
+
+        return "\(orange)\(line[titleRange])\(reset) "
+            + "\(count)\(line[countRange])\(reset)  "
+            + "\(addition)\(line[additionsRange])\(reset) "
+            + "\(deletion)\(line[deletionsRange])\(reset)"
+    }
+
+    private static func colorFileChangeSummaryEntry(_ line: String) -> String {
+        let reset = "\u{1B}[0m"
+        let status = "\u{1B}[38;5;141m"
+        let path = "\u{1B}[38;5;117m"
+        let addition = "\u{1B}[38;5;114m"
+        let deletion = "\u{1B}[38;5;203m"
+        let binary = "\u{1B}[38;5;244m"
+        let pattern = #"^  (\S+) (.+?)(?:  (\+\d+) ([-]\d+)| (\(binary\)))$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+              match.numberOfRanges == 6,
+              let statusRange = Range(match.range(at: 1), in: line),
+              let pathRange = Range(match.range(at: 2), in: line) else {
+            return "\(path)\(line)\(reset)"
+        }
+
+        var rendered = "  \(status)\(line[statusRange])\(reset) \(path)\(line[pathRange])\(reset)"
+        if let additionsRange = Range(match.range(at: 3), in: line),
+           let deletionsRange = Range(match.range(at: 4), in: line) {
+            rendered += "  \(addition)\(line[additionsRange])\(reset) \(deletion)\(line[deletionsRange])\(reset)"
+        } else if let binaryRange = Range(match.range(at: 5), in: line) {
+            rendered += " \(binary)\(line[binaryRange])\(reset)"
+        }
+        return rendered
+    }
+
+    private static func colorFileChangeSummaryHint(_ line: String) -> String {
+        let reset = "\u{1B}[0m"
+        let dim = "\u{1B}[38;5;244m"
+        let command = "\u{1B}[38;5;81m"
+        var rendered = "\(dim)\(line)\(reset)"
+        for token in ["/undo", "/changes diff"] {
+            rendered = rendered.replacingOccurrences(
+                of: token,
+                with: "\(command)\(token)\(reset)\(dim)"
+            )
+        }
+        return rendered
+    }
+
+    private static let fileChangeSummaryHeaderANSIColor = "\u{1B}[1;38;5;208m"
 
     static func failureMessageColorApplied(to text: String, isEnabled: Bool) -> String {
         guard isEnabled, !text.isEmpty else {

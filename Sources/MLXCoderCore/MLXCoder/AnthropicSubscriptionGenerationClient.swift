@@ -319,7 +319,15 @@ public actor AnthropicSubscriptionGenerationClient: AgentRuntimeBackend {
         var accumulatedText = ""
         var generationStats: [RemoteGenerationStats] = []
         var didRetryAfterContextLimit = false
+
         for round in 0..<configuration.maxToolRounds {
+            if let result = compactSessionIfNeeded(
+                &session,
+                modelLLMID: modelLLMID
+            ) {
+                await onEvent(.diagnostic(Self.compactionDiagnostic(from: result)))
+            }
+
             while true {
                 let streamResult: RemoteStreamResult
                 do {
@@ -576,7 +584,8 @@ public actor AnthropicSubscriptionGenerationClient: AgentRuntimeBackend {
         )
     }
 
-        private func compactSessionForContextLimitRetry(
+
+    private func compactSessionForContextLimitRetry(
         _ session: inout AgentSession,
         modelLLMID: String
     ) -> AgentConversationCompactionResult? {

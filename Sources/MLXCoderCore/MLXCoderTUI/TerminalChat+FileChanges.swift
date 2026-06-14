@@ -100,6 +100,54 @@ extension TerminalChat {
         return "  \(entry.status.rawValue) \(entry.path)  +\(entry.additions) -\(entry.deletions)"
     }
 
+    static func renderFileChangeDiffPatch(
+        _ patch: String,
+        isEnabled: Bool
+    ) -> String {
+        guard isEnabled, !patch.isEmpty else {
+            return patch
+        }
+
+        return patch
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { renderFileChangeDiffLine(String($0)) }
+            .joined(separator: "\n")
+    }
+
+    private static func renderFileChangeDiffLine(_ line: String) -> String {
+        let reset = "\u{1B}[0m"
+        let meta = "\u{1B}[38;5;244m"
+        let hunk = "\u{1B}[38;5;141m"
+        let addition = "\u{1B}[38;5;114m"
+        let deletion = "\u{1B}[38;5;203m"
+
+        guard !line.isEmpty else {
+            return line
+        }
+
+        if line.hasPrefix("@@") {
+            return "\(hunk)\(line)\(reset)"
+        }
+        if line.hasPrefix("diff --git")
+            || line.hasPrefix("index ")
+            || line.hasPrefix("--- ")
+            || line.hasPrefix("+++ ")
+            || line.hasPrefix("new file mode ")
+            || line.hasPrefix("deleted file mode ")
+            || line.hasPrefix("similarity index ")
+            || line.hasPrefix("rename from ")
+            || line.hasPrefix("rename to ") {
+            return "\(meta)\(line)\(reset)"
+        }
+        if line.hasPrefix("+") {
+            return "\(addition)\(line)\(reset)"
+        }
+        if line.hasPrefix("-") {
+            return "\(deletion)\(line)\(reset)"
+        }
+        return line
+    }
+
     public func writeFileChangeDiffs(_ summary: TurnFileChangeSummary) {
         let patches = summary.entries.compactMap { entry -> String? in
             guard !entry.isBinary,
@@ -115,20 +163,10 @@ extension TerminalChat {
             return
         }
 
-        let maxLines = 500
-        let patchLines = patches
-            .joined(separator: "\n")
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map(String.init)
-        let visibleLines = patchLines.prefix(maxLines)
-        writeChatError(
-            "\n" + visibleLines.joined(separator: "\n") + "\n"
+        let renderedPatch = Self.renderFileChangeDiffPatch(
+            patches.joined(separator: "\n"),
+            isEnabled: AgentOutput.standardErrorIsTerminal
         )
-
-        if patchLines.count > maxLines {
-            writeSystemMessage(
-                "... diff truncated at \(maxLines) lines.\n"
-            )
-        }
+        writeChatError("\n" + renderedPatch + "\n")
     }
 }

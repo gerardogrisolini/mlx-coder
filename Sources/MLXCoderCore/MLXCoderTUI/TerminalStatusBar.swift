@@ -635,7 +635,12 @@ public final class TerminalStatusBar: @unchecked Sendable {
     }
 
     static func gitStatusFragment(summary: TerminalGitStatusSummary) -> String {
-        "\(summary.changedFileCount) files +\(summary.additions) -\(summary.deletions)"
+        let reset = "\u{1B}[0m"
+        let addition = "\u{1B}[38;5;114m"
+        let deletion = "\u{1B}[38;5;203m"
+        return "\(summary.changedFileCount) files "
+            + "\(addition)+\(summary.additions)\(reset) "
+            + "\(deletion)-\(summary.deletions)\(reset)"
     }
 
     private static func modelDisplayName(_ modelID: String) -> String {
@@ -751,18 +756,72 @@ public final class TerminalStatusBar: @unchecked Sendable {
         return String(format: "%d:%02d:%02d", hours, minutes % 60, seconds)
     }
 
+    static func visibleCharacterCount(_ text: String) -> Int {
+        var count = 0
+        var index = text.startIndex
+        while index < text.endIndex {
+            if text[index] == "\u{1B}",
+               let end = ansiEscapeSequenceEnd(in: text, from: index) {
+                index = text.index(after: end)
+                continue
+            }
+            count += 1
+            index = text.index(after: index)
+        }
+        return count
+    }
+
+    private static func ansiEscapeSequenceEnd(in text: String, from start: String.Index) -> String.Index? {
+        guard start < text.endIndex,
+              text[start] == "\u{1B}",
+              text.index(after: start) < text.endIndex,
+              text[text.index(after: start)] == "[" else {
+            return nil
+        }
+
+        var index = text.index(start, offsetBy: 2)
+        while index < text.endIndex {
+            let character = text[index]
+            if character.isLetter || character == "~" {
+                return index
+            }
+            index = text.index(after: index)
+        }
+        return nil
+    }
+
     private static func fit(_ text: String, width: Int) -> String {
-        guard width > 3, text.count > width else {
+        guard width > 3, visibleCharacterCount(text) > width else {
             return text
         }
-        return String(text.prefix(width - 3)) + "..."
+
+        var result = ""
+        var visibleCount = 0
+        var index = text.startIndex
+        let visibleLimit = width - 3
+        while index < text.endIndex, visibleCount < visibleLimit {
+            if text[index] == "\u{1B}",
+               let end = ansiEscapeSequenceEnd(in: text, from: index) {
+                result += text[index...end]
+                index = text.index(after: end)
+                continue
+            }
+            result.append(text[index])
+            visibleCount += 1
+            index = text.index(after: index)
+        }
+        if result.contains("\u{1B}[") {
+            result += "\u{1B}[0m"
+        }
+        return result + "..."
     }
 
     private static func padded(_ text: String, width: Int) -> String {
-        guard text.count < width else {
+        let visibleCount = visibleCharacterCount(text)
+        guard visibleCount < width else {
             return text
         }
-        return text + String(repeating: " ", count: width - text.count)
+        return text + String(repeating: " ", count: width - visibleCount)
     }
 
     private func inputPanelDisplayLineCountLocked(

@@ -87,7 +87,19 @@ struct TerminalChatRenderingTests {
             deletions: 4
         )
 
-                #expect(TerminalStatusBar.gitStatusFragment(summary: summary) == "3 files +12 -4")
+        let rendered = TerminalStatusBar.gitStatusFragment(summary: summary)
+
+        #expect(rendered.contains("3 files"))
+        #expect(rendered.contains("\u{1B}[38;5;114m+12\u{1B}[0m"))
+        #expect(rendered.contains("\u{1B}[38;5;203m-4\u{1B}[0m"))
+        #expect(TerminalStatusBar.visibleCharacterCount(rendered) == "3 files +12 -4".count)
+    }
+
+    @Test
+    func statusBarVisibleCharacterCountIgnoresANSISequences() {
+        let colored = "git \u{1B}[38;5;114m+12\u{1B}[0m \u{1B}[38;5;203m-4\u{1B}[0m"
+
+        #expect(TerminalStatusBar.visibleCharacterCount(colored) == "git +12 -4".count)
     }
 
     @Test
@@ -216,13 +228,53 @@ struct TerminalChatRenderingTests {
     @Test
     func fileChangeSummaryColoringHighlightsNonBlankLines() {
         let rendered = TerminalChat.fileChangeSummaryColorApplied(
-            to: "\nChanged files: 1 modified file  +12 -2\n  modified Sources/App.swift  +12 -2\n",
+            to: "\nChanged files: 1 modified file  +12 -2\n  modified Sources/App.swift  +12 -2\nUse /undo to revert, /changes diff to show patches.\n",
             isEnabled: true
         )
 
-        #expect(rendered.hasPrefix("\n\u{1B}[1;38;5;214mChanged files:"))
-        #expect(rendered.contains("\u{1B}[1;38;5;214m  modified Sources/App.swift  +12 -2\u{1B}[0m\n"))
+        #expect(rendered.hasPrefix("\n\u{1B}[1;38;5;208mChanged files:\u{1B}[0m"))
+        #expect(rendered.contains("\u{1B}[38;5;81m1 modified file\u{1B}[0m"))
+        #expect(rendered.contains("\u{1B}[38;5;114m+12\u{1B}[0m"))
+        #expect(rendered.contains("\u{1B}[38;5;203m-2\u{1B}[0m"))
+        #expect(rendered.contains("\u{1B}[38;5;141mmodified\u{1B}[0m \u{1B}[38;5;117mSources/App.swift\u{1B}[0m"))
+        #expect(rendered.contains("\u{1B}[38;5;81m/undo\u{1B}[0m\u{1B}[38;5;244m"))
+        #expect(rendered.contains("\u{1B}[38;5;81m/changes diff\u{1B}[0m\u{1B}[38;5;244m"))
         #expect(rendered.hasSuffix("\n"))
+    }
+
+    @Test
+    func fileChangeDiffPatchRenderingColorsUnifiedDiffLines() {
+        let patch = """
+        diff --git a/Sources/App.swift b/Sources/App.swift
+        index 1111111..2222222 100644
+        --- a/Sources/App.swift
+        +++ b/Sources/App.swift
+        @@ -1,2 +1,2 @@
+         context
+        -old
+        +new
+        """
+
+        let rendered = TerminalChat.renderFileChangeDiffPatch(patch, isEnabled: true)
+
+        #expect(rendered.contains("\u{1B}[38;5;244mdiff --git a/Sources/App.swift b/Sources/App.swift\u{1B}[0m"))
+        #expect(rendered.contains("\u{1B}[38;5;141m@@ -1,2 +1,2 @@\u{1B}[0m"))
+        #expect(rendered.contains("\u{1B}[38;5;203m-old\u{1B}[0m"))
+        #expect(rendered.contains("\u{1B}[38;5;114m+new\u{1B}[0m"))
+        #expect(rendered.contains(" context"))
+    }
+
+    @Test
+    func fileChangeDiffPatchRenderingKeepsAllLines() {
+        let patch = (0..<520)
+            .map { "+line \($0)" }
+            .joined(separator: "\n")
+
+        let rendered = TerminalChat.renderFileChangeDiffPatch(patch, isEnabled: false)
+        let renderedLines = rendered.split(separator: "\n", omittingEmptySubsequences: false)
+
+        #expect(renderedLines.count == 520)
+        #expect(renderedLines.last == "+line 519")
     }
 
     @Test
